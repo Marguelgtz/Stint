@@ -60,10 +60,10 @@ func (c *Client) CreateInstance(ctx context.Context, offerID string, options Cre
 		return 0, errors.New("instance disk size must be greater than zero")
 	}
 	payload := map[string]any{
-		"image":        options.Image,
-		"disk":         options.DiskGB,
-		"runtype":      "ssh_direct",
-		"target_state": "running",
+		"image":          options.Image,
+		"disk":           options.DiskGB,
+		"runtype":        "ssh_direct",
+		"target_state":   "running",
 		"cancel_unavail": true,
 	}
 	if options.Label != "" {
@@ -76,7 +76,7 @@ func (c *Client) CreateInstance(ctx context.Context, offerID string, options Cre
 	if err != nil {
 		return 0, fmt.Errorf("encode Vast create instance request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.endpoint(fmt.Sprintf("/api/v0/asks/%d/", id)), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.endpoint(fmt.Sprintf("/api/v0/asks/%d", id)), bytes.NewReader(body))
 	if err != nil {
 		return 0, fmt.Errorf("build Vast create instance request: %w", err)
 	}
@@ -104,7 +104,7 @@ func (c *Client) ShowInstance(ctx context.Context, instanceID int64) (Instance, 
 	if instanceID <= 0 {
 		return Instance{}, errors.New("invalid Vast instance id")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint(fmt.Sprintf("/api/v0/instances/%d/", instanceID)), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint(fmt.Sprintf("/api/v0/instances/%d", instanceID)), nil)
 	if err != nil {
 		return Instance{}, fmt.Errorf("build Vast show instance request: %w", err)
 	}
@@ -136,7 +136,7 @@ func (c *Client) AttachSSHKey(ctx context.Context, instanceID int64, publicKey s
 	if err != nil {
 		return fmt.Errorf("encode SSH key request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(fmt.Sprintf("/api/v0/instances/%d/ssh/", instanceID)), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(fmt.Sprintf("/api/v0/instances/%d/ssh", instanceID)), bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build Vast attach SSH key request: %w", err)
 	}
@@ -157,7 +157,7 @@ func (c *Client) DestroyInstance(ctx context.Context, instanceID int64) error {
 	if instanceID <= 0 {
 		return errors.New("invalid Vast instance id")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.endpoint(fmt.Sprintf("/api/v0/instances/%d/", instanceID)), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.endpoint(fmt.Sprintf("/api/v0/instances/%d", instanceID)), nil)
 	if err != nil {
 		return fmt.Errorf("build Vast destroy instance request: %w", err)
 	}
@@ -188,7 +188,7 @@ func classifyInstanceWriteError(err error) error {
 			return errors.New("Vast API key lacks instance_write permission; enable instance_write for the Stint key, then run: stint auth vast")
 		case http.StatusUnauthorized:
 			return errors.New("Vast API key was rejected; run: stint auth vast")
-		case http.StatusGone:
+		case http.StatusNotFound, http.StatusGone:
 			return errors.New("selected Vast offer is no longer available; rerun stint start")
 		case http.StatusTooManyRequests:
 			return errors.New("Vast API rate limit reached; retry later")
