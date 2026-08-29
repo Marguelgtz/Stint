@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
@@ -18,15 +19,23 @@ import (
 	"github.com/Marguelgtz/Stint/internal/spark"
 )
 
-const version = "0.0.3"
+const version = "0.0.4"
 const clinePort = 8409
 
+type planDiagnostics struct {
+	Candidates      int                               `json:"candidates"`
+	Qualified       int                               `json:"qualified"`
+	RejectedBy      map[core.RejectionReason]int      `json:"rejectedBy,omitempty"`
+	ClosestRejected []core.OfferEvaluation            `json:"closestRejected,omitempty"`
+}
+
 type planOutput struct {
-	Live         bool         `json:"live"`
-	Mutating     bool         `json:"mutating"`
-	ComputeRented bool        `json:"computeRented"`
-	Plan         core.SessionPlan `json:"plan"`
-	Alternatives []core.Offer `json:"alternatives"`
+	Live          bool             `json:"live"`
+	Mutating      bool             `json:"mutating"`
+	ComputeRented bool             `json:"computeRented"`
+	Plan          core.SessionPlan `json:"plan"`
+	Alternatives  []core.Offer     `json:"alternatives"`
+	Diagnostics   planDiagnostics  `json:"diagnostics"`
 }
 
 func main() {
@@ -112,7 +121,7 @@ func runPlan(args []string) error {
 		defer cancel()
 		offers, err = vast.NewClient(credentials.Vast.APIKey).SearchOffers(ctx, profile, vast.SearchOptions{
 			Hours:     hours,
-			Limit:     100,
+			Limit:     250,
 			StorageGB: profile.Session.StorageGB,
 		})
 		if err != nil {
@@ -120,8 +129,24 @@ func runPlan(args []string) error {
 		}
 	}
 
+	evaluations := core.EvaluateOffers(profile, offers)
+	diagnostics := summarizeEvaluations(evaluations)
 	ranked := core.RankOffers(profile, offers)
 	if len(ranked) == 0 {
+		if *jsonOutput {
+			out, err := json.MarshalIndent(struct {
+				Live          bool            `json:"live"`
+				Mutating      bool            `json:"mutating"`
+				ComputeRented bool            `json:"computeRented"`
+				Diagnostics   planDiagnostics `json:"diagnostics"`
+			}{Live: !*fixture, Mutating: false, ComputeRented: false, Diagnostics: diagnostics}, "", "  ")
+			if err != nil {
+				return err
+			}
+			fmt.Println(string(out))
+		} else {
+			printDiagnostics(diagnostics)
+		}
 		return fmt.Errorf("no qualifying %s offers found within the hard policy limits", profileName)
 	}
 	plan, err := core.CreateSessionPlan(profile, hours, offers)
@@ -138,6 +163,7 @@ func runPlan(args []string) error {
 		ComputeRented: false,
 		Plan:          plan,
 		Alternatives:  alternatives,
+		Diagnostics:   diagnostics,
 	}
 	if *jsonOutput {
 		out, err := json.MarshalIndent(result, "", "  ")
@@ -149,6 +175,62 @@ func runPlan(args []string) error {
 	}
 	printHumanPlan(result)
 	return nil
+}
+
+func summarizeEvaluations(evaluations []core.OfferEvaluation) planDiagnostics {
+	d := planDiagnostics{Candidates: len(evaluations), RejectedBy: map[core.RejectionReason]int{}}
+	rejected := make([]core.OfferEvaluation, 0)
+	for _, evaluation := range evaluations {
+		if evaluation.Qualified {
+			d.Qualified++
+			continue
+		}
+		for _, reason := range evaluation.Rejections {
+			d.RejectedBy[reason]++
+		}
+		rejected = append(rejected, evaluation)
+	}
+	sort.SliceStable(rejected, func(i, j int) bool {
+		if len(rejected[i].Rejections) != len(rejected[j].Rejections) {
+			return len(rejected[i].Rejections) < len(rejected[j].Rejections)
+		}
+		if rejected[i].Offer.DLPerf != rejected[j].Offer.DLPerf {
+			return rejected[i].Offer.DLPerf > rejected[j].Offer.DLPerf
+		}
+		return rejected[i].Offer.HourlyUSD < rejected[j].Offer.HourlyUSD
+	})
+	if len(rejected) > 3 {
+		rejected = rejected[:3]
+	}
+	d.ClosestRejected = rejected
+	return d
+}
+
+func printDiagnostics(d planDiagnostics) {
+	fmt.Println()
+	fmt.Println("MARKETPLACE DIAGNOSTICS")
+	fmt.Printf("Candidates inspected  %d\n", d.Candidates)
+	fmt.Printf("Hard qualified        %d\n", d.Qualified)
+	if len(d.RejectedBy) > 0 {
+		fmt.Println("\nRejected by hard constraint:")
+		reasons := make([]string, 0, len(d.RejectedBy))
+		for reason := range d.RejectedBy {
+			reasons = append(reasons, string(reason))
+		}
+		sort.Strings(reasons)
+		for _, reason := range reasons {
+			fmt.Printf("  %-18s %d\n", reason, d.RejectedBy[core.RejectionReason(reason)])
+		}
+	}
+	if len(d.ClosestRejected) > 0 {
+		fmt.Println("\nClosest rejected candidates:")
+		for _, evaluation := range d.ClosestRejected {
+			o := evaluation.Offer
+			fmt.Printf("  %s  $%.3f/hr  rel %.2f%%  DLPerf %.1f  %.0f MB/s  %.0f W  fails=%v\n",
+				valueOr(o.Geolocation, "unknown"), o.HourlyUSD, o.Reliability*100, o.DLPerf, o.InetDownMBps, o.GPUMaxPowerW, evaluation.Rejections)
+		}
+	}
+	fmt.Println("\nNO COMPUTE HAS BEEN RENTED.")
 }
 
 func runAuth(args []string) error {
@@ -354,6 +436,7 @@ func printHumanPlan(result planOutput) {
 	fmt.Printf("%-20s $%.2f/hr\n", "Hourly ceiling", result.Plan.Profile.GPU.MaxHourlyUSD)
 	fmt.Printf("%-20s $%.2f\n", "Session ceiling", result.Plan.Profile.Session.MaxCostUSD)
 	fmt.Printf("%-20s %.0f GB\n", "Planned storage", result.Plan.Profile.Session.StorageGB)
+	fmt.Printf("%-20s %d / %d candidates\n", "Marketplace", result.Diagnostics.Qualified, result.Diagnostics.Candidates)
 	if selected.InetDownCostPerGB > 0 {
 		fmt.Printf("%-20s $%.4f/GB\n", "Download traffic", selected.InetDownCostPerGB)
 	}
