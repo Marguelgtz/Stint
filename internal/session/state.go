@@ -99,7 +99,7 @@ func Save(paths config.Paths, state State) error {
 	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		return fmt.Errorf("write credentials: %w", err)
+		return fmt.Errorf("write session state: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close session state: %w", err)
