@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
@@ -20,7 +21,7 @@ import (
 	"github.com/Marguelgtz/Stint/internal/spark"
 )
 
-const version = "0.0.5"
+const version = "0.0.6"
 const clinePort = 8409
 
 type planDiagnostics struct {
@@ -59,7 +60,9 @@ func run(args []string) error {
 	case "plan":
 		return runPlan(args[1:])
 	case "start":
-		return runStart(args[1:])
+		return runStartResumable(args[1:])
+	case "resume":
+		return runResume(args[1:])
 	case "down":
 		return runDown(args[1:])
 	case "_watchdog":
@@ -401,7 +404,20 @@ func runStatus() error {
 	fmt.Printf("Active compute     instance %d (%s)\n", state.InstanceID, state.Status)
 	fmt.Printf("GPU                %s\n", state.GPUModel)
 	fmt.Printf("Rate               $%.3f/hr\n", state.HourlyUSD)
+	if state.Checkpoint != "" {
+		fmt.Printf("Checkpoint         %s\n", state.Checkpoint)
+	}
+	if state.LastError != "" {
+		lastError := strings.ReplaceAll(state.LastError, "\n", " ")
+		if len(lastError) > 140 {
+			lastError = lastError[:137] + "..."
+		}
+		fmt.Printf("Last error         %s\n", lastError)
+	}
 	fmt.Printf("Auto-destroy       %s\n", state.Deadline.Local().Format(time.RFC1123))
+	if state.Status == sessionstate.StatusRecoverable || checkpointIsRecoverable(state.Checkpoint) && state.Status != sessionstate.StatusReady {
+		fmt.Println("Next action        stint resume")
+	}
 	return nil
 }
 
@@ -500,6 +516,7 @@ Planning (read-only):
 Compute (paid):
   stint start interactive --hours 1
   stint start interactive --hours 1 --yes
+  stint resume
   stint status
   stint down
 

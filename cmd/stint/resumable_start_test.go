@@ -1,0 +1,38 @@
+package main
+
+import (
+	"strings"
+	"testing"
+
+	sessionstate "github.com/Marguelgtz/Stint/internal/session"
+)
+
+func TestCheckpointIsRecoverable(t *testing.T) {
+	tests := []struct {
+		checkpoint string
+		want       bool
+	}{
+		{checkpoint: sessionstate.CheckpointInstanceCreated, want: false},
+		{checkpoint: sessionstate.CheckpointSSHReady, want: false},
+		{checkpoint: sessionstate.CheckpointRuntimeReady, want: true},
+		{checkpoint: sessionstate.CheckpointModelStarted, want: true},
+		{checkpoint: sessionstate.CheckpointReady, want: true},
+	}
+	for _, tt := range tests {
+		if got := checkpointIsRecoverable(tt.checkpoint); got != tt.want {
+			t.Fatalf("checkpointIsRecoverable(%q) = %v, want %v", tt.checkpoint, got, tt.want)
+		}
+	}
+}
+
+func TestRemoteModelLaunchUsesPIDTracking(t *testing.T) {
+	command := remoteModelLaunchCommand()
+	if strings.Contains(command, "\npkill -f ") {
+		t.Fatal("remote model launch must not use pkill -f; it can kill the SSH shell that contains the pattern")
+	}
+	for _, required := range []string{"/workspace/stint/llama.pid", "pgrep -x llama-server", "nohup /workspace/stint/llama.cpp/build/bin/llama-server"} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("remote model launch missing %q", required)
+		}
+	}
+}
