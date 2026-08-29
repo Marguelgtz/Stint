@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 )
 
 type Objective string
@@ -28,16 +29,16 @@ const (
 )
 
 type GPUPolicy struct {
-	PreferredModels   []string `json:"preferredModels"`
-	MaxHourlyUSD      float64  `json:"maxHourlyUsd"`
-	MinReliability    float64  `json:"minReliability"`
-	PreferredInetDownMBps float64 `json:"preferredInetDownMBps"`
-	MinDirectPorts    int      `json:"minDirectPorts"`
-	MinGPURAMMB       int      `json:"minGpuRamMb"`
-	PreferredGPUMaxPowerW float64 `json:"preferredGpuMaxPowerW"`
-	RequireVerified   bool     `json:"requireVerified"`
-	RequireRentable   bool     `json:"requireRentable"`
-	RequireNotRented  bool     `json:"requireNotRented"`
+	PreferredModels        []string `json:"preferredModels"`
+	MaxHourlyUSD           float64  `json:"maxHourlyUsd"`
+	MinReliability         float64  `json:"minReliability"`
+	PreferredInetDownMBps  float64  `json:"preferredInetDownMBps"`
+	MinDirectPorts         int      `json:"minDirectPorts"`
+	MinGPURAMMB            int      `json:"minGpuRamMb"`
+	PreferredGPUMaxPowerW  float64  `json:"preferredGpuMaxPowerW"`
+	RequireVerified        bool     `json:"requireVerified"`
+	RequireRentable        bool     `json:"requireRentable"`
+	RequireNotRented       bool     `json:"requireNotRented"`
 }
 
 type SessionPolicy struct {
@@ -97,16 +98,18 @@ var BuiltinProfiles = map[string]Profile{
 		Objective: ObjectiveLatency,
 		Workers:   1,
 		GPU: GPUPolicy{
-			PreferredModels:          []string{"RTX_4090"},
-			MaxHourlyUSD:             0.40,
-			MinReliability:           0.985,
-			PreferredInetDownMBps:    50,
-			MinDirectPorts:           1,
-			MinGPURAMMB:              24000,
-			PreferredGPUMaxPowerW:    350,
-			RequireVerified:          true,
-			RequireRentable:          true,
-			RequireNotRented:         true,
+			// Vast's REST examples use human-readable names with spaces. Local offers
+			// are canonicalized before ranking, so both forms compare consistently.
+			PreferredModels:       []string{"RTX 4090", "RTX 3090"},
+			MaxHourlyUSD:          0.40,
+			MinReliability:        0.985,
+			PreferredInetDownMBps: 50,
+			MinDirectPorts:        1,
+			MinGPURAMMB:           24000,
+			PreferredGPUMaxPowerW: 350,
+			RequireVerified:       true,
+			RequireRentable:       true,
+			RequireNotRented:      true,
 		},
 		Session: SessionPolicy{DefaultHours: 5, MaxCostUSD: 2.50, StorageGB: 50},
 	},
@@ -115,7 +118,7 @@ var BuiltinProfiles = map[string]Profile{
 		Objective: ObjectiveValidatedWorkPerDollar,
 		Workers:   2,
 		GPU: GPUPolicy{
-			PreferredModels:       []string{"RTX_3090"},
+			PreferredModels:       []string{"RTX 3090"},
 			MaxHourlyUSD:          0.18,
 			MinReliability:        0.98,
 			PreferredInetDownMBps: 50,
@@ -131,9 +134,17 @@ var BuiltinProfiles = map[string]Profile{
 
 func roundMoney(v float64) float64 { return math.Round(v*100) / 100 }
 
+func canonicalModelName(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, " ", "_")
+	value = strings.ReplaceAll(value, "-", "_")
+	return strings.ToUpper(value)
+}
+
 func preferredRank(profile Profile, model string) int {
+	model = canonicalModelName(model)
 	for i, preferred := range profile.GPU.PreferredModels {
-		if preferred == model {
+		if canonicalModelName(preferred) == model {
 			return i
 		}
 	}
