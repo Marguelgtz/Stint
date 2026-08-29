@@ -4,6 +4,8 @@ areas:
   - id: interactive-control-plane
     paths:
       - "cmd/stint/**"
+      - "internal/config/**"
+      - "internal/local/**"
       - "internal/core/**"
       - "internal/router/**"
     criticality: high
