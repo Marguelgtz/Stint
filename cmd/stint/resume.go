@@ -126,7 +126,7 @@ func runResume(args []string) (retErr error) {
 
 	if !strings.EqualFold(instance.ActualStatus, "running") || instance.SSHHost == "" || instance.SSHPort <= 0 {
 		fmt.Println("Waiting for Vast SSH metadata...")
-		instance, err = waitForSSHMetadata(rootCtx, client, state.InstanceID, 6*time.Minute)
+		instance, err = waitForSSHMetadata(rootCtx, client, state.InstanceID, providerStartupTimeout)
 		if err != nil {
 			return err
 		}

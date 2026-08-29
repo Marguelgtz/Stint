@@ -12,8 +12,9 @@ func TestCheckpointIsRecoverable(t *testing.T) {
 		checkpoint string
 		want       bool
 	}{
-		{checkpoint: sessionstate.CheckpointInstanceCreated, want: false},
-		{checkpoint: sessionstate.CheckpointSSHReady, want: false},
+		{checkpoint: "", want: false},
+		{checkpoint: sessionstate.CheckpointInstanceCreated, want: true},
+		{checkpoint: sessionstate.CheckpointSSHReady, want: true},
 		{checkpoint: sessionstate.CheckpointRuntimeReady, want: true},
 		{checkpoint: sessionstate.CheckpointModelStarted, want: true},
 		{checkpoint: sessionstate.CheckpointReady, want: true},

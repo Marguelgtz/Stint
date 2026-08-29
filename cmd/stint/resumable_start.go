@@ -19,10 +19,13 @@ import (
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
+const providerStartupTimeout = 12 * time.Minute
+
 // runStartResumable is the paid interactive start path with explicit recovery
-// checkpoints. Once the expensive remote llama.cpp runtime is built, later
-// failures preserve the paid instance and leave the deadline watchdog running so
-// `stint resume` can continue without recompiling or renting another machine.
+// checkpoints. Once Vast has created the paid instance, later startup failures
+// preserve it and leave the deadline watchdog running so `stint resume` can
+// continue the same session rather than silently discarding already-provisioned
+// work or forcing another rental.
 func runStartResumable(args []string) (retErr error) {
 	if len(args) == 0 {
 		return errors.New("start requires a profile: interactive")
@@ -189,7 +192,7 @@ func runStartResumable(args []string) (retErr error) {
 	_ = os.Remove(filepath.Join(paths.StateDir, "known_hosts"))
 
 	fmt.Println("Waiting for Vast SSH...")
-	instance, err := waitForSSHMetadata(rootCtx, client, instanceID, 6*time.Minute)
+	instance, err := waitForSSHMetadata(rootCtx, client, instanceID, providerStartupTimeout)
 	if err != nil {
 		return err
 	}
@@ -264,7 +267,11 @@ func runStartResumable(args []string) (retErr error) {
 
 func checkpointIsRecoverable(checkpoint string) bool {
 	switch checkpoint {
-	case sessionstate.CheckpointRuntimeReady, sessionstate.CheckpointModelStarted, sessionstate.CheckpointReady:
+	case sessionstate.CheckpointInstanceCreated,
+		sessionstate.CheckpointSSHReady,
+		sessionstate.CheckpointRuntimeReady,
+		sessionstate.CheckpointModelStarted,
+		sessionstate.CheckpointReady:
 		return true
 	default:
 		return false
