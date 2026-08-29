@@ -51,6 +51,28 @@ func TestCreateInstanceUsesSelectedOfferAndSSHDirect(t *testing.T) {
 	}
 }
 
+func TestCreateInstancePinsAutomaticVastBaseImage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["image"] != stintCUDA124BaseImage {
+			t.Fatalf("image = %#v, want %q", payload["image"], stintCUDA124BaseImage)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"new_contract":9876}`))
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.BaseURL = server.URL
+	client.HTTPClient = server.Client()
+	if _, err := client.CreateInstance(context.Background(), "123", CreateInstanceOptions{Image: vastAutomaticBaseImage, DiskGB: 50}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAttachSSHKeyUsesInstanceEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v0/instances/9876/ssh" {
