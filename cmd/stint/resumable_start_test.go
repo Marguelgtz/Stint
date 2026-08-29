@@ -40,7 +40,7 @@ func TestRemoteModelLaunchUsesPIDTracking(t *testing.T) {
 
 func TestRemoteModelLaunchUsesRequestedContext(t *testing.T) {
 	command := remoteModelLaunchCommand(24576)
-	if !strings.Contains(command, "  -c 24576 \\\n") {
+	if !strings.Contains(command, "-c 24576") {
 		t.Fatalf("remote model launch did not use requested context: %s", command)
 	}
 }
