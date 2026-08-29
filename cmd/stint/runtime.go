@@ -270,6 +270,7 @@ echo "%s  $model" | sha256sum -c -
 exec /workspace/stint/ninfer/build/apps/ninfer-serve "$model" \
   --host 127.0.0.1 \
   --port %d \
+  --model-id %s \
   --max-context %d \
   --kv-capacity %d \
   --max-concurrency 1 \
@@ -289,5 +290,5 @@ if ! kill -0 "$new_pid" 2>/dev/null; then
   tail -n 20 "$log_file" >&2 || true
   exit 1
 fi
-`, ninferModelSHA256, ninferModelURL, ninferModelSHA256, clineRemotePort, contextTokens, contextTokens)
+`, ninferModelSHA256, ninferModelURL, ninferModelSHA256, clineRemotePort, interactiveModelAlias, contextTokens, contextTokens)
 }
