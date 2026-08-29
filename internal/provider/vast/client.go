@@ -12,7 +12,7 @@ import (
 	"github.com/Marguelgtz/Stint/internal/core"
 )
 
-const DefaultBaseURL = "https://console.vast.ai/api/v0"
+const DefaultBaseURL = "https://console.vast.ai"
 
 type Provider interface {
 	SearchOffers(context.Context, core.Profile) ([]core.Offer, error)
@@ -38,30 +38,44 @@ func (c *Client) VerifyAuth(ctx context.Context) error {
 	if c.APIKey == "" {
 		return errors.New("Vast API key is empty")
 	}
-	baseURL := strings.TrimRight(c.BaseURL, "/")
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/instances/", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("/api/v1/instances"), nil)
 	if err != nil {
 		return fmt.Errorf("build Vast auth request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	client := c.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
-	}
-	resp, err := client.Do(req)
+	c.authorize(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return fmt.Errorf("contact Vast: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		detail := strings.TrimSpace(string(body))
-		if detail != "" {
-			return fmt.Errorf("Vast authentication failed (%s): %s", resp.Status, detail)
-		}
-		return fmt.Errorf("Vast authentication failed (%s)", resp.Status)
+		return responseError("Vast authentication failed", resp)
 	}
 	return nil
+}
+
+func (c *Client) endpoint(path string) string {
+	return strings.TrimRight(c.BaseURL, "/") + path
+}
+
+func (c *Client) authorize(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+}
+
+func (c *Client) httpClient() *http.Client {
+	if c.HTTPClient != nil {
+		return c.HTTPClient
+	}
+	return &http.Client{Timeout: 15 * time.Second}
+}
+
+func responseError(prefix string, resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	detail := strings.TrimSpace(string(body))
+	if detail != "" {
+		return fmt.Errorf("%s (%s): %s", prefix, resp.Status, detail)
+	}
+	return fmt.Errorf("%s (%s)", prefix, resp.Status)
 }
 
 // SearchOffers remains intentionally non-mutating and is implemented in Phase 2.
