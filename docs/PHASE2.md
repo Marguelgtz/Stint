@@ -2,17 +2,7 @@
 
 ## Outcome
 
-Phase 2 turns `stint plan interactive` into a real, read-only Vast marketplace decision engine.
-
-The command must answer:
-
-```text
-Which real RTX 4090 should Stint use right now,
-for this requested duration,
-within hard cost/reliability/network/runtime constraints?
-```
-
-It must not be capable of renting, stopping, or destroying compute.
+Phase 2 turns `stint plan interactive` into a real, read-only Vast marketplace decision engine. It must discover real RTX 4090 inventory, explain why candidates do or do not qualify, rank eligible machines deterministically, and remain incapable of renting, stopping, or destroying compute.
 
 ## Product invariant
 
@@ -22,261 +12,244 @@ Cline will eventually remain fixed on:
 http://127.0.0.1:8409/v1
 ```
 
-Phase 2 does not create that tunnel yet. It establishes that Stint can safely select the remote worker Phase 3 will attach to that local endpoint.
+Phase 2 does not create that tunnel. It proves that Stint can safely choose the worker Phase 3 will attach to the endpoint.
 
 ## Authentication boundary
 
-Stint product identity follows Spark: GitHub OAuth for human identity and GitHub App authorization for repositories. Vast authentication remains a separate local BYOC provider credential. See `docs/AUTH.md`.
+Stint product identity follows Spark: GitHub OAuth for human identity and GitHub App authorization for repositories. Vast remains a separate local BYOC provider credential. Phase 2 requires only `instance_read` and `misc/search`. No `instance_write` path exists.
 
-For this local pre-v0 phase, no hosted Stint login is required. `stint auth vast` verifies only the provider capabilities needed for planning and future lifecycle inspection:
+## Marketplace policy
 
-- `instance_read`
-- `misc` / marketplace search
+The Phase 2.1 policy deliberately separates provider discovery, hard eligibility, and preferences.
 
-No `instance_write` call exists in Phase 2.
+### Provider discovery filters
 
-## Execution sequence
-
-### 1. Correct and narrow the Vast transport
-
-Use current Vast endpoints directly from Go:
+These are sent to Vast to bound inventory without hiding useful candidates from Stint:
 
 ```text
-GET  /api/v1/instances   provider auth / instance_read check
-POST /api/v0/bundles     read-only offer search / misc permission
-```
-
-The client must:
-
-- send Bearer auth only to the configured Vast origin
-- apply bounded request timeouts
-- cap error bodies and response bodies
-- classify 401, 403 and 429 into actionable errors
-- never log the API key
-- expose no generic mutation method
-
-### 2. Search with the actual Phase 3 shape
-
-The marketplace query must model the machine Stint intends to create, rather than showing unrealistically cheap default pricing.
-
-Interactive pre-v0 policy:
-
-```text
-GPU                     RTX_4090 only
+GPU                     RTX_4090
 GPU count               1
 verified                true
 rentable                true
 already rented          false
+instance type           on-demand
+offer duration          >= requested stint duration
+allocated storage       50 GB
+discovery price guard   <= $0.60/hour
+limit                   250 candidates
+```
+
+The `$0.60/hour` discovery guard is not the Stint budget. It only prevents clearly irrelevant inventory from dominating the response. Stint still enforces its stricter local `$0.40/hour` hard ceiling.
+
+### Hard local eligibility
+
+Every normalized offer is independently evaluated by Stint. An offer is rejected when any of these fail:
+
+```text
+GPU                     RTX_4090
 hourly total            <= $0.40
 reliability             >= 0.985
 GPU RAM                 >= 24,000 MB
-GPU max power           >= 350 W
 direct ports            >= 1
-internet download       >= 100 MB/s
-allocated storage       50 GB
-offer duration          >= requested stint duration
-instance type           on-demand
+verified                true
+rentable                true
+already rented          false
 ```
 
-Vast's `inet_down` search field is documented in MB/s; Stint keeps that unit explicit in policy, code, JSON, and CLI output.
+Session cost remains independently capped at `$2.50`.
 
-`allocated_storage=50` is included in the Vast search so `dph_total` reflects the intended disk allocation instead of Vast's smaller default allocation.
+### Preferences, not hard gates
 
-### 3. Normalize provider data at the boundary
+These are surfaced and used in ranking but do not make an otherwise valid offer disappear:
 
-Vast response DTOs stay inside `internal/provider/vast`.
+```text
+internet download       preferred >= 50 MB/s
+GPU max power           preferred >= 350 W
+DLPerf                  higher is better
+```
 
-Only durable Stint concepts enter `core.Offer`:
+Network throughput is not a reliable proxy for inference latency after the model is loaded. GPU power is also a proxy rather than an outcome. Phase 3 can replace both with measured startup time, TTFT, prompt throughput, and decode throughput.
 
-- offer ID
-- canonical GPU model
-- VRAM / max power
-- total hourly cost
-- reliability / DLPerf
-- network throughput and download cost
-- direct-port count
-- location
-- machine ID
-- verified/rentable/rented flags
+## Deterministic interactive ranking
 
-No raw Vast response leaks into the planner or CLI.
-
-### 4. Re-apply every hard constraint locally
-
-Server-side search is an optimization, not a trust boundary.
-
-After normalization, `core.Qualifies` must independently reject an offer when any hard constraint fails.
-
-This protects Stint against:
-
-- API behavior changes
-- stale marketplace rows
-- provider filter regressions
-- malformed fixtures/tests
-- future provider adapters that do weaker server-side filtering
-
-Stint never silently relaxes price, reliability, network, power, VRAM or direct-port limits.
-
-### 5. Rank for interactive latency
-
-Among qualifying offers, deterministic ranking is:
+Among hard-eligible offers:
 
 ```text
 1. preferred GPU order
 2. higher DLPerf
 3. higher reliability
-4. higher GPU max-power allowance
+4. higher internet download throughput
 5. lower total hourly cost
-6. offer ID tie-break
+6. higher GPU max-power allowance
+7. offer ID tie-break
 ```
 
-Network is a hard provisioning threshold, not treated as measured inference latency. Geography is surfaced but does not receive an invented latency score in Phase 2.
+The ordering stays explicit and inspectable. No opaque weighted score is introduced in Phase 2.
 
-Phase 4 can replace heuristics with measured TTFT / request latency data.
+## Diagnostic contract
 
-### 6. Enforce both hourly and session budgets
+The planner must never collapse a real marketplace search to an unexplained `zero offers` result when Vast returned candidates.
 
-Planning must fail closed when either boundary is exceeded:
+For every search Stint computes `OfferEvaluation` records with all hard rejection reasons. The CLI reports:
 
 ```text
-hourly ceiling    $0.40/hour
-session ceiling   $2.50
-```
+MARKETPLACE DIAGNOSTICS
+Candidates inspected  N
+Hard qualified        M
 
-For example, a valid `$0.40/hour` worker is acceptable for five hours but an eight-hour plan is rejected because `$3.20` exceeds the session ceiling.
+Rejected by hard constraint:
+  price               ...
+  reliability         ...
+  direct_ports        ...
+  vram                ...
+  ...
 
-### 7. Make live planning the default UX
+Closest rejected candidates:
+  location  price  reliability  DLPerf  network  power  fails=[...]
 
-```bash
-stint plan interactive --hours 5
-```
-
-uses the real marketplace.
-
-Development escape hatches remain explicit:
-
-```bash
-stint plan interactive --hours 5 --fixture
-stint plan interactive --hours 5 --json
-```
-
-Live deep planning remains out of scope until the single-worker path is proven.
-
-### 8. Show the decision, alternatives and safety state
-
-Human output must contain:
-
-- selected offer
-- location
-- hourly cost
-- reliability
-- DLPerf
-- network
-- direct ports
-- GPU power ceiling
-- up to three alternatives
-- requested duration
-- planned storage
-- estimated compute cost
-- hourly/session ceilings
-- provider download charge when reported
-
-Every human plan ends with:
-
-```text
 NO COMPUTE HAS BEEN RENTED.
 ```
 
-JSON includes explicit `mutating=false` and `computeRented=false` fields.
+JSON planning output includes the same diagnostics. A failed plan still exits non-zero after printing the diagnostic evidence.
 
-## Failure states
+## Precise Phase 2.1 action plan
 
-Phase 2 must produce specific failures rather than generic HTTP errors:
+### A. Baseline real-machine observation
 
-```text
-401   API key rejected; re-authenticate
-403   missing misc/search permission
-429   Vast rate limit; retry later
-timeout/network   provider unavailable
-malformed JSON    provider response rejected
-zero offers       no policy-compliant 4090 currently available
-budget exceeded   plan rejected
-```
+- [x] Build Stint locally.
+- [x] Verify `instance_read` against the real Vast account.
+- [x] Verify `misc/search` against the real Vast account.
+- [x] Verify OpenSSH, Stint SSH key, and local port 8409.
+- [x] Run `stint plan interactive --hours 1` against Vast.
+- [x] Record that the original strict provider query returned no qualifying offer.
+- [x] Run the fixture planner and verify ranking/session output.
 
-No failure path broadens the policy automatically.
+### B. Correct provider/planner boundary
 
-## Verification
+- [x] Remove reliability, network, direct-port, VRAM and power policy thresholds from the Vast discovery request.
+- [x] Keep provider-side inventory identity/safety filters and duration/storage shape.
+- [x] Add a bounded `$0.60/hour` discovery guard.
+- [x] Increase candidate discovery limit to 250.
+- [x] Keep all actual Stint eligibility checks local.
 
-Required unit coverage:
+### C. Separate hard constraints and preferences
 
-- current `/api/v1/instances` auth route
-- Bearer header
-- exact read-only `/api/v0/bundles` method/path
-- on-demand request type
-- RTX 4090 filter
-- GPU count
-- requested duration
-- 50 GB allocated storage pricing
-- hourly cap
-- reliability threshold
-- network threshold
-- direct-port threshold
-- VRAM threshold
-- GPU power threshold
-- response normalization
-- 401 / 403 / 429 handling
-- malformed response
-- local fail-closed constraints
-- deterministic ranking
-- session-cost ceiling
+- [x] Keep price, reliability, VRAM, direct ports and provider state as hard eligibility.
+- [x] Convert network throughput from a hard gate to a ranking preference.
+- [x] Convert GPU max power from a hard gate to a ranking preference.
+- [x] Keep the `$0.40/hour` and `$2.50/session` safety ceilings unchanged.
 
-An explicit integration test may query Vast only when:
+### D. Make failures explainable
+
+- [x] Add typed rejection reasons.
+- [x] Add `EvaluateOffer` / `EvaluateOffers`.
+- [x] Count all rejection reasons instead of only first failure.
+- [x] Show up to three closest rejected candidates.
+- [x] Emit diagnostics in JSON and human output.
+- [x] Preserve explicit `mutating=false` / `computeRented=false` safety state.
+
+### E. Regression coverage
+
+- [x] Test that provider discovery no longer applies local reliability/network/port/VRAM/power gates.
+- [x] Test that network and power do not hard-reject an offer.
+- [x] Test that multiple hard rejection reasons are retained.
+- [x] Keep deterministic ranking tests.
+- [x] Keep session budget tests.
+- [ ] CI `go test ./...` green on the final Phase 2.1 head.
+- [ ] CI `go vet ./...` green on the final Phase 2.1 head.
+
+### F. Real-account rerun
+
+After pulling the final branch locally:
 
 ```bash
-STINT_VAST_INTEGRATION=1 VAST_API_KEY=... go test ./internal/provider/vast -run Integration
-```
-
-The integration test is search-only.
-
-## Acceptance run on the developer machine
-
-```bash
+git pull
 make build
-./bin/stint auth vast
 ./bin/stint doctor
 ./bin/stint plan interactive --hours 1
-./bin/stint plan interactive --hours 5
-./bin/stint plan interactive --hours 5 --json
+./bin/stint plan interactive --hours 1 --json
 ```
 
-Then verify in Vast that:
+Record the real candidate count, hard-qualified count, dominant rejection reasons, and selected machine. Do not relax any remaining hard constraint without evidence from this output.
 
-- no instance exists because of these commands
-- account balance has not incurred compute rental
-- selected offer exists in the marketplace
-- GPU is one RTX 4090
-- displayed `dph_total` matches the provider result
+### G. Phase 2 exit gate
 
-Repeat the plan several times to exercise marketplace churn.
+- [ ] Real marketplace returns candidate inventory.
+- [ ] At least one hard-qualified RTX 4090 is found, or diagnostics identify the exact remaining blocker.
+- [ ] Selected offer is <= `$0.40/hour`.
+- [ ] Session budget is enforced.
+- [ ] Repeated plan commands create zero instances.
+- [ ] Vast balance/instance list confirms no compute rental from planning.
+- [ ] CI green.
+- [ ] Findings below updated with the real rerun.
 
-## Exit gate
+Only after this gate should Phase 3 introduce the first mutating capability.
 
-Phase 2 is complete only when:
+## Findings log
+
+### Finding 01 — 2026-08-29: real account setup passes
+
+Observed on the developer machine:
 
 ```text
-[ ] Phase 1 doctor passes on the real machine
-[ ] instance_read capability passes
-[ ] misc/search capability passes
-[ ] real RTX 4090 offers are returned
-[ ] all hard constraints are locally revalidated
-[ ] deterministic winner + alternatives are displayed
-[ ] requested storage/duration are priced into the query
-[ ] session budget is enforced
-[ ] errors fail closed
-[ ] repeated plans create zero instances
-[ ] go test ./... passes
-[ ] go vet ./... passes
-[ ] Spark observes the PR/evidence
+Vast instance read   ✓ instance_read authorized
+Vast search          ✓ misc/search authorized
+OpenSSH              ✓ /usr/bin/ssh
+Stint SSH key        ✓ local keypair ready; Vast registration not verified
+Local port 8409      ✓ available for Cline tunnel
 ```
 
-Only then may Phase 3 add the first mutating provider capability: create exactly the already-selected offer under a hard session budget and guaranteed cleanup path.
+Conclusion: authentication, local prerequisites, and search permission are not the cause of the planner failure.
+
+### Finding 02 — 2026-08-29: original live policy produced zero qualifying offers
+
+Command:
+
+```bash
+./bin/stint plan interactive --hours 1
+```
+
+Observed:
+
+```text
+Searching Vast for interactive compute...
+stint: no qualifying interactive offers found within the hard policy limits
+```
+
+Conclusion: the original server-side query was too restrictive to diagnose. It filtered by price, reliability, network, direct ports, VRAM and GPU power before Stint could inspect the candidate population.
+
+### Finding 03 — 2026-08-29: planner logic works with known-good inventory
+
+Fixture command succeeded and selected the expected higher-DLPerf 4090 at `$0.350/hour`, with a `$0.35` one-hour session estimate and a `$2.50` session ceiling.
+
+Conclusion: the failure is marketplace-policy interaction, not basic ranking/session-plan mechanics.
+
+### Finding 04 — Phase 2.1 code change
+
+Implemented:
+
+- broad read-only Vast discovery
+- local hard eligibility
+- network/power preferences
+- typed rejection diagnostics
+- candidate and rejection counts
+- closest rejected offer output
+
+Pending evidence:
+
+```text
+CI result:                    PENDING
+Real candidates inspected:   PENDING
+Hard-qualified candidates:   PENDING
+Dominant rejection reason:   PENDING
+Selected offer:              PENDING
+Selected hourly price:       PENDING
+Selected DLPerf:             PENDING
+Selected reliability:        PENDING
+Selected network:            PENDING
+Selected GPU power:          PENDING
+```
+
+## Safety invariant
+
+Every Phase 2 human plan or diagnostic failure must make clear that no compute was rented. No provider mutation method is introduced by this phase.
