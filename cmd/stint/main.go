@@ -415,8 +415,13 @@ func runStatus() error {
 		fmt.Printf("Last error         %s\n", lastError)
 	}
 	fmt.Printf("Auto-destroy       %s\n", state.Deadline.Local().Format(time.RFC1123))
-	if state.Status == sessionstate.StatusRecoverable || checkpointIsRecoverable(state.Checkpoint) && state.Status != sessionstate.StatusReady {
+	switch state.Status {
+	case sessionstate.StatusRecoverable:
 		fmt.Println("Next action        stint resume")
+	case sessionstate.StatusReady:
+		fmt.Println("Next action        use Cline; stint down when finished")
+	default:
+		fmt.Println("Next action        wait for stint start")
 	}
 	return nil
 }
