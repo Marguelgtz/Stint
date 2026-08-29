@@ -1,8 +1,12 @@
-name: CI
+name: Stint CI
 
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   spark-profile:
@@ -10,56 +14,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify Spark profile exists
-        run: test -s .spark/profile.yml
-      - name: Verify profile maps Stint's high-risk surfaces
+      - name: Validate Spark profile exists and tracks Go paths
+        shell: bash
         run: |
-          grep -q 'id: vast-compute-provider' .spark/profile.yml
-          grep -q 'id: model-runtime' .spark/profile.yml
-          grep -q 'id: spark-collaboration' .spark/profile.yml
+          test -f .spark/profile.yml
+          grep -q 'cmd/stint/\*\*' .spark/profile.yml
+          grep -q 'internal/provider/vast/\*\*' .spark/profile.yml
+          grep -q 'go-vet' .spark/profile.yml
 
-  typecheck:
-    name: typecheck
+  go-vet:
+    name: go-vet
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-go@v5
         with:
-          version: 10.15.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile=false
-      - run: pnpm typecheck
+          go-version-file: go.mod
+          cache: false
+      - run: go vet ./...
 
   unit-tests:
     name: unit-tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-go@v5
         with:
-          version: 10.15.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile=false
-      - run: pnpm test
-
-  build:
-    name: build
-    runs-on: ubuntu-latest
-    needs: [spark-profile, typecheck, unit-tests]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.15.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile=false
-      - run: pnpm build
+          go-version-file: go.mod
+          cache: false
+      - run: go test ./...

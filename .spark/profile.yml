@@ -3,71 +3,71 @@ version: 1
 areas:
   - id: interactive-control-plane
     paths:
-      - "apps/cli/**"
-      - "packages/core/**"
-      - "packages/router/**"
+      - "cmd/stint/**"
+      - "internal/core/**"
+      - "internal/router/**"
     criticality: high
     owners:
       - "@Marguelgtz"
     expected_evidence:
-      - typecheck
+      - go-vet
       - unit-tests
 
   - id: vast-compute-provider
     paths:
-      - "packages/provider-vast/**"
+      - "internal/provider/vast/**"
     criticality: high
     owners:
       - "@Marguelgtz"
     expected_evidence:
-      - typecheck
+      - go-vet
       - unit-tests
 
   - id: model-runtime
     paths:
-      - "packages/runtime-llama/**"
+      - "internal/runtime/llama/**"
     criticality: high
     owners:
       - "@Marguelgtz"
     expected_evidence:
-      - typecheck
+      - go-vet
       - unit-tests
 
   - id: spark-collaboration
     paths:
-      - "packages/spark/**"
-      - "packages/contracts/**"
+      - "internal/spark/**"
+      - "internal/collaboration/**"
     criticality: high
     owners:
       - "@Marguelgtz"
     expected_evidence:
-      - typecheck
-      - unit-tests
       - spark-profile
+      - go-vet
+      - unit-tests
 
   - id: fallback-inference
     paths:
-      - "packages/provider-cloudflare/**"
+      - "internal/provider/cloudflare/**"
     criticality: medium
     owners:
       - "@Marguelgtz"
     expected_evidence:
-      - typecheck
+      - go-vet
       - unit-tests
 
   - id: release-and-automation
     paths:
       - ".github/workflows/**"
       - ".spark/profile.yml"
-      - "package.json"
-      - "pnpm-workspace.yaml"
+      - "go.mod"
+      - "Makefile"
       - "stint.config.example.yaml"
     criticality: high
     owners:
       - "@Marguelgtz"
     expected_evidence:
       - spark-profile
-      - typecheck
+      - go-vet
       - unit-tests
 
   - id: developer-documentation

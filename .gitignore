@@ -1,9 +1,5 @@
-node_modules/
-dist/
+/bin/
+/stint.config.yaml
 .env
-.env.*
-!.env.example
-.stint/
-coverage/
-*.log
 .DS_Store
+*.log

@@ -1,54 +1,36 @@
-# Roadmap
+# Pre-V0 roadmap
 
-## Milestone 0 — Planner + Spark dogfood
+## 0. Go foundation
 
-- [x] Monorepo scaffold
-- [x] Core topology/profile types
-- [x] Deterministic offer ranking function
-- [x] Dry-run CLI plan command
-- [x] Spark package/integration boundary
-- [x] `.spark/profile.yml` for the Stint repository
-- [x] Stable CI evidence names for Spark (`spark-profile`, `typecheck`, `unit-tests`)
-- [x] Spark onboarding CLI/checklist
-- [ ] Create/push `Marguelgtz/stint`
-- [ ] Install Spark GitHub App for the Stint repo
-- [ ] Verify first Stint PR appears in Spark trajectory/history
-- [ ] YAML Stint config loader
-- [ ] Vast CLI/API search adapter
-- [ ] Price/reliability policy tests against normalized live offers
+- [x] Go module and CLI.
+- [x] Deterministic interactive/deep ranking.
+- [x] Spark profile and CI evidence.
+- [x] No mutating GPU operations.
 
-## Milestone 1 — Interactive stint
+## 1. Interactive 4090 planner
 
-- [ ] Search Vast for qualifying 4090-class offers
-- [ ] Create instance
-- [ ] Bootstrap llama.cpp runtime
-- [ ] Load Qwen3.8-27B + MTP
-- [ ] Health check
-- [ ] Establish stable local endpoint (`localhost:8409`)
-- [ ] Hard timed teardown
-- [ ] Cloudflare fallback
-- [ ] Record provisioning/runtime changes through normal Spark-observed PRs
+- [ ] Read Vast API key from local environment/config.
+- [ ] Query live marketplace offers read-only.
+- [ ] Normalize Vast offer fields into `core.Offer`.
+- [ ] Rank for latency within hard price/reliability limits.
+- [ ] Print selected offer, alternatives, estimated session cost, and rejection reasons.
+- [ ] Never rent from `stint plan`.
 
-## Milestone 2 — Deep pool
+## 2. Interactive lifecycle
 
-- [ ] Provision two 3090-class workers
-- [ ] Stable endpoints (`8301`, `8302`)
-- [ ] Worker health/lease state
-- [ ] Runtime budget enforcement
-- [ ] Sleep transition: tear down interactive worker, retain deep pool
+- [ ] `stint start interactive --hours N`.
+- [ ] Explicit cost confirmation for early pre-V0.
+- [ ] Provision instance from selected offer.
+- [ ] Bootstrap llama.cpp + Qwen3.8-27B.
+- [ ] Health check and fixed localhost tunnel.
+- [ ] Persist local session state.
+- [ ] Enforce timed teardown even if the foreground CLI exits.
+- [ ] `stint status` and `stint down`.
 
-## Milestone 3 — Spark collaboration
+## 3. Deep pair
 
-- [ ] Extend Spark adapter contract beyond repo observability
-- [ ] Reciprocal builder/reviewer scheduling
-- [ ] Worktree isolation
-- [ ] Task/file ownership leases
-- [ ] Review artifacts and rework loop
-- [ ] Morning report
-
-## Milestone 4 — Routing intelligence
-
-- [ ] Model/GPU benchmark registry
-- [ ] Task-type routing
-- [ ] Heterogeneous model verification
-- [ ] Cost per validated outcome telemetry
+- [ ] Two 3090 workers under aggregate budget.
+- [ ] Separate worktrees and ownership leases.
+- [ ] Reciprocal builder/verifier loop through Spark.
+- [ ] Checkpoint/recovery for marketplace host failure.
+- [ ] Overnight report.
