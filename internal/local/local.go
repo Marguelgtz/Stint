@@ -7,6 +7,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/Marguelgtz/Stint/internal/config"
@@ -17,7 +19,35 @@ func SSHExecutable() (string, error) {
 	if err != nil {
 		return "", errors.New("OpenSSH client not found in PATH")
 	}
-	return path, nil
+	if runtime.GOOS == "windows" {
+		return path, nil
+	}
+
+	// Vast explicitly notes that SSH authentication can be transient while an
+	// instance is settling. A short-lived 255 should not tear down paid compute,
+	// especially between bootstrap, model launch, and the long-lived tunnel.
+	// Keep the retry policy below the Go lifecycle so every SSH call benefits,
+	// including the detached -N tunnel if its first connection is rejected.
+	wrapper := filepath.Join(os.TempDir(), "stint-ssh-retry")
+	script := fmt.Sprintf(`#!/bin/sh
+attempt=1
+while :; do
+  %q -o IdentitiesOnly=yes "$@"
+  status=$?
+  if [ "$status" -ne 255 ] || [ "$attempt" -ge 6 ]; then
+    exit "$status"
+  fi
+  sleep "$((attempt * 2))"
+  attempt="$((attempt + 1))"
+done
+`, path)
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		return "", fmt.Errorf("prepare resilient SSH wrapper: %w", err)
+	}
+	if err := os.Chmod(wrapper, 0o700); err != nil {
+		return "", fmt.Errorf("secure resilient SSH wrapper: %w", err)
+	}
+	return wrapper, nil
 }
 
 func EnsureSSHKey(paths config.Paths) (publicKey string, created bool, err error) {
