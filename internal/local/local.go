@@ -7,6 +7,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/Marguelgtz/Stint/internal/config"
@@ -17,7 +19,112 @@ func SSHExecutable() (string, error) {
 	if err != nil {
 		return "", errors.New("OpenSSH client not found in PATH")
 	}
-	return path, nil
+	if runtime.GOOS == "windows" {
+		return path, nil
+	}
+
+	// Vast SSH authentication can be transient while an instance is settling.
+	// More importantly, once one connection succeeds, keep that authenticated
+	// transport alive and multiplex later lifecycle commands over it. This avoids
+	// re-authenticating between runtime bootstrap, model launch, log checks, and
+	// the long-lived Cline forward.
+	//
+	// Bootstrap commands are intentionally noisy (apt, git, cmake, compiler). When
+	// the remote command contains the llama.cpp build, collapse that stream into a
+	// single terminal line showing the latest message and any CMake percentage.
+	wrapper := filepath.Join(os.TempDir(), "stint-ssh-retry")
+	script := fmt.Sprintf(`#!/bin/sh
+ssh_bin=%q
+
+progress_mode=0
+case "$*" in
+  *"cmake --build"*) progress_mode=1 ;;
+esac
+
+run_ssh() {
+  if [ "$progress_mode" -ne 1 ] || [ ! -t 1 ]; then
+    "$ssh_bin" \
+      -o IdentitiesOnly=yes \
+      -o ControlMaster=auto \
+      -o ControlPersist=15m \
+      -o "ControlPath=${TMPDIR:-/tmp}/stint-ssh-%%C" \
+      "$@"
+    return $?
+  fi
+
+  log_file="$(mktemp "${TMPDIR:-/tmp}/stint-runtime.XXXXXX")" || return 1
+  "$ssh_bin" \
+    -o IdentitiesOnly=yes \
+    -o ControlMaster=auto \
+    -o ControlPersist=15m \
+    -o "ControlPath=${TMPDIR:-/tmp}/stint-ssh-%%C" \
+    "$@" >"$log_file" 2>&1 &
+  ssh_pid=$!
+
+  latest="Preparing remote runtime..."
+  while kill -0 "$ssh_pid" 2>/dev/null; do
+    next="$(tail -n 1 "$log_file" 2>/dev/null | tr '\r\n' ' ' | cut -c1-92)"
+    if [ -n "$next" ]; then
+      latest="$next"
+    fi
+
+    pct="$(printf '%%s\n' "$latest" | sed -n 's/.*\[ *\([0-9][0-9]*\)%%\].*/\1/p' | head -n 1)"
+    if [ -z "$pct" ]; then
+      pct=0
+      pct_label=" --%%"
+    else
+      pct_label="$(printf '%%3d%%%%' "$pct")"
+    fi
+
+    width=24
+    filled=$((pct * width / 100))
+    bar=""
+    i=0
+    while [ "$i" -lt "$width" ]; do
+      if [ "$i" -lt "$filled" ]; then
+        bar="${bar}="
+      else
+        bar="${bar}-"
+      fi
+      i=$((i + 1))
+    done
+
+    printf '\r\033[2K  Runtime [%%s] %%s  %%s' "$bar" "$pct_label" "$latest"
+    sleep 0.25
+  done
+
+  wait "$ssh_pid"
+  status=$?
+  latest="$(tail -n 1 "$log_file" 2>/dev/null | tr '\r\n' ' ' | cut -c1-92)"
+
+  if [ "$status" -eq 0 ]; then
+    printf '\r\033[2K  Runtime [========================] 100%%%%  llama-server ready\n'
+  else
+    printf '\r\033[2K  Runtime [------------------------] FAILED  %%s\n' "$latest" >&2
+    tail -n 20 "$log_file" >&2
+  fi
+  rm -f "$log_file"
+  return "$status"
+}
+
+attempt=1
+while :; do
+  run_ssh "$@"
+  status=$?
+  if [ "$status" -ne 255 ] || [ "$attempt" -ge 6 ]; then
+    exit "$status"
+  fi
+  sleep "$((attempt * 2))"
+  attempt="$((attempt + 1))"
+done
+`, path)
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		return "", fmt.Errorf("prepare resilient SSH wrapper: %w", err)
+	}
+	if err := os.Chmod(wrapper, 0o700); err != nil {
+		return "", fmt.Errorf("secure resilient SSH wrapper: %w", err)
+	}
+	return wrapper, nil
 }
 
 func EnsureSSHKey(paths config.Paths) (publicKey string, created bool, err error) {
