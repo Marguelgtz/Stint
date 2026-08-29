@@ -18,6 +18,13 @@ func qualifying4090(id string, hourly, dlperf float64) Offer {
 	}
 }
 
+func qualifying3090(id string, hourly, dlperf float64) Offer {
+	o := qualifying4090(id, hourly, dlperf)
+	o.GPUModel = "RTX 3090"
+	o.GPUMaxPowerW = 350
+	return o
+}
+
 func TestInteractiveRanksLatencyBeforePrice(t *testing.T) {
 	profile := BuiltinProfiles["interactive"]
 	offers := []Offer{
@@ -27,6 +34,22 @@ func TestInteractiveRanksLatencyBeforePrice(t *testing.T) {
 	selected := SelectOffers(profile, offers)
 	if len(selected) != 1 || selected[0].ID != "fast" {
 		t.Fatalf("selected = %#v", selected)
+	}
+}
+
+func TestInteractivePrefers4090ButAllows3090Fallback(t *testing.T) {
+	profile := BuiltinProfiles["interactive"]
+	fallback := qualifying3090("3090", 0.14, 55)
+	if !Qualifies(profile, fallback) {
+		t.Fatalf("3090 fallback unexpectedly rejected: %#v", EvaluateOffer(profile, fallback))
+	}
+	selected := SelectOffers(profile, []Offer{fallback, qualifying4090("4090", 0.39, 100)})
+	if len(selected) != 1 || selected[0].ID != "4090" {
+		t.Fatalf("expected 4090 preference, selected = %#v", selected)
+	}
+	selected = SelectOffers(profile, []Offer{fallback})
+	if len(selected) != 1 || selected[0].ID != "3090" {
+		t.Fatalf("expected 3090 fallback, selected = %#v", selected)
 	}
 }
 

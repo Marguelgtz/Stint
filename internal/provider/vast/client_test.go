@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/Marguelgtz/Stint/internal/core"
@@ -45,7 +46,7 @@ func TestSearchOffersBuildsBroadReadOnlyDiscoveryRequest(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		assertFilter(t, payload, "gpu_name", "eq", "RTX_4090")
+		assertFilter(t, payload, "gpu_name", "in", []any{"RTX 4090", "RTX 3090"})
 		assertFilter(t, payload, "num_gpus", "eq", float64(1))
 		assertFilter(t, payload, "dph_total", "lte", discoveryPriceCeilingUSD)
 		for _, key := range []string{"reliability", "inet_down", "direct_port_count", "gpu_ram", "gpu_max_power"} {
@@ -60,7 +61,7 @@ func TestSearchOffersBuildsBroadReadOnlyDiscoveryRequest(t *testing.T) {
 			t.Fatalf("allocated_storage = %#v", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"offers":[{"id":123,"gpu_name":"RTX_4090","gpu_ram":24576,"gpu_max_power":300,"dph_total":0.347,"reliability":0.995,"dlperf":113.2,"inet_down":40,"inet_up":200,"inet_down_cost":0.001,"direct_port_count":2,"geolocation":"NL","machine_id":77,"verification":"verified","rentable":true,"rented":false,"num_gpus":1}]}`))
+		_, _ = w.Write([]byte(`{"offers":[{"id":123,"gpu_name":"RTX 3090","gpu_ram":24576,"gpu_max_power":350,"dph_total":0.147,"reliability":0.995,"dlperf":55.2,"inet_down":100,"inet_up":200,"inet_down_cost":0.001,"direct_port_count":2,"geolocation":"NL","machine_id":77,"verification":"verified","rentable":true,"rented":false,"num_gpus":1}]}`))
 	}))
 	defer server.Close()
 
@@ -75,7 +76,7 @@ func TestSearchOffersBuildsBroadReadOnlyDiscoveryRequest(t *testing.T) {
 		t.Fatalf("offers = %#v", offers)
 	}
 	offer := offers[0]
-	if offer.ID != "123" || offer.GPUModel != "RTX_4090" || offer.HourlyUSD != 0.347 || !offer.Verified {
+	if offer.ID != "123" || offer.GPUModel != "RTX_3090" || offer.HourlyUSD != 0.147 || !offer.Verified {
 		t.Fatalf("offer = %#v", offer)
 	}
 }
@@ -98,7 +99,7 @@ func TestSearchOffersBisectsZeroInventory(t *testing.T) {
 		case 2:
 			count = 4 // rentable inventory
 		case 3:
-			count = 3 // RTX 4090
+			count = 3 // preferred interactive GPUs
 		case 4:
 			count = 2 // one GPU
 		case 5:
@@ -112,7 +113,7 @@ func TestSearchOffersBisectsZeroInventory(t *testing.T) {
 		}
 		offers := make([]map[string]any, 0, count)
 		for i := 0; i < count; i++ {
-			offers = append(offers, map[string]any{"id": i + 1, "gpu_name": "RTX_4090"})
+			offers = append(offers, map[string]any{"id": i + 1, "gpu_name": "RTX 3090"})
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"offers": offers})
@@ -192,7 +193,7 @@ func assertFilter(t *testing.T, payload map[string]any, key, operator string, ex
 	if !ok {
 		t.Fatalf("%s filter = %#v", key, payload[key])
 	}
-	if got := filter[operator]; got != expected {
+	if got := filter[operator]; !reflect.DeepEqual(got, expected) {
 		t.Fatalf("%s.%s = %#v, want %#v", key, operator, got, expected)
 	}
 }
