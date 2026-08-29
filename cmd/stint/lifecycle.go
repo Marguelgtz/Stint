@@ -26,10 +26,11 @@ import (
 
 const (
 	clineRemotePort       = 8080
-	interactiveImage      = "ghcr.io/ggml-org/llama.cpp:server-cuda"
+	interactiveImage      = "vastai/base-image:@vastai-automatic-tag"
 	interactiveModelRef   = "ggml-org/Qwen3.8-27B-GGUF:Q4_K_M"
 	interactiveModelAlias = "qwen3.8-27b"
 	interactiveContext    = 16384
+	llamaCppRef           = "v0.3.0"
 )
 
 func runStart(args []string) error {
@@ -49,6 +50,7 @@ func runStart(args []string) error {
 	fs.SetOutput(os.Stderr)
 	hoursValue := fs.String("hours", "1", "maximum paid session duration in hours")
 	yes := fs.Bool("yes", false, "confirm the selected rental without prompting")
+	location := fs.String("location", "", "prefer an offer whose location contains this text")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -87,6 +89,12 @@ func runStart(args []string) error {
 	searchCancel()
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(*location) != "" {
+		offers, err = preferLocation(profile, offers, *location)
+		if err != nil {
+			return err
+		}
 	}
 	plan, err := core.CreateSessionPlan(profile, hours, offers)
 	if err != nil {
@@ -187,18 +195,21 @@ func runStart(args []string) error {
 	if err := waitForSSH(rootCtx, paths, state, 4*time.Minute); err != nil {
 		return err
 	}
+
+	state.Status = "RUNTIME_BOOTSTRAP"
+	if err := sessionstate.Save(paths, state); err != nil {
+		return err
+	}
+	if err := bootstrapRemoteRuntime(rootCtx, paths, state); err != nil {
+		return err
+	}
+
 	state.Status = "MODEL_STARTING"
 	if err := sessionstate.Save(paths, state); err != nil {
 		return err
 	}
-
-	fmt.Println("Starting Qwen3.8-27B Q4_K_M on the remote GPU...")
-	remoteCommand := fmt.Sprintf(
-		"mkdir -p /workspace/stint; nohup /app/llama-server -hf %s --no-mmproj --alias %s --host 127.0.0.1 --port %d -ngl all -c %d -ctk q8_0 -ctv q8_0 --flash-attn on > /workspace/stint/llama.log 2>&1 < /dev/null &",
-		interactiveModelRef, interactiveModelAlias, clineRemotePort, interactiveContext,
-	)
-	if _, err := runSSH(rootCtx, paths, state, remoteCommand); err != nil {
-		return fmt.Errorf("start remote llama server: %w", err)
+	if err := startRemoteModel(rootCtx, paths, state); err != nil {
+		return err
 	}
 
 	pid, err := startTunnel(paths, state)
@@ -212,7 +223,7 @@ func runStart(args []string) error {
 	}
 
 	fmt.Println("Downloading/loading ~19 GB model; waiting for the local OpenAI endpoint...")
-	if err := waitForModel(rootCtx, 20*time.Minute); err != nil {
+	if err := waitForModel(rootCtx, paths, state, 20*time.Minute); err != nil {
 		return err
 	}
 	state.Status = "READY"
@@ -230,6 +241,62 @@ func runStart(args []string) error {
 	fmt.Printf("Model           %s\n", interactiveModelAlias)
 	fmt.Printf("Auto-destroy    %s\n", state.Deadline.Local().Format(time.RFC1123))
 	fmt.Println("\nCline can connect now. Run `stint down` when finished.")
+	return nil
+}
+
+func preferLocation(profile core.Profile, offers []core.Offer, needle string) ([]core.Offer, error) {
+	needle = strings.ToLower(strings.TrimSpace(needle))
+	matched := make([]core.Offer, 0)
+	for _, offer := range offers {
+		if strings.Contains(strings.ToLower(offer.Geolocation), needle) && core.Qualifies(profile, offer) {
+			matched = append(matched, offer)
+		}
+	}
+	if len(matched) == 0 {
+		return nil, fmt.Errorf("no qualifying interactive offers matched --location %q; rerun without --location or choose a current marketplace location", needle)
+	}
+	return matched, nil
+}
+
+func bootstrapRemoteRuntime(ctx context.Context, paths config.Paths, state sessionstate.State) error {
+	fmt.Printf("Preparing llama.cpp %s CUDA runtime on the Vast base image...\n", llamaCppRef)
+	fmt.Println("The first bootstrap compiles llama-server once on this disposable instance; build output follows.")
+	command := fmt.Sprintf(`set -eu
+mkdir -p /workspace/stint
+if [ ! -x /workspace/stint/llama.cpp/build/bin/llama-server ]; then
+  export DEBIAN_FRONTEND=noninteractive
+  if ! command -v git >/dev/null 2>&1 || ! command -v cmake >/dev/null 2>&1 || ! command -v g++ >/dev/null 2>&1 || ! dpkg -s libcurl4-openssl-dev >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y --no-install-recommends git cmake build-essential libcurl4-openssl-dev ca-certificates
+  fi
+  rm -rf /workspace/stint/llama.cpp
+  git clone --filter=blob:none --depth 1 --branch %s https://github.com/ggml-org/llama.cpp.git /workspace/stint/llama.cpp
+  cmake -S /workspace/stint/llama.cpp -B /workspace/stint/llama.cpp/build \
+    -DGGML_CUDA=ON \
+    -DLLAMA_CURL=ON \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CUDA_ARCHITECTURES="86;89"
+  cmake --build /workspace/stint/llama.cpp/build --config Release -j "$(nproc)" --target llama-server
+fi
+/workspace/stint/llama.cpp/build/bin/llama-server --version
+`, llamaCppRef)
+	if err := runSSHStreaming(ctx, paths, state, command); err != nil {
+		return fmt.Errorf("bootstrap remote llama.cpp runtime: %w", err)
+	}
+	fmt.Println("llama.cpp runtime ready.")
+	return nil
+}
+
+func startRemoteModel(ctx context.Context, paths config.Paths, state sessionstate.State) error {
+	fmt.Println("Starting Qwen3.8-27B Q4_K_M on the remote GPU...")
+	remoteCommand := fmt.Sprintf(
+		"mkdir -p /workspace/stint; pkill -f '/workspace/stint/llama.cpp/build/bin/llama-server.*--port %d' >/dev/null 2>&1 || true; nohup /workspace/stint/llama.cpp/build/bin/llama-server -hf %s --no-mmproj --alias %s --host 127.0.0.1 --port %d -ngl all -c %d -ctk q8_0 -ctv q8_0 --flash-attn on > /workspace/stint/llama.log 2>&1 < /dev/null &",
+		clineRemotePort, interactiveModelRef, interactiveModelAlias, clineRemotePort, interactiveContext,
+	)
+	if _, err := runSSH(ctx, paths, state, remoteCommand); err != nil {
+		return fmt.Errorf("start remote llama server: %w", err)
+	}
 	return nil
 }
 
@@ -336,6 +403,7 @@ func retryAttachSSHKey(ctx context.Context, client *vast.Client, instanceID int6
 func waitForSSHMetadata(ctx context.Context, client *vast.Client, id int64, timeout time.Duration) (vast.Instance, error) {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
+	lastStatus := ""
 	for {
 		instance, err := client.ShowInstance(ctx, id)
 		if err == nil && strings.EqualFold(instance.ActualStatus, "running") && instance.SSHHost != "" && instance.SSHPort > 0 {
@@ -344,8 +412,12 @@ func waitForSSHMetadata(ctx context.Context, client *vast.Client, id int64, time
 		if err != nil {
 			lastErr = err
 		}
-		if err == nil && instance.StatusMsg != "" && !strings.EqualFold(instance.ActualStatus, "running") {
-			fmt.Printf("  Vast status: %s (%s)\n", instance.ActualStatus, instance.StatusMsg)
+		if err == nil {
+			status := strings.TrimSpace(instance.ActualStatus + " " + instance.StatusMsg)
+			if status != "" && status != lastStatus {
+				fmt.Printf("  Vast status: %s\n", status)
+				lastStatus = status
+			}
 		}
 		if time.Now().After(deadline) {
 			if lastErr != nil {
@@ -385,7 +457,33 @@ func runSSH(ctx context.Context, paths config.Paths, state sessionstate.State, r
 		return "", err
 	}
 	knownHosts := filepath.Join(paths.StateDir, "known_hosts")
-	args := []string{
+	args := sshArgs(paths, state, knownHosts, remoteCommand)
+	cmd := exec.CommandContext(ctx, ssh, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("ssh: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
+func runSSHStreaming(ctx context.Context, paths config.Paths, state sessionstate.State, remoteCommand string) error {
+	ssh, err := localenv.SSHExecutable()
+	if err != nil {
+		return err
+	}
+	knownHosts := filepath.Join(paths.StateDir, "known_hosts")
+	args := sshArgs(paths, state, knownHosts, remoteCommand)
+	cmd := exec.CommandContext(ctx, ssh, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ssh: %w", err)
+	}
+	return nil
+}
+
+func sshArgs(paths config.Paths, state sessionstate.State, knownHosts, remoteCommand string) []string {
+	return []string{
 		"-i", paths.SSHPrivateKey,
 		"-p", strconv.Itoa(state.SSHPort),
 		"-o", "BatchMode=yes",
@@ -395,12 +493,6 @@ func runSSH(ctx context.Context, paths config.Paths, state sessionstate.State, r
 		"root@" + state.SSHHost,
 		remoteCommand,
 	}
-	cmd := exec.CommandContext(ctx, ssh, args...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(out), fmt.Errorf("ssh: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return string(out), nil
 }
 
 func startTunnel(paths config.Paths, state sessionstate.State) (int, error) {
@@ -450,10 +542,12 @@ func startTunnel(paths config.Paths, state sessionstate.State) (int, error) {
 	return pid, nil
 }
 
-func waitForModel(ctx context.Context, timeout time.Duration) error {
+func waitForModel(ctx context.Context, paths config.Paths, state sessionstate.State, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 4 * time.Second}
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/models", clinePort)
+	lastLog := ""
+	lastLogCheck := time.Time{}
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
@@ -466,7 +560,24 @@ func waitForModel(ctx context.Context, timeout time.Duration) error {
 				return nil
 			}
 		}
+		if time.Since(lastLogCheck) >= 15*time.Second {
+			lastLogCheck = time.Now()
+			if tail, tailErr := runSSH(ctx, paths, state, "tail -n 1 /workspace/stint/llama.log 2>/dev/null || true"); tailErr == nil {
+				tail = strings.TrimSpace(tail)
+				if tail != "" && tail != lastLog {
+					if len(tail) > 300 {
+						tail = tail[len(tail)-300:]
+					}
+					fmt.Printf("  llama: %s\n", tail)
+					lastLog = tail
+				}
+			}
+		}
 		if time.Now().After(deadline) {
+			tail, _ := runSSH(context.Background(), paths, state, "tail -n 12 /workspace/stint/llama.log 2>/dev/null || true")
+			if strings.TrimSpace(tail) != "" {
+				return fmt.Errorf("timed out waiting for Qwen endpoint; remote llama log:\n%s", strings.TrimSpace(tail))
+			}
 			return errors.New("timed out waiting for Qwen endpoint; startup cleanup will destroy the instance")
 		}
 		select {
