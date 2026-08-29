@@ -1,0 +1,81 @@
+version: 1
+
+areas:
+  - id: interactive-control-plane
+    paths:
+      - "apps/cli/**"
+      - "packages/core/**"
+      - "packages/router/**"
+    criticality: high
+    owners:
+      - "@Marguelgtz"
+    expected_evidence:
+      - typecheck
+      - unit-tests
+
+  - id: vast-compute-provider
+    paths:
+      - "packages/provider-vast/**"
+    criticality: high
+    owners:
+      - "@Marguelgtz"
+    expected_evidence:
+      - typecheck
+      - unit-tests
+
+  - id: model-runtime
+    paths:
+      - "packages/runtime-llama/**"
+    criticality: high
+    owners:
+      - "@Marguelgtz"
+    expected_evidence:
+      - typecheck
+      - unit-tests
+
+  - id: spark-collaboration
+    paths:
+      - "packages/spark/**"
+      - "packages/contracts/**"
+    criticality: high
+    owners:
+      - "@Marguelgtz"
+    expected_evidence:
+      - typecheck
+      - unit-tests
+      - spark-profile
+
+  - id: fallback-inference
+    paths:
+      - "packages/provider-cloudflare/**"
+    criticality: medium
+    owners:
+      - "@Marguelgtz"
+    expected_evidence:
+      - typecheck
+      - unit-tests
+
+  - id: release-and-automation
+    paths:
+      - ".github/workflows/**"
+      - ".spark/profile.yml"
+      - "package.json"
+      - "pnpm-workspace.yaml"
+      - "stint.config.example.yaml"
+    criticality: high
+    owners:
+      - "@Marguelgtz"
+    expected_evidence:
+      - spark-profile
+      - typecheck
+      - unit-tests
+
+  - id: developer-documentation
+    paths:
+      - "docs/**"
+      - "README.md"
+    criticality: low
+    owners:
+      - "@Marguelgtz"
+    expected_evidence:
+      - spark-profile

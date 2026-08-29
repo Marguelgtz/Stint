@@ -1,0 +1,24 @@
+{
+  "name": "@stint/cli",
+  "version": "0.0.1",
+  "type": "module",
+  "bin": {"stint":"./dist/index.js"},
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@stint/core":"workspace:*",
+    "@stint/router":"workspace:*",
+    "@stint/spark":"workspace:*",
+    "commander":"^13.0.0"
+  },
+  "devDependencies": {
+    "tsx":"^4.19.2",
+    "typescript":"^5.7.2",
+    "vitest":"^2.1.8"
+  }
+}

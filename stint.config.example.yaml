@@ -1,0 +1,52 @@
+version: 1
+
+spark:
+  enabled: true
+  profile_path: .spark/profile.yml
+  dashboard_url: https://spark-api.marguel-gtz.workers.dev/app
+  repository:
+    owner: Marguelgtz
+    name: stint
+  policy:
+    observe_pull_requests: true
+    merge_to_main: false
+
+profiles:
+  interactive:
+    objective: latency
+    workers: 1
+    provider: vast
+    gpu:
+      prefer: [RTX_4090, RTX_5090]
+      max_hourly_usd: 0.40
+      min_reliability: 0.985
+    model:
+      id: qwen3.8-27b
+      runtime: llama.cpp
+    session:
+      default_hours: 5
+      max_cost_usd: 2.50
+
+  deep:
+    objective: validated_work_per_dollar
+    workers: 2
+    provider: vast
+    gpu:
+      prefer: [RTX_3090]
+      max_hourly_usd_each: 0.18
+      min_reliability: 0.98
+    model:
+      id: qwen3.8-27b
+      runtime: llama.cpp
+    collaboration:
+      engine: spark
+      mode: reciprocal
+      merge_to_main: false
+    session:
+      default_hours: 8
+      max_cost_usd: 3.00
+
+fallbacks:
+  interactive:
+    provider: cloudflare
+    model: "@cf/qwen/qwen3.8-27b"
