@@ -81,22 +81,33 @@ Machine-readable and fixture modes:
 ./bin/stint plan interactive --hours 5 --fixture
 ```
 
-The initial interactive policy is intentionally strict:
+The interactive planner now separates broad provider discovery from Stint's local policy.
+
+Hard local eligibility:
 
 ```text
 1 x RTX 4090
 <= $0.40/hour total
 >= 98.5% reliability
 >= 24 GB VRAM
->= 350 W GPU max-power allowance
->= 100 MB/s download
 >= 1 direct port
+verified + rentable + not already rented
 50 GB allocated storage
 on-demand only
 session ceiling $2.50
 ```
 
-The client sends these filters to Vast and then re-applies every hard constraint locally before ranking. See [`docs/PHASE2.md`](docs/PHASE2.md).
+Preferences used for ranking rather than rejection:
+
+```text
+higher DLPerf
+higher reliability
+higher network throughput (preferred >= 50 MB/s)
+lower price
+higher GPU power allowance (preferred >= 350 W)
+```
+
+Vast discovery is intentionally broader and capped at `$0.60/hour` so Stint can inspect candidates and explain hard-policy rejections instead of receiving an opaque zero-result response. Failed plans print marketplace diagnostics and still end with `NO COMPUTE HAS BEEN RENTED.` See [`docs/PHASE2.md`](docs/PHASE2.md).
 
 ## Layout
 
@@ -171,6 +182,6 @@ Stint dogfoods Spark. `.spark/profile.yml` marks compute provisioning, runtime a
 - No autonomous merge to `main` by default.
 - No provider mutation exists in Phase 2.
 - Hard hourly and session ceilings are enforced before any future provisioning.
-- Server-side marketplace filters are revalidated locally.
+- Vast discovers inventory; Stint owns eligibility and ranking.
 - Provider selection is policy-driven, not hard-coded to a host.
 - Spark observes change/evidence; Stint owns compute/runtime lifecycle.
