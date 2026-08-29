@@ -23,10 +23,11 @@ func SSHExecutable() (string, error) {
 		return path, nil
 	}
 
-	// Vast explicitly notes that SSH authentication can be transient while an
-	// instance is settling. A short-lived 255 should not tear down paid compute,
-	// especially between bootstrap, model launch, and the long-lived tunnel.
-	// Keep the retry policy below the Go lifecycle so every SSH call benefits.
+	// Vast SSH authentication can be transient while an instance is settling.
+	// More importantly, once one connection succeeds, keep that authenticated
+	// transport alive and multiplex later lifecycle commands over it. This avoids
+	// re-authenticating between runtime bootstrap, model launch, log checks, and
+	// the long-lived Cline forward.
 	//
 	// Bootstrap commands are intentionally noisy (apt, git, cmake, compiler). When
 	// the remote command contains the llama.cpp build, collapse that stream into a
@@ -42,12 +43,22 @@ esac
 
 run_ssh() {
   if [ "$progress_mode" -ne 1 ] || [ ! -t 1 ]; then
-    "$ssh_bin" -o IdentitiesOnly=yes "$@"
+    "$ssh_bin" \
+      -o IdentitiesOnly=yes \
+      -o ControlMaster=auto \
+      -o ControlPersist=15m \
+      -o "ControlPath=${TMPDIR:-/tmp}/stint-ssh-%%C" \
+      "$@"
     return $?
   fi
 
   log_file="$(mktemp "${TMPDIR:-/tmp}/stint-runtime.XXXXXX")" || return 1
-  "$ssh_bin" -o IdentitiesOnly=yes "$@" >"$log_file" 2>&1 &
+  "$ssh_bin" \
+    -o IdentitiesOnly=yes \
+    -o ControlMaster=auto \
+    -o ControlPersist=15m \
+    -o "ControlPath=${TMPDIR:-/tmp}/stint-ssh-%%C" \
+    "$@" >"$log_file" 2>&1 &
   ssh_pid=$!
 
   latest="Preparing remote runtime..."
