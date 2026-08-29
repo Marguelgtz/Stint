@@ -26,33 +26,41 @@ The work is split into four sequential phases. A later phase does not begin unti
 6. Do not relax the hard local `$0.40/hr` execution ceiling, reliability threshold, VRAM requirement, direct-port requirement, or session ceiling.
 7. Keep fixture behavior unchanged as the planner control case.
 
-### Findings to capture
+### Findings captured
 
 | Finding | Result |
 |---|---|
 | Official Vast request type | `on-demand` in current API examples |
 | Fixture planner | 2/2 candidates, fixture-fast selected |
 | Previous live full discovery | 0 candidates |
-| Rentable inventory count | pending real rerun |
-| RTX 4090 count | pending real rerun |
-| One-GPU 4090 count | pending real rerun |
-| Duration-qualified count | pending real rerun |
-| <= $0.60 discovery count | pending real rerun |
-| Full 50 GB request count | pending real rerun |
-| Root collapsing filter | pending real rerun |
+| Rentable verified on-demand inventory | 250 returned at API limit |
+| RTX 4090 within that verified/rentable inventory | 0 |
+| One-GPU 4090 count | 0 because the GPU stage already collapsed |
+| Duration-qualified count | 0 because the GPU stage already collapsed |
+| <= $0.60 discovery count | 0 because the GPU stage already collapsed |
+| Full 50 GB request count | 0 because the GPU stage already collapsed |
+| Root collapsing stage | adding `gpu_name = RTX_4090` to verified/rentable on-demand inventory |
+
+### Interpretation
+
+The live Vast API is reachable and returning a full page of verified/rentable on-demand inventory. The current account-visible marketplace query has no RTX 4090 in that verified/rentable set at the time of the acceptance run. This is different from a planner failure: the fixture path remains healthy and the provider bisect isolates the zero result before local Stint eligibility runs.
+
+The Phase 1 result does **not** prove that Vast has no RTX 4090 hosts of any kind. The bisect intentionally keeps `verified=true`, `rentable=true`, and `rented=false` in the base inventory stage. Therefore an unverified, already-rented, bid, or otherwise non-policy-compliant 4090 may still exist and is intentionally excluded.
 
 ### Exit gate
 
 ```text
-[ ] go test ./... passes
-[ ] go vet ./... passes
-[ ] Vast search uses the documented on-demand request value
-[ ] live run returns >=1 candidate OR identifies the exact provider-side collapsing stage
-[ ] fixture still passes unchanged
-[ ] no instance is created
+[x] go test ./... passes in CI for the diagnostic implementation
+[x] go vet ./... passes in CI for the diagnostic implementation
+[x] Vast search uses the documented on-demand request value
+[x] live run identifies the exact provider-side collapsing stage
+[x] fixture still passes unchanged
+[x] no instance is created
 ```
 
-If the bisect identifies a provider semantic mismatch, fix only that mismatch and repeat Phase 1 acceptance. If the marketplace genuinely has no acceptable 4090, record that result and make the fallback-GPU decision explicitly before Phase 2.
+**Phase 1 status: complete.**
+
+Before Phase 2, choose the explicit interactive fallback policy rather than silently weakening trust or budget requirements. The preferred direction for the first lifecycle proof is to keep verified hosts mandatory and permit another 24 GB+ NVIDIA GPU as a fallback when a verified RTX 4090 is unavailable. The rental implementation itself should remain GPU-agnostic once the planner has selected an eligible offer.
 
 ### Acceptance commands
 
@@ -63,7 +71,12 @@ make build
 ./bin/stint plan interactive --hours 1 --fixture
 ```
 
-A zero live result is acceptable only if its error contains the discovery bisect counts.
+Recorded live result:
+
+```text
+Vast returned zero interactive candidates; discovery bisect:
+rentable=250, gpu=0, one_gpu=0, duration=0, price=0, storage=0
+```
 
 ---
 
@@ -73,6 +86,7 @@ A zero live result is acceptable only if its error contains the discovery bisect
 
 ### Work
 
+- choose and encode the explicit interactive fallback GPU policy before enabling mutation
 - add and verify `instance_write`
 - introduce a narrowly scoped create/rent method for the selected offer only
 - revalidate offer price and session ceiling immediately before mutation
