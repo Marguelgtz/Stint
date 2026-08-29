@@ -13,20 +13,45 @@ import (
 
 const stateFileName = "session.json"
 
+const (
+	StatusRenting          = "RENTING"
+	StatusBooting          = "BOOTING"
+	StatusSSHConnecting    = "SSH_CONNECTING"
+	StatusSSHReady         = "SSH_READY"
+	StatusRuntimeBootstrap = "RUNTIME_BOOTSTRAP"
+	StatusRuntimeReady     = "RUNTIME_READY"
+	StatusModelStarting    = "MODEL_STARTING"
+	StatusModelStarted     = "MODEL_STARTED"
+	StatusModelLoading     = "MODEL_LOADING"
+	StatusReady            = "READY"
+	StatusRecoverable      = "RECOVERABLE"
+)
+
+const (
+	CheckpointInstanceCreated = "INSTANCE_CREATED"
+	CheckpointSSHReady         = "SSH_READY"
+	CheckpointRuntimeReady     = "RUNTIME_READY"
+	CheckpointModelStarted     = "MODEL_STARTED"
+	CheckpointReady            = "READY"
+)
+
 type State struct {
-	InstanceID int64     `json:"instanceId"`
-	OfferID    string    `json:"offerId"`
-	Profile    string    `json:"profile"`
-	GPUModel   string    `json:"gpuModel"`
-	HourlyUSD  float64   `json:"hourlyUsd"`
-	Hours      float64   `json:"hours"`
-	StartedAt  time.Time `json:"startedAt"`
-	Deadline   time.Time `json:"deadline"`
-	SSHHost    string    `json:"sshHost,omitempty"`
-	SSHPort    int       `json:"sshPort,omitempty"`
-	TunnelPID  int       `json:"tunnelPid,omitempty"`
-	WatchdogPID int      `json:"watchdogPid,omitempty"`
-	Status     string    `json:"status"`
+	InstanceID  int64     `json:"instanceId"`
+	OfferID     string    `json:"offerId"`
+	Profile     string    `json:"profile"`
+	GPUModel    string    `json:"gpuModel"`
+	HourlyUSD   float64   `json:"hourlyUsd"`
+	Hours       float64   `json:"hours"`
+	StartedAt   time.Time `json:"startedAt"`
+	Deadline    time.Time `json:"deadline"`
+	SSHHost     string    `json:"sshHost,omitempty"`
+	SSHPort     int       `json:"sshPort,omitempty"`
+	TunnelPID   int       `json:"tunnelPid,omitempty"`
+	WatchdogPID int       `json:"watchdogPid,omitempty"`
+	Status      string    `json:"status"`
+	Checkpoint  string    `json:"checkpoint,omitempty"`
+	LastError   string    `json:"lastError,omitempty"`
+	UpdatedAt   time.Time `json:"updatedAt,omitempty"`
 }
 
 func Path(paths config.Paths) string {
@@ -55,6 +80,7 @@ func Save(paths config.Paths, state State) error {
 	if err := paths.Ensure(); err != nil {
 		return err
 	}
+	state.UpdatedAt = time.Now().UTC()
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode session state: %w", err)
