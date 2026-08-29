@@ -165,8 +165,15 @@ func runResume(args []string) (retErr error) {
 		if err := sessionstate.Save(paths, state); err != nil {
 			return err
 		}
-		if err := bootstrapRemoteRuntime(rootCtx, paths, state); err != nil {
+		actualRuntime, err := bootstrapSelectedRuntime(rootCtx, paths, state)
+		if err != nil {
 			return err
+		}
+		if actualRuntime != state.Runtime {
+			state.Runtime = actualRuntime
+			state.ContextTokens = contextForRuntime(actualRuntime)
+			fmt.Printf("Runtime        %s\n", state.Runtime)
+			fmt.Printf("Context        %d tokens\n", state.ContextTokens)
 		}
 	}
 	state.Status = sessionstate.StatusRuntimeReady
@@ -217,7 +224,7 @@ func runResume(args []string) (retErr error) {
 			return err
 		}
 	} else {
-		fmt.Println("Remote llama-server is still running; continuing model load.")
+		fmt.Printf("Remote %s model server is still running; continuing model load.\n", runtimeForState(state))
 	}
 
 	state.Status = sessionstate.StatusModelLoading
@@ -241,7 +248,7 @@ func runResume(args []string) (retErr error) {
 }
 
 func remoteRuntimeReady(ctx context.Context, paths config.Paths, state sessionstate.State) (bool, error) {
-	out, err := runSSH(ctx, paths, state, "if [ -x /workspace/stint/llama.cpp/build/bin/llama-server ]; then echo ready; else echo missing; fi")
+	out, err := runSSH(ctx, paths, state, selectedRuntimeReadyCommand(state))
 	if err != nil {
 		return false, fmt.Errorf("check remote runtime: %w", err)
 	}
@@ -249,7 +256,8 @@ func remoteRuntimeReady(ctx context.Context, paths config.Paths, state sessionst
 }
 
 func remoteModelRunning(ctx context.Context, paths config.Paths, state sessionstate.State) (bool, error) {
-	command := `pid="$(cat /workspace/stint/llama.pid 2>/dev/null || true)"; if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo running; elif command -v pgrep >/dev/null 2>&1 && pgrep -x llama-server >/dev/null 2>&1; then echo running; else echo stopped; fi`
+	processName := selectedModelProcessName(state)
+	command := fmt.Sprintf(`pid="$(cat /workspace/stint/llama.pid 2>/dev/null || true)"; if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo running; elif command -v pgrep >/dev/null 2>&1 && pgrep -x %s >/dev/null 2>&1; then echo running; else echo stopped; fi`, processName)
 	out, err := runSSH(ctx, paths, state, command)
 	if err != nil {
 		return false, fmt.Errorf("check remote model process: %w", err)
@@ -304,6 +312,8 @@ func printReadySession(state sessionstate.State) {
 	fmt.Printf("Instance        %d\n", state.InstanceID)
 	fmt.Printf("Endpoint        http://127.0.0.1:%d/v1\n", clinePort)
 	fmt.Printf("Model           %s\n", interactiveModelAlias)
+	fmt.Printf("Runtime         %s\n", runtimeForState(state))
+	fmt.Printf("Context         %d tokens\n", contextForState(state))
 	fmt.Printf("Auto-destroy    %s\n", state.Deadline.Local().Format(time.RFC1123))
 	fmt.Println("\nCline can connect now. Run `stint down` when finished.")
 }
