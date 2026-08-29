@@ -78,6 +78,8 @@ offer duration          >= requested stint duration
 instance type           on-demand
 ```
 
+Vast's `inet_down` search field is documented in MB/s; Stint keeps that unit explicit in policy, code, JSON, and CLI output.
+
 `allocated_storage=50` is included in the Vast search so `dph_total` reflects the intended disk allocation instead of Vast's smaller default allocation.
 
 ### 3. Normalize provider data at the boundary
