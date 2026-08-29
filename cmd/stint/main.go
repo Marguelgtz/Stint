@@ -21,7 +21,7 @@ import (
 	"github.com/Marguelgtz/Stint/internal/spark"
 )
 
-const version = "0.0.6"
+const version = "0.1.0"
 const clinePort = 8409
 
 type planDiagnostics struct {
