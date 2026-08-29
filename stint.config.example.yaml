@@ -6,7 +6,7 @@ spark:
   dashboard_url: https://spark-api.marguel-gtz.workers.dev/app
   repository:
     owner: Marguelgtz
-    name: stint
+    name: Stint
   policy:
     observe_pull_requests: true
     merge_to_main: false
