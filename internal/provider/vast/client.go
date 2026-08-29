@@ -18,11 +18,29 @@ import (
 
 const DefaultBaseURL = "https://console.vast.ai"
 const discoveryPriceCeilingUSD = 0.60
+const vastOnDemandType = "on-demand"
 
 type SearchOptions struct {
 	Hours     float64
 	Limit     int
 	StorageGB float64
+}
+
+type DiscoveryStage struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+type DiscoveryEmptyError struct {
+	Stages []DiscoveryStage
+}
+
+func (e *DiscoveryEmptyError) Error() string {
+	parts := make([]string, 0, len(e.Stages))
+	for _, stage := range e.Stages {
+		parts = append(parts, fmt.Sprintf("%s=%d", stage.Name, stage.Count))
+	}
+	return "Vast returned zero interactive candidates; discovery bisect: " + strings.Join(parts, ", ")
 }
 
 type Provider interface {
@@ -105,7 +123,7 @@ func (c *Client) VerifyAuth(ctx context.Context) error {
 func (c *Client) VerifySearchAccess(ctx context.Context) error {
 	payload := map[string]any{
 		"limit":    1,
-		"type":     "ondemand",
+		"type":     vastOnDemandType,
 		"verified": map[string]any{"eq": true},
 		"rentable": map[string]any{"eq": true},
 		"rented":   map[string]any{"eq": false},
@@ -118,11 +136,37 @@ func (c *Client) VerifySearchAccess(ctx context.Context) error {
 }
 
 func (c *Client) SearchOffers(ctx context.Context, profile core.Profile, options SearchOptions) ([]core.Offer, error) {
-	if c.APIKey == "" {
-		return nil, errors.New("Vast API key is empty")
+	limit, storageGB, err := validateSearch(profile, options)
+	if err != nil {
+		return nil, err
 	}
+
+	payload := c.discoveryPayload(profile, options.Hours, limit, storageGB)
+	raw, err := c.search(ctx, payload)
+	if err != nil {
+		return nil, classifySearchError(err)
+	}
+	if len(raw) == 0 {
+		stages, traceErr := c.traceDiscovery(ctx, profile, options.Hours, limit, storageGB)
+		if traceErr != nil {
+			return nil, traceErr
+		}
+		return nil, &DiscoveryEmptyError{Stages: stages}
+	}
+
+	offers := make([]core.Offer, 0, len(raw))
+	for _, item := range raw {
+		offers = append(offers, normalizeOffer(item))
+	}
+	return offers, nil
+}
+
+func validateSearch(profile core.Profile, options SearchOptions) (int, float64, error) {
 	if options.Hours <= 0 || math.IsNaN(options.Hours) || math.IsInf(options.Hours, 0) {
-		return nil, errors.New("search hours must be greater than zero")
+		return 0, 0, errors.New("search hours must be greater than zero")
+	}
+	if len(profile.GPU.PreferredModels) == 0 {
+		return 0, 0, errors.New("profile has no preferred GPU models")
 	}
 	limit := options.Limit
 	if limit <= 0 || limit > 250 {
@@ -132,51 +176,110 @@ func (c *Client) SearchOffers(ctx context.Context, profile core.Profile, options
 	if storageGB <= 0 {
 		storageGB = profile.Session.StorageGB
 	}
-	if len(profile.GPU.PreferredModels) == 0 {
-		return nil, errors.New("profile has no preferred GPU models")
-	}
+	return limit, storageGB, nil
+}
 
+func (c *Client) discoveryPayload(profile core.Profile, hours float64, limit int, storageGB float64) map[string]any {
 	gpuFilter := map[string]any{"eq": profile.GPU.PreferredModels[0]}
 	if len(profile.GPU.PreferredModels) > 1 {
 		gpuFilter = map[string]any{"in": profile.GPU.PreferredModels}
 	}
-
-	// Provider search is deliberately broader than local eligibility. Vast discovers
-	// inventory; Stint owns hard policy and ranking so failed plans remain diagnosable.
-	payload := map[string]any{
+	return map[string]any{
 		"limit":             limit,
-		"type":              "ondemand",
+		"type":              vastOnDemandType,
 		"verified":          map[string]any{"eq": true},
 		"rentable":          map[string]any{"eq": true},
 		"rented":            map[string]any{"eq": false},
 		"gpu_name":          gpuFilter,
 		"num_gpus":          map[string]any{"eq": 1},
 		"dph_total":         map[string]any{"lte": discoveryPriceCeilingUSD},
-		"duration":          map[string]any{"gte": int(math.Ceil(options.Hours * 3600))},
+		"duration":          map[string]any{"gte": int(math.Ceil(hours * 3600))},
 		"allocated_storage": storageGB,
 		"order":             [][]string{{"dlperf", "desc"}, {"dph_total", "asc"}},
 	}
+}
 
-	raw, err := c.search(ctx, payload)
-	if err != nil {
-		if apiErr := (*APIError)(nil); errors.As(err, &apiErr) {
-			switch apiErr.StatusCode {
-			case http.StatusUnauthorized:
-				return nil, errors.New("Vast API key was rejected; run: stint auth vast")
-			case http.StatusForbidden:
-				return nil, errors.New("Vast API key lacks misc/search permission")
-			case http.StatusTooManyRequests:
-				return nil, errors.New("Vast API rate limit reached; retry later")
-			}
+func (c *Client) traceDiscovery(ctx context.Context, profile core.Profile, hours float64, limit int, storageGB float64) ([]DiscoveryStage, error) {
+	gpuFilter := map[string]any{"eq": profile.GPU.PreferredModels[0]}
+	if len(profile.GPU.PreferredModels) > 1 {
+		gpuFilter = map[string]any{"in": profile.GPU.PreferredModels}
+	}
+
+	payloads := []struct {
+		name    string
+		payload map[string]any
+	}{
+		{
+			name: "rentable",
+			payload: map[string]any{
+				"limit": limit, "type": vastOnDemandType,
+				"verified": map[string]any{"eq": true}, "rentable": map[string]any{"eq": true}, "rented": map[string]any{"eq": false},
+			},
+		},
+		{
+			name: "gpu",
+			payload: map[string]any{
+				"limit": limit, "type": vastOnDemandType,
+				"verified": map[string]any{"eq": true}, "rentable": map[string]any{"eq": true}, "rented": map[string]any{"eq": false},
+				"gpu_name": gpuFilter,
+			},
+		},
+		{
+			name: "one_gpu",
+			payload: map[string]any{
+				"limit": limit, "type": vastOnDemandType,
+				"verified": map[string]any{"eq": true}, "rentable": map[string]any{"eq": true}, "rented": map[string]any{"eq": false},
+				"gpu_name": gpuFilter, "num_gpus": map[string]any{"eq": 1},
+			},
+		},
+		{
+			name: "duration",
+			payload: map[string]any{
+				"limit": limit, "type": vastOnDemandType,
+				"verified": map[string]any{"eq": true}, "rentable": map[string]any{"eq": true}, "rented": map[string]any{"eq": false},
+				"gpu_name": gpuFilter, "num_gpus": map[string]any{"eq": 1},
+				"duration": map[string]any{"gte": int(math.Ceil(hours * 3600))},
+			},
+		},
+		{
+			name: "price",
+			payload: map[string]any{
+				"limit": limit, "type": vastOnDemandType,
+				"verified": map[string]any{"eq": true}, "rentable": map[string]any{"eq": true}, "rented": map[string]any{"eq": false},
+				"gpu_name": gpuFilter, "num_gpus": map[string]any{"eq": 1},
+				"duration": map[string]any{"gte": int(math.Ceil(hours * 3600))},
+				"dph_total": map[string]any{"lte": discoveryPriceCeilingUSD},
+			},
+		},
+		{
+			name: "storage",
+			payload: c.discoveryPayload(profile, hours, limit, storageGB),
+		},
+	}
+
+	stages := make([]DiscoveryStage, 0, len(payloads))
+	for _, item := range payloads {
+		raw, err := c.search(ctx, item.payload)
+		if err != nil {
+			return nil, classifySearchError(err)
 		}
-		return nil, err
+		stages = append(stages, DiscoveryStage{Name: item.name, Count: len(raw)})
 	}
+	return stages, nil
+}
 
-	offers := make([]core.Offer, 0, len(raw))
-	for _, item := range raw {
-		offers = append(offers, normalizeOffer(item))
+func classifySearchError(err error) error {
+	if apiErr := (*APIError)(nil); errors.As(err, &apiErr) {
+		switch apiErr.StatusCode {
+		case http.StatusUnauthorized:
+			return errors.New("Vast API key was rejected; run: stint auth vast")
+		case http.StatusForbidden:
+			return errors.New("Vast API key lacks misc/search permission")
+		case http.StatusTooManyRequests:
+			return errors.New("Vast API rate limit reached; retry later")
+		}
 	}
-	return offers, nil
+	return err
 }
 
 func (c *Client) search(ctx context.Context, payload map[string]any) ([]rawOffer, error) {
