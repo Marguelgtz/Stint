@@ -35,10 +35,8 @@ func TestHardConstraintsFailClosed(t *testing.T) {
 	cases := []Offer{
 		func() Offer { o := qualifying4090("price", 0.41, 120); return o }(),
 		func() Offer { o := qualifying4090("reliability", 0.35, 120); o.Reliability = 0.98; return o }(),
-		func() Offer { o := qualifying4090("network", 0.35, 120); o.InetDownMBps = 99; return o }(),
 		func() Offer { o := qualifying4090("ports", 0.35, 120); o.DirectPortCount = 0; return o }(),
 		func() Offer { o := qualifying4090("ram", 0.35, 120); o.GPURAMMB = 16000; return o }(),
-		func() Offer { o := qualifying4090("power", 0.35, 120); o.GPUMaxPowerW = 300; return o }(),
 		func() Offer { o := qualifying4090("unverified", 0.35, 120); o.Verified = false; return o }(),
 		func() Offer { o := qualifying4090("not-rentable", 0.35, 120); o.Rentable = false; return o }(),
 		func() Offer { o := qualifying4090("rented", 0.35, 120); o.Rented = true; return o }(),
@@ -47,6 +45,34 @@ func TestHardConstraintsFailClosed(t *testing.T) {
 		if Qualifies(profile, offer) {
 			t.Fatalf("offer %q unexpectedly qualified", offer.ID)
 		}
+	}
+}
+
+func TestNetworkAndPowerArePreferencesNotHardGates(t *testing.T) {
+	profile := BuiltinProfiles["interactive"]
+	offer := qualifying4090("soft", 0.35, 100)
+	offer.InetDownMBps = 20
+	offer.GPUMaxPowerW = 250
+	if !Qualifies(profile, offer) {
+		t.Fatalf("offer unexpectedly rejected: %#v", EvaluateOffer(profile, offer))
+	}
+}
+
+func TestEvaluateOfferReportsAllHardRejections(t *testing.T) {
+	profile := BuiltinProfiles["interactive"]
+	offer := qualifying4090("bad", 0.50, 100)
+	offer.Reliability = 0.90
+	offer.DirectPortCount = 0
+	evaluation := EvaluateOffer(profile, offer)
+	if evaluation.Qualified {
+		t.Fatal("expected rejection")
+	}
+	want := map[RejectionReason]bool{RejectPrice: true, RejectReliability: true, RejectPorts: true}
+	for _, reason := range evaluation.Rejections {
+		delete(want, reason)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing rejection reasons: %#v; evaluation=%#v", want, evaluation)
 	}
 }
 
