@@ -45,6 +45,7 @@ func runStartResumable(args []string) (retErr error) {
 	yes := fs.Bool("yes", false, "confirm the selected rental without prompting")
 	location := fs.String("location", "", "prefer an offer whose location contains this text")
 	runtimeValue := fs.String("runtime", runtimeAuto, "inference runtime: auto, ninfer, or llama.cpp")
+	ninferConfigValue := fs.String("ninfer-config", ninferConfigCoding, "NInfer config: coding, precision, or native")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -53,6 +54,10 @@ func runStartResumable(args []string) (retErr error) {
 		return fmt.Errorf("invalid --hours value %q", *hoursValue)
 	}
 	runtimeRequest, err := normalizeRuntime(*runtimeValue)
+	if err != nil {
+		return err
+	}
+	requestedNInferConfig, err := resolveNInferConfig(*ninferConfigValue)
 	if err != nil {
 		return err
 	}
@@ -108,6 +113,9 @@ func runStartResumable(args []string) (retErr error) {
 		return err
 	}
 	selectedContext := contextForRuntime(selectedRuntime)
+	if selectedRuntime == runtimeNInfer {
+		selectedContext = requestedNInferConfig.ContextTokens
+	}
 
 	fmt.Println()
 	fmt.Println("READY TO RENT")
@@ -122,6 +130,9 @@ func runStartResumable(args []string) (retErr error) {
 		fmt.Print(" (auto)")
 	}
 	fmt.Println()
+	if selectedRuntime == runtimeNInfer {
+		fmt.Printf("NInfer config  %s (%s)\n", requestedNInferConfig.Name, requestedNInferConfig.Description)
+	}
 	fmt.Printf("Context        %d tokens\n", selectedContext)
 	fmt.Printf("Cline endpoint http://127.0.0.1:%d/v1\n", clinePort)
 	fmt.Println()
