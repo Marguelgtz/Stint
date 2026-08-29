@@ -1,0 +1,124 @@
+diff --git a/internal/runtime/llama/config.go b/internal/runtime/llama/config.go
+--- a/internal/runtime/llama/config.go
++++ b/internal/runtime/llama/config.go
+@@ -4,6 +4,18 @@ const DefaultInteractivePort = 8409
+ const DefaultDeepAPort = 8301
+ const DefaultDeepBPort = 8302
+
+-type Config struct { Model string; Context int; Port int }
++type Config struct {
++	Model     string
++	Context   int
++	MaxOutput int
++	Port      int
++}
+
+-func InteractiveQwen() Config { return Config{Model: "qwen3.8-27b", Context: 32768, Port: DefaultInteractivePort} }
++func InteractiveQwen() Config {
++	return Config{
++		Model:     "qwen3.8-27b",
++		Context:   32768,
++		MaxOutput: 8192,
++		Port:      DefaultInteractivePort,
++	}
++}
+diff --git a/internal/runtime/llama/config_test.go b/internal/runtime/llama/config_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/runtime/llama/config_test.go
+@@ -0,0 +1,20 @@
++package llama
++
++import "testing"
++
++func TestInteractiveQwenLimits(t *testing.T) {
++	cfg := InteractiveQwen()
++
++	if cfg.Context != 32768 {
++		t.Fatalf("Context = %d, want 32768", cfg.Context)
++	}
++	if cfg.MaxOutput != 8192 {
++		t.Fatalf("MaxOutput = %d, want 8192", cfg.MaxOutput)
++	}
++	if cfg.MaxOutput >= cfg.Context {
++		t.Fatalf("MaxOutput = %d must be smaller than Context = %d", cfg.MaxOutput, cfg.Context)
++	}
++	if cfg.Port != DefaultInteractivePort {
++		t.Fatalf("Port = %d, want %d", cfg.Port, DefaultInteractivePort)
++	}
++}
+diff --git a/cmd/stint/lifecycle.go b/cmd/stint/lifecycle.go
+--- a/cmd/stint/lifecycle.go
++++ b/cmd/stint/lifecycle.go
+@@ -21,15 +21,14 @@ import (
+ 	localenv "github.com/Marguelgtz/Stint/internal/local"
+ 	"github.com/Marguelgtz/Stint/internal/provider/vast"
+ 	"github.com/Marguelgtz/Stint/internal/router"
++	"github.com/Marguelgtz/Stint/internal/runtime/llama"
+ 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
+ )
+
+ const (
+ 	clineRemotePort       = 8080
+ 	interactiveImage      = "vastai/base-image:@vastai-automatic-tag"
+ 	interactiveModelRef   = "ggml-org/Qwen3.8-27B-GGUF:Q4_K_M"
+-	interactiveModelAlias = "qwen3.8-27b"
+-	interactiveContext    = 16384
+ 	llamaCppRef           = "v0.3.0"
+ )
+
+@@ -43,6 +42,7 @@ func runStart(args []string) error {
+ 	if err != nil {
+ 		return err
+ 	}
++	modelConfig := llama.InteractiveQwen()
+
+ 	fs := flag.NewFlagSet("start interactive", flag.ContinueOnError)
+ 	fs.SetOutput(os.Stderr)
+@@ -104,8 +104,9 @@ func runStart(args []string) error {
+ 	fmt.Printf("Duration cap   %.2fh\n", hours)
+ 	fmt.Printf("Compute cap    $%.2f\n", plan.EstimatedTotalUSD)
+-	fmt.Printf("Model          %s\n", interactiveModelAlias)
+-	fmt.Printf("Context        %d tokens\n", interactiveContext)
++	fmt.Printf("Model          %s\n", modelConfig.Model)
++	fmt.Printf("Context        %d tokens\n", modelConfig.Context)
++	fmt.Printf("Max output     %d tokens\n", modelConfig.MaxOutput)
+ 	fmt.Printf("Cline endpoint http://127.0.0.1:%d/v1\n", clinePort)
+ 	fmt.Println()
+ 	if !*yes {
+@@ -235,7 +236,9 @@ func runStart(args []string) error {
+ 	fmt.Printf("Price           $%.3f/hr\n", state.HourlyUSD)
+ 	fmt.Printf("Instance        %d\n", state.InstanceID)
+ 	fmt.Printf("Endpoint        http://127.0.0.1:%d/v1\n", clinePort)
+-	fmt.Printf("Model           %s\n", interactiveModelAlias)
++	fmt.Printf("Model           %s\n", modelConfig.Model)
++	fmt.Printf("Context         %d tokens\n", modelConfig.Context)
++	fmt.Printf("Max output      %d tokens\n", modelConfig.MaxOutput)
+ 	fmt.Printf("Auto-destroy    %s\n", state.Deadline.Local().Format(time.RFC1123))
+ 	fmt.Println("\nCline can connect now. Run `stint down` when finished.")
+ 	return nil
+@@ -290,11 +293,12 @@ func bootstrapRemoteRuntime(ctx context.Context, paths config.Paths, state sessio
+ }
+
+ func startRemoteModel(ctx context.Context, paths config.Paths, state sessionstate.State) error {
++	modelConfig := llama.InteractiveQwen()
+ 	fmt.Println("Starting Qwen3.8-27B Q4_K_M on the remote GPU...")
+ 	remoteCommand := fmt.Sprintf(
+ 		"mkdir -p /workspace/stint; pkill -f '/workspace/stint/llama.cpp/build/bin/llama-server.*--port %d' >/dev/null 2>&1 || true; nohup /workspace/stint/llama.cpp/build/bin/llama-server -hf %s --no-mmproj --alias %s --host 127.0.0.1 --port %d -ngl all -c %d -ctk q8_0 -ctv q8_0 --flash-attn on > /workspace/stint/llama.log 2>&1 < /dev/null &",
+-		clineRemotePort, interactiveModelRef, interactiveModelAlias, clineRemotePort, interactiveContext,
++		clineRemotePort, interactiveModelRef, modelConfig.Model, clineRemotePort, modelConfig.Context,
+ 	)
+ 	if _, err := runSSH(ctx, paths, state, remoteCommand); err != nil {
+ 		return fmt.Errorf("start remote llama server: %w", err)
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -126,6 +126,8 @@ Cline will be configured once:
+ Provider: OpenAI Compatible
+ Base URL: http://127.0.0.1:8409/v1
+ Model: qwen3.8-27b
++Context Window Size: 32768
++Max Output Tokens: 8192
+ ```
+
+ Phase 3 makes whichever Vast machine Stint selects appear at that endpoint.
