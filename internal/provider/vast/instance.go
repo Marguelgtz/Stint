@@ -12,6 +12,11 @@ import (
 	"strings"
 )
 
+const (
+	vastAutomaticBaseImage = "vastai/base-image:@vastai-automatic-tag"
+	stintCUDA124BaseImage  = "vastai/base-image:cuda-12.4.1-cudnn-devel-ubuntu22.04-py310"
+)
+
 type CreateInstanceOptions struct {
 	Image   string
 	DiskGB  float64
@@ -59,8 +64,10 @@ func (c *Client) CreateInstance(ctx context.Context, offerID string, options Cre
 	if options.DiskGB <= 0 {
 		return 0, errors.New("instance disk size must be greater than zero")
 	}
+
+	image := normalizeInstanceImage(options.Image)
 	payload := map[string]any{
-		"image":          options.Image,
+		"image":          image,
 		"disk":           options.DiskGB,
 		"runtype":        "ssh_direct",
 		"target_state":   "running",
@@ -98,6 +105,17 @@ func (c *Client) CreateInstance(ctx context.Context, offerID string, options Cre
 		return 0, errors.New("Vast did not return a valid instance id")
 	}
 	return result.NewContract, nil
+}
+
+func normalizeInstanceImage(image string) string {
+	image = strings.TrimSpace(image)
+	if image == vastAutomaticBaseImage {
+		// Vast's automatic tag resolver currently returns no_compatible_tag on some
+		// consumer 4090 hosts even when a compatible base-image tag exists. Pin a
+		// CUDA 12.4 image that is valid on the observed CUDA 12.6 hosts instead.
+		return stintCUDA124BaseImage
+	}
+	return image
 }
 
 func (c *Client) ShowInstance(ctx context.Context, instanceID int64) (Instance, error) {
