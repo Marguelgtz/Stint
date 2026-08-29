@@ -3,6 +3,7 @@ package vast
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -52,7 +53,7 @@ func TestSearchOffersBuildsBroadReadOnlyDiscoveryRequest(t *testing.T) {
 				t.Fatalf("provider discovery unexpectedly hard-filtered %q: %#v", key, payload[key])
 			}
 		}
-		if got := payload["type"]; got != "ondemand" {
+		if got := payload["type"]; got != vastOnDemandType {
 			t.Fatalf("type = %#v", got)
 		}
 		if got := payload["allocated_storage"]; got != float64(50) {
@@ -76,6 +77,67 @@ func TestSearchOffersBuildsBroadReadOnlyDiscoveryRequest(t *testing.T) {
 	offer := offers[0]
 	if offer.ID != "123" || offer.GPUModel != "RTX_4090" || offer.HourlyUSD != 0.347 || !offer.Verified {
 		t.Fatalf("offer = %#v", offer)
+	}
+}
+
+func TestSearchOffersBisectsZeroInventory(t *testing.T) {
+	request := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request++
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if got := payload["type"]; got != vastOnDemandType {
+			t.Fatalf("request %d type = %#v", request, got)
+		}
+		count := 0
+		switch request {
+		case 1:
+			count = 0 // full query triggers trace
+		case 2:
+			count = 4 // rentable inventory
+		case 3:
+			count = 3 // RTX 4090
+		case 4:
+			count = 2 // one GPU
+		case 5:
+			count = 2 // duration
+		case 6:
+			count = 0 // price collapses the search
+		case 7:
+			count = 0 // storage/full shape remains zero
+		default:
+			t.Fatalf("unexpected request %d", request)
+		}
+		offers := make([]map[string]any, 0, count)
+		for i := 0; i < count; i++ {
+			offers = append(offers, map[string]any{"id": i + 1, "gpu_name": "RTX_4090"})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"offers": offers})
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.BaseURL = server.URL
+	client.HTTPClient = server.Client()
+	_, err := client.SearchOffers(context.Background(), core.BuiltinProfiles["interactive"], SearchOptions{Hours: 1})
+	if err == nil {
+		t.Fatal("expected discovery empty error")
+	}
+	var empty *DiscoveryEmptyError
+	if !errors.As(err, &empty) {
+		t.Fatalf("err = %T %v", err, err)
+	}
+	want := []DiscoveryStage{{"rentable", 4}, {"gpu", 3}, {"one_gpu", 2}, {"duration", 2}, {"price", 0}, {"storage", 0}}
+	if len(empty.Stages) != len(want) {
+		t.Fatalf("stages = %#v", empty.Stages)
+	}
+	for i := range want {
+		if empty.Stages[i] != want[i] {
+			t.Fatalf("stage %d = %#v, want %#v", i, empty.Stages[i], want[i])
+		}
 	}
 }
 
