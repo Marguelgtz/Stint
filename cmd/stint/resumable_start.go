@@ -44,12 +44,17 @@ func runStartResumable(args []string) (retErr error) {
 	hoursValue := fs.String("hours", "1", "maximum paid session duration in hours")
 	yes := fs.Bool("yes", false, "confirm the selected rental without prompting")
 	location := fs.String("location", "", "prefer an offer whose location contains this text")
+	runtimeValue := fs.String("runtime", runtimeAuto, "inference runtime: auto, ninfer, or llama.cpp")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	hours, err := strconv.ParseFloat(*hoursValue, 64)
 	if err != nil || hours <= 0 {
 		return fmt.Errorf("invalid --hours value %q", *hoursValue)
+	}
+	runtimeRequest, err := normalizeRuntime(*runtimeValue)
+	if err != nil {
+		return err
 	}
 
 	paths, err := config.DefaultPaths()
@@ -98,6 +103,11 @@ func runStartResumable(args []string) (retErr error) {
 		return err
 	}
 	selected := plan.Workers[0].Offer
+	selectedRuntime, err := selectInteractiveRuntime(runtimeRequest, selected.GPUModel)
+	if err != nil {
+		return err
+	}
+	selectedContext := contextForRuntime(selectedRuntime)
 
 	fmt.Println()
 	fmt.Println("READY TO RENT")
@@ -107,7 +117,12 @@ func runStartResumable(args []string) (retErr error) {
 	fmt.Printf("Duration cap   %.2fh\n", hours)
 	fmt.Printf("Compute cap    $%.2f\n", plan.EstimatedTotalUSD)
 	fmt.Printf("Model          %s\n", interactiveModelAlias)
-	fmt.Printf("Context        %d tokens\n", interactiveContext)
+	fmt.Printf("Runtime        %s", selectedRuntime)
+	if runtimeRequest == runtimeAuto {
+		fmt.Print(" (auto)")
+	}
+	fmt.Println()
+	fmt.Printf("Context        %d tokens\n", selectedContext)
 	fmt.Printf("Cline endpoint http://127.0.0.1:%d/v1\n", clinePort)
 	fmt.Println()
 	if !*yes {
@@ -126,6 +141,7 @@ func runStartResumable(args []string) (retErr error) {
 	deadline := startedAt.Add(time.Duration(hours * float64(time.Hour)))
 	state := sessionstate.State{
 		OfferID: selected.ID, Profile: profileName, GPUModel: selected.GPUModel,
+		RuntimeRequest: runtimeRequest, Runtime: selectedRuntime, ContextTokens: selectedContext,
 		HourlyUSD: selected.HourlyUSD, Hours: hours, StartedAt: startedAt, Deadline: deadline,
 		Status: sessionstate.StatusRenting,
 	}
@@ -216,8 +232,15 @@ func runStartResumable(args []string) (retErr error) {
 	if err := sessionstate.Save(paths, state); err != nil {
 		return err
 	}
-	if err := bootstrapRemoteRuntime(rootCtx, paths, state); err != nil {
+	actualRuntime, err := bootstrapSelectedRuntime(rootCtx, paths, state)
+	if err != nil {
 		return err
+	}
+	if actualRuntime != state.Runtime {
+		state.Runtime = actualRuntime
+		state.ContextTokens = contextForRuntime(actualRuntime)
+		fmt.Printf("Runtime        %s\n", state.Runtime)
+		fmt.Printf("Context        %d tokens\n", state.ContextTokens)
 	}
 	state.Status = sessionstate.StatusRuntimeReady
 	state.Checkpoint = sessionstate.CheckpointRuntimeReady
@@ -250,7 +273,7 @@ func runStartResumable(args []string) (retErr error) {
 		return err
 	}
 
-	fmt.Println("Downloading/loading ~19 GB model; waiting for the local OpenAI endpoint...")
+	fmt.Println("Downloading/loading Qwen3.8-27B; waiting for the local OpenAI endpoint...")
 	if err := waitForModel(rootCtx, paths, state, 20*time.Minute); err != nil {
 		return err
 	}
@@ -279,55 +302,16 @@ func checkpointIsRecoverable(checkpoint string) bool {
 }
 
 func startRemoteModelSafe(ctx context.Context, paths config.Paths, state sessionstate.State) error {
-	fmt.Println("Starting Qwen3.8-27B Q4_K_M on the remote GPU...")
-	remoteCommand := remoteModelLaunchCommand()
+	fmt.Printf("Starting Qwen3.8-27B with %s on the remote GPU...\n", runtimeForState(state))
+	remoteCommand := remoteModelLaunchCommandForState(state)
 	if _, err := runSSH(ctx, paths, state, remoteCommand); err != nil {
-		return fmt.Errorf("start remote llama server: %w", err)
+		return fmt.Errorf("start remote %s model server: %w", runtimeForState(state), err)
 	}
 	return nil
 }
 
+// remoteModelLaunchCommand is retained for the existing llama.cpp regression
+// test while the active lifecycle uses remoteModelLaunchCommandForState.
 func remoteModelLaunchCommand() string {
-	return fmt.Sprintf(`set -eu
-mkdir -p /workspace/stint
-pid_file=/workspace/stint/llama.pid
-log_file=/workspace/stint/llama.log
-
-# This instance is dedicated to Stint. Stop an older llama-server by its exact
-# process name rather than pkill -f; the latter can match and kill this SSH shell.
-if command -v pgrep >/dev/null 2>&1; then
-  for old_pid in $(pgrep -x llama-server 2>/dev/null || true); do
-    kill "$old_pid" 2>/dev/null || true
-  done
-fi
-
-if [ -r "$pid_file" ]; then
-  old_pid="$(cat "$pid_file" 2>/dev/null || true)"
-  if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-    kill "$old_pid" 2>/dev/null || true
-  fi
-fi
-rm -f "$pid_file"
-: > "$log_file"
-
-nohup /workspace/stint/llama.cpp/build/bin/llama-server \
-  -hf %s \
-  --no-mmproj \
-  --alias %s \
-  --host 127.0.0.1 \
-  --port %d \
-  -ngl all \
-  -c %d \
-  -ctk q8_0 \
-  -ctv q8_0 \
-  --flash-attn on \
-  > "$log_file" 2>&1 < /dev/null &
-new_pid=$!
-printf '%%s\n' "$new_pid" > "$pid_file"
-sleep 1
-if ! kill -0 "$new_pid" 2>/dev/null; then
-  tail -n 20 "$log_file" >&2 || true
-  exit 1
-fi
-`, interactiveModelRef, interactiveModelAlias, clineRemotePort, interactiveContext)
+	return llamaModelLaunchCommand(interactiveContext)
 }
