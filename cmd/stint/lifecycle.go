@@ -21,16 +21,15 @@ import (
 	localenv "github.com/Marguelgtz/Stint/internal/local"
 	"github.com/Marguelgtz/Stint/internal/provider/vast"
 	"github.com/Marguelgtz/Stint/internal/router"
+	"github.com/Marguelgtz/Stint/internal/runtime/llama"
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
 const (
-	clineRemotePort       = 8080
-	interactiveImage      = "vastai/base-image:@vastai-automatic-tag"
-	interactiveModelRef   = "ggml-org/Qwen3.8-27B-GGUF:Q4_K_M"
-	interactiveModelAlias = "qwen3.8-27b"
-	interactiveContext    = 16384
-	llamaCppRef           = "v0.3.0"
+	clineRemotePort     = 8080
+	interactiveImage    = "vastai/base-image:@vastai-automatic-tag"
+	interactiveModelRef = "ggml-org/Qwen3.8-27B-GGUF:Q4_K_M"
+	llamaCppRef         = "v0.3.0"
 )
 
 func runStart(args []string) error {
@@ -45,6 +44,7 @@ func runStart(args []string) error {
 	if err != nil {
 		return err
 	}
+	modelConfig := llama.InteractiveQwen()
 
 	fs := flag.NewFlagSet("start interactive", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -109,8 +109,9 @@ func runStart(args []string) error {
 	fmt.Printf("Price          $%.3f/hr\n", selected.HourlyUSD)
 	fmt.Printf("Duration cap   %.2fh\n", hours)
 	fmt.Printf("Compute cap    $%.2f\n", plan.EstimatedTotalUSD)
-	fmt.Printf("Model          %s\n", interactiveModelAlias)
-	fmt.Printf("Context        %d tokens\n", interactiveContext)
+	fmt.Printf("Model          %s\n", modelConfig.Model)
+	fmt.Printf("Context        %d tokens\n", modelConfig.Context)
+	fmt.Printf("Max output     %d tokens\n", modelConfig.MaxOutput)
 	fmt.Printf("Cline endpoint http://127.0.0.1:%d/v1\n", clinePort)
 	fmt.Println()
 	if !*yes {
@@ -238,7 +239,9 @@ func runStart(args []string) error {
 	fmt.Printf("Price           $%.3f/hr\n", state.HourlyUSD)
 	fmt.Printf("Instance        %d\n", state.InstanceID)
 	fmt.Printf("Endpoint        http://127.0.0.1:%d/v1\n", clinePort)
-	fmt.Printf("Model           %s\n", interactiveModelAlias)
+	fmt.Printf("Model           %s\n", modelConfig.Model)
+	fmt.Printf("Context         %d tokens\n", modelConfig.Context)
+	fmt.Printf("Max output      %d tokens\n", modelConfig.MaxOutput)
 	fmt.Printf("Auto-destroy    %s\n", state.Deadline.Local().Format(time.RFC1123))
 	fmt.Println("\nCline can connect now. Run `stint down` when finished.")
 	return nil
@@ -289,10 +292,11 @@ fi
 }
 
 func startRemoteModel(ctx context.Context, paths config.Paths, state sessionstate.State) error {
+	modelConfig := llama.InteractiveQwen()
 	fmt.Println("Starting Qwen3.8-27B Q4_K_M on the remote GPU...")
 	remoteCommand := fmt.Sprintf(
 		"mkdir -p /workspace/stint; pkill -f '/workspace/stint/llama.cpp/build/bin/llama-server.*--port %d' >/dev/null 2>&1 || true; nohup /workspace/stint/llama.cpp/build/bin/llama-server -hf %s --no-mmproj --alias %s --host 127.0.0.1 --port %d -ngl all -c %d -ctk q8_0 -ctv q8_0 --flash-attn on > /workspace/stint/llama.log 2>&1 < /dev/null &",
-		clineRemotePort, interactiveModelRef, interactiveModelAlias, clineRemotePort, interactiveContext,
+		clineRemotePort, interactiveModelRef, modelConfig.Model, clineRemotePort, modelConfig.Context,
 	)
 	if _, err := runSSH(ctx, paths, state, remoteCommand); err != nil {
 		return fmt.Errorf("start remote llama server: %w", err)
