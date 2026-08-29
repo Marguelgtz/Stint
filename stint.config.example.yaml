@@ -45,8 +45,3 @@ profiles:
     session:
       default_hours: 8
       max_cost_usd: 3.00
-
-fallbacks:
-  interactive:
-    provider: cloudflare
-    model: "@cf/qwen/qwen3.8-27b"

@@ -1,89 +1,40 @@
 # Architecture
 
-## Product boundary
+## Control plane
 
-Stint answers: **where, when, and on what compute should agent work run?**
+Stint is a local Go control plane. Agent harnesses should only need stable OpenAI-compatible localhost endpoints; Stint hides provider instance IDs, SSH addresses, model boot, and teardown behind those endpoints.
 
-Spark answers: **what changed, what evidence exists, how did the change progress, and eventually how should multiple autonomous workers hand work/review evidence across that trajectory?**
+```text
+Cline / OpenCode / other harness
+              |
+              v
+          Stint daemon
+              |
+     +--------+---------+
+     |                  |
+Compute broker       Runtime manager
+     |                  |
+   Vast           llama.cpp / future
+     |                  |
+4090 interactive   fixed local tunnel
+3090 deep A/B      ports 8409/8301/8302
+```
 
-Agent harnesses answer: **which filesystem, terminal, browser, and repository tools may the model invoke?**
+## Package boundaries
 
-Keeping these boundaries explicit allows Stint to support multiple providers, runtimes, and agent harnesses while dogfooding Spark as the repository observability layer from pre-V0.
+- `internal/core`: provider-neutral profiles, offers, ranking, and session plans.
+- `internal/provider/vast`: Vast API/CLI normalization. Pre-V0 is read-only until offer selection is proven.
+- `internal/runtime/llama`: runtime/endpoint configuration.
+- `internal/router`: chooses the profile and eventually model/GPU topology.
+- `internal/spark`: onboarding and evidence contract with Spark.
+- `internal/collaboration`: narrow data contract for future reciprocal workers.
 
-## Modules
+## First topology
 
-### Compute broker
+Interactive prioritizes user latency: one RTX 4090, Qwen3.8-27B, llama.cpp, local endpoint `127.0.0.1:8409`.
 
-Inputs:
+Deep work prioritizes parallel validated work per dollar: two independent RTX 3090 workers, isolated worktrees, reciprocal build/review loops, endpoints `127.0.0.1:8301` and `127.0.0.1:8302`.
 
-- GPU requirements
-- reliability floor
-- hourly/session budget
-- geography/network preferences
-- interruptibility policy
+## Safety boundary
 
-Outputs:
-
-- ranked offers
-- selected offer
-- estimated session cost
-
-### Model runtime
-
-Responsible for turning provisioned compute into a healthy OpenAI-compatible endpoint.
-
-Pre-V0 target: llama.cpp + Qwen3.8-27B on one RTX 4090.
-
-### Router
-
-Maps an intent profile to a topology.
-
-Examples:
-
-- `interactive` -> 1 fast 4090-class worker
-- `deep` -> 2 inexpensive 3090-class workers
-- `sleep` -> destroy interactive worker, retain autonomous pool
-
-### Spark integration
-
-`@stint/spark` owns only the Stint-facing integration surface:
-
-- Stint's `.spark/profile.yml` source-of-truth
-- profile serialization/drift checks
-- onboarding checklist
-- future compact task/review/evidence handoff contracts
-
-Spark remains a separate GitHub App and service. Stint must not copy Spark's evaluator, persistence layer, installation tokens, or dashboard concerns into this repository.
-
-### Collaboration contract
-
-Stint should not embed Spark's full domain model. It emits and consumes a small contract:
-
-- worker availability
-- task assignment
-- endpoint
-- budget/runtime limits
-- checkpoint/teardown signals
-- candidate commit ready for review
-- review finding / resolution
-- deterministic evidence attached to a candidate
-
-Spark owns durable change/evidence trajectory. The agent harness owns filesystem/tool execution. Stint owns worker orchestration.
-
-## Repository onboarding
-
-The repository is Spark-ready when:
-
-1. `.spark/profile.yml` is on the default branch.
-2. GitHub Actions exposes the evidence names referenced by that profile.
-3. The Spark GitHub App is installed for the repository.
-4. A pull request receives a Spark check for its exact head SHA.
-
-## Safety defaults
-
-- Real provisioning requires explicit command/action.
-- Session budget is mandatory before unattended operation.
-- Instances have a hard expiry.
-- Autonomous workers cannot merge to main by default.
-- Secrets must not be passed in task artifacts.
-- Spark observes source-derived metadata/evidence but Stint does not hand it provider credentials.
+Search/ranking is separate from provisioning. A future mutating provider interface must require an explicit session budget, maximum hourly price, requested duration, and teardown deadline. No provider key is stored in repository configuration.
