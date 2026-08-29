@@ -24,13 +24,16 @@ profiles:
       prefer: [RTX_4090]
       max_hourly_usd: 0.40
       min_reliability: 0.985
-      min_inet_down_mb_per_s: 100
+      preferred_inet_down_mb_per_s: 50
       min_direct_ports: 1
       min_gpu_ram_mb: 24000
-      min_gpu_max_power_w: 350
+      preferred_gpu_max_power_w: 350
       require_verified: true
       require_rentable: true
       require_not_rented: true
+    discovery:
+      max_hourly_usd: 0.60
+      limit: 250
     model:
       id: qwen3.8-27b
       runtime: llama.cpp
@@ -47,6 +50,7 @@ profiles:
       prefer: [RTX_3090]
       max_hourly_usd_each: 0.18
       min_reliability: 0.98
+      preferred_inet_down_mb_per_s: 50
     model:
       id: qwen3.8-27b
       runtime: llama.cpp
