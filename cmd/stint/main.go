@@ -16,17 +16,18 @@ import (
 	localenv "github.com/Marguelgtz/Stint/internal/local"
 	"github.com/Marguelgtz/Stint/internal/provider/vast"
 	"github.com/Marguelgtz/Stint/internal/router"
+	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 	"github.com/Marguelgtz/Stint/internal/spark"
 )
 
-const version = "0.0.4"
+const version = "0.0.5"
 const clinePort = 8409
 
 type planDiagnostics struct {
-	Candidates      int                               `json:"candidates"`
-	Qualified       int                               `json:"qualified"`
-	RejectedBy      map[core.RejectionReason]int      `json:"rejectedBy,omitempty"`
-	ClosestRejected []core.OfferEvaluation            `json:"closestRejected,omitempty"`
+	Candidates      int                    `json:"candidates"`
+	Qualified       int                    `json:"qualified"`
+	RejectedBy      map[core.RejectionReason]int `json:"rejectedBy,omitempty"`
+	ClosestRejected []core.OfferEvaluation `json:"closestRejected,omitempty"`
 }
 
 type planOutput struct {
@@ -57,6 +58,12 @@ func run(args []string) error {
 		return nil
 	case "plan":
 		return runPlan(args[1:])
+	case "start":
+		return runStart(args[1:])
+	case "down":
+		return runDown(args[1:])
+	case "_watchdog":
+		return runWatchdog(args[1:])
 	case "auth":
 		return runAuth(args[1:])
 	case "setup":
@@ -302,7 +309,7 @@ func runSetup(args []string) error {
 	fmt.Println("Private key:", paths.SSHPrivateKey)
 	fmt.Println("\nPublic key (safe to add to Vast):")
 	fmt.Println(publicKey)
-	fmt.Println("\nLocal key is ready. Stint cannot yet verify that this key has been registered in Vast.")
+	fmt.Println("\nLocal key is ready. `stint start` attaches it to the rented instance automatically.")
 	return nil
 }
 
@@ -349,7 +356,7 @@ func runDoctor() error {
 	}
 
 	if localenv.SSHKeyExists(paths) {
-		printCheck("Stint SSH key", true, "local keypair ready; Vast registration not verified")
+		printCheck("Stint SSH key", true, "local keypair ready; start attaches it automatically")
 	} else {
 		printCheck("Stint SSH key", false, "run: stint setup ssh")
 		ready = false
@@ -364,11 +371,11 @@ func runDoctor() error {
 
 	fmt.Println()
 	fmt.Printf("Cline endpoint      http://127.0.0.1:%d/v1\n", clinePort)
-	fmt.Println("Compute lifecycle   disabled until Phase 3")
+	fmt.Println("Compute lifecycle   enabled; paid start requires explicit confirmation")
 	if !ready {
 		return errors.New("doctor found setup issues")
 	}
-	fmt.Println("\nReady for live marketplace planning.")
+	fmt.Println("\nReady for live marketplace planning and paid start.")
 	return nil
 }
 
@@ -383,7 +390,18 @@ func runStatus() error {
 	fmt.Printf("Stint SSH key      %s\n", yesNo(localenv.SSHKeyExists(paths)))
 	fmt.Printf("Cline endpoint     http://127.0.0.1:%d/v1\n", clinePort)
 	fmt.Println("Product identity   GitHub (same model as Spark; hosted login not needed for local pre-v0)")
-	fmt.Println("Active compute     none (lifecycle starts in Phase 3)")
+	state, stateErr := sessionstate.Load(paths)
+	if errors.Is(stateErr, os.ErrNotExist) {
+		fmt.Println("Active compute     none")
+		return nil
+	}
+	if stateErr != nil {
+		return stateErr
+	}
+	fmt.Printf("Active compute     instance %d (%s)\n", state.InstanceID, state.Status)
+	fmt.Printf("GPU                %s\n", state.GPUModel)
+	fmt.Printf("Rate               $%.3f/hr\n", state.HourlyUSD)
+	fmt.Printf("Auto-destroy       %s\n", state.Deadline.Local().Format(time.RFC1123))
 	return nil
 }
 
@@ -473,15 +491,20 @@ Setup:
   stint auth vast --from-env
   stint setup ssh
   stint doctor
-  stint status
 
-Planning:
-  stint plan interactive --hours 5
-  stint plan interactive --hours 5 --json
-  stint plan interactive --hours 5 --fixture
-  stint plan deep --hours 8 --fixture
+Planning (read-only):
+  stint plan interactive --hours 1
+  stint plan interactive --hours 1 --json
+  stint plan interactive --hours 1 --fixture
+
+Compute (paid):
+  stint start interactive --hours 1
+  stint start interactive --hours 1 --yes
+  stint status
+  stint down
 
 Other:
+  stint plan deep --hours 8 --fixture
   stint onboard spark
   stint version
 `)
