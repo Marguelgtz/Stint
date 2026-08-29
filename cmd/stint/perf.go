@@ -19,6 +19,8 @@ import (
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
+const perfMaxAttempts = 3
+
 // perf is handled before main's command switch so it can remain a focused,
 // stackable feature without coupling benchmark logic into the lifecycle path.
 func init() {
@@ -54,6 +56,8 @@ type perfSample struct {
 	CompletionTokens int
 	DecodeTokensSec  float64
 }
+
+type perfBenchmarkFunc func(context.Context, *http.Client, int) (perfSample, error)
 
 func runPerf(args []string) error {
 	fs := flag.NewFlagSet("perf", flag.ContinueOnError)
@@ -91,14 +95,25 @@ func runPerf(args []string) error {
 	fmt.Printf("Benchmark       %d runs x %d max tokens\n", *runs, *maxTokens)
 	fmt.Println()
 
-	client := &http.Client{Timeout: 3 * time.Minute}
+	// llama.cpp may close an HTTP keep-alive connection between streamed POSTs.
+	// A fresh local TCP connection per benchmark run avoids reusing a stale
+	// connection while keeping the SSH forwarding path identical for all runtimes.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableKeepAlives = true
+	client := &http.Client{
+		Timeout:   3 * time.Minute,
+		Transport: transport,
+	}
 	samples := make([]perfSample, 0, *runs)
 	for i := 0; i < *runs; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		sample, err := benchmarkCompletion(ctx, client, *maxTokens)
+		sample, attempts, err := benchmarkCompletionWithRetry(ctx, client, *maxTokens, benchmarkCompletion)
 		cancel()
 		if err != nil {
-			return fmt.Errorf("benchmark run %d: %w", i+1, err)
+			return fmt.Errorf("benchmark run %d after %d attempts: %w", i+1, attempts, err)
+		}
+		if attempts > 1 {
+			fmt.Printf("Run %-2d          recovered after %d attempts\n", i+1, attempts)
 		}
 		samples = append(samples, sample)
 		fmt.Printf("Run %-2d          TTFT %6.2fs   total %6.2fs   decode %6.1f tok/s\n",
@@ -119,6 +134,35 @@ func runPerf(args []string) error {
 	fmt.Printf("Decode speed    %.1f tok/s\n", avg.DecodeTokensSec)
 	fmt.Println("\nUses the local OpenAI-compatible endpoint, so llama.cpp and NInfer are measured through the same path.")
 	return nil
+}
+
+func benchmarkCompletionWithRetry(ctx context.Context, client *http.Client, maxTokens int, benchmark perfBenchmarkFunc) (perfSample, int, error) {
+	var lastErr error
+	for attempt := 1; attempt <= perfMaxAttempts; attempt++ {
+		sample, err := benchmark(ctx, client, maxTokens)
+		if err == nil {
+			return sample, attempt, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return perfSample{}, attempt, ctx.Err()
+		}
+		if attempt == perfMaxAttempts {
+			break
+		}
+
+		delay := time.Duration(attempt) * 250 * time.Millisecond
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return perfSample{}, attempt, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return perfSample{}, perfMaxAttempts, lastErr
 }
 
 func benchmarkCompletion(ctx context.Context, client *http.Client, maxTokens int) (perfSample, error) {
@@ -143,6 +187,7 @@ func benchmarkCompletion(ctx context.Context, client *http.Client, maxTokens int
 		return perfSample{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Close = true
 
 	started := time.Now()
 	resp, err := client.Do(req)
@@ -184,7 +229,7 @@ func benchmarkCompletion(ctx context.Context, client *http.Client, maxTokens int
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return perfSample{}, err
+		return perfSample{}, fmt.Errorf("stream interrupted: %w", err)
 	}
 	sample.Total = time.Since(started)
 	if firstToken.IsZero() {
