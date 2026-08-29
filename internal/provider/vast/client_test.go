@@ -32,7 +32,7 @@ func TestVerifyAuthUsesV1Instances(t *testing.T) {
 	}
 }
 
-func TestSearchOffersBuildsBoundedReadOnlyRequest(t *testing.T) {
+func TestSearchOffersBuildsBroadReadOnlyDiscoveryRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v0/bundles" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
@@ -46,12 +46,12 @@ func TestSearchOffersBuildsBoundedReadOnlyRequest(t *testing.T) {
 		}
 		assertFilter(t, payload, "gpu_name", "eq", "RTX_4090")
 		assertFilter(t, payload, "num_gpus", "eq", float64(1))
-		assertFilter(t, payload, "reliability", "gte", 0.985)
-		assertFilter(t, payload, "dph_total", "lte", 0.40)
-		assertFilter(t, payload, "inet_down", "gte", float64(100))
-		assertFilter(t, payload, "direct_port_count", "gte", float64(1))
-		assertFilter(t, payload, "gpu_ram", "gte", float64(24000))
-		assertFilter(t, payload, "gpu_max_power", "gte", float64(350))
+		assertFilter(t, payload, "dph_total", "lte", discoveryPriceCeilingUSD)
+		for _, key := range []string{"reliability", "inet_down", "direct_port_count", "gpu_ram", "gpu_max_power"} {
+			if _, ok := payload[key]; ok {
+				t.Fatalf("provider discovery unexpectedly hard-filtered %q: %#v", key, payload[key])
+			}
+		}
 		if got := payload["type"]; got != "ondemand" {
 			t.Fatalf("type = %#v", got)
 		}
@@ -59,7 +59,7 @@ func TestSearchOffersBuildsBoundedReadOnlyRequest(t *testing.T) {
 			t.Fatalf("allocated_storage = %#v", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"offers":[{"id":123,"gpu_name":"RTX_4090","gpu_ram":24576,"gpu_max_power":450,"dph_total":0.347,"reliability":0.995,"dlperf":113.2,"inet_down":500,"inet_up":200,"inet_down_cost":0.001,"direct_port_count":2,"geolocation":"NL","machine_id":77,"verification":"verified","rentable":true,"rented":false,"num_gpus":1}]}`))
+		_, _ = w.Write([]byte(`{"offers":[{"id":123,"gpu_name":"RTX_4090","gpu_ram":24576,"gpu_max_power":300,"dph_total":0.347,"reliability":0.995,"dlperf":113.2,"inet_down":40,"inet_up":200,"inet_down_cost":0.001,"direct_port_count":2,"geolocation":"NL","machine_id":77,"verification":"verified","rentable":true,"rented":false,"num_gpus":1}]}`))
 	}))
 	defer server.Close()
 
