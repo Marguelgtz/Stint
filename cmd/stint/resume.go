@@ -144,7 +144,8 @@ func runResume(args []string) (retErr error) {
 	if err := retryAttachSSHKey(rootCtx, client, state.InstanceID, publicKey, 90*time.Second); err != nil {
 		return err
 	}
-	if err := waitForSSH(rootCtx, paths, state, 4*time.Minute); err != nil {
+	fmt.Println("SSH key         attached")
+	if err := waitForSSHResponsive(rootCtx, paths, state, 4*time.Minute); err != nil {
 		return err
 	}
 	state.Status = sessionstate.StatusSSHReady
