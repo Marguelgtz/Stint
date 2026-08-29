@@ -1,5 +1,9 @@
 version: 1
 
+identity:
+  provider: github
+  mode: spark-compatible
+
 spark:
   enabled: true
   profile_path: .spark/profile.yml
@@ -17,15 +21,26 @@ profiles:
     workers: 1
     provider: vast
     gpu:
-      prefer: [RTX_4090, RTX_5090]
+      prefer: [RTX_4090]
       max_hourly_usd: 0.40
       min_reliability: 0.985
+      preferred_inet_down_mb_per_s: 50
+      min_direct_ports: 1
+      min_gpu_ram_mb: 24000
+      preferred_gpu_max_power_w: 350
+      require_verified: true
+      require_rentable: true
+      require_not_rented: true
+    discovery:
+      max_hourly_usd: 0.60
+      limit: 250
     model:
       id: qwen3.8-27b
       runtime: llama.cpp
     session:
       default_hours: 5
       max_cost_usd: 2.50
+      storage_gb: 50
 
   deep:
     objective: validated_work_per_dollar
@@ -35,6 +50,7 @@ profiles:
       prefer: [RTX_3090]
       max_hourly_usd_each: 0.18
       min_reliability: 0.98
+      preferred_inet_down_mb_per_s: 50
     model:
       id: qwen3.8-27b
       runtime: llama.cpp
@@ -45,3 +61,4 @@ profiles:
     session:
       default_hours: 8
       max_cost_usd: 3.00
+      storage_gb: 50
