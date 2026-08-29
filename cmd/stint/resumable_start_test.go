@@ -27,7 +27,7 @@ func TestCheckpointIsRecoverable(t *testing.T) {
 }
 
 func TestRemoteModelLaunchUsesPIDTracking(t *testing.T) {
-	command := remoteModelLaunchCommand()
+	command := remoteModelLaunchCommand(interactiveContext)
 	if strings.Contains(command, "\npkill -f ") {
 		t.Fatal("remote model launch must not use pkill -f; it can kill the SSH shell that contains the pattern")
 	}
@@ -35,5 +35,34 @@ func TestRemoteModelLaunchUsesPIDTracking(t *testing.T) {
 		if !strings.Contains(command, required) {
 			t.Fatalf("remote model launch missing %q", required)
 		}
+	}
+}
+
+func TestRemoteModelLaunchUsesRequestedContext(t *testing.T) {
+	command := remoteModelLaunchCommand(24576)
+	if !strings.Contains(command, "-c 24576") {
+		t.Fatalf("remote model launch did not use requested context: %s", command)
+	}
+}
+
+func TestValidateInteractiveContext(t *testing.T) {
+	for _, tokens := range []int{16384, 24576, 32768} {
+		if err := validateInteractiveContext(tokens); err != nil {
+			t.Fatalf("validateInteractiveContext(%d) returned %v", tokens, err)
+		}
+	}
+	for _, tokens := range []int{8192, 65536} {
+		if err := validateInteractiveContext(tokens); err == nil {
+			t.Fatalf("validateInteractiveContext(%d) unexpectedly succeeded", tokens)
+		}
+	}
+}
+
+func TestEffectiveInteractiveContextPreservesLegacySessions(t *testing.T) {
+	if got := effectiveInteractiveContext(0); got != legacyInteractiveContext {
+		t.Fatalf("effectiveInteractiveContext(0) = %d, want %d", got, legacyInteractiveContext)
+	}
+	if got := effectiveInteractiveContext(24576); got != 24576 {
+		t.Fatalf("effectiveInteractiveContext(24576) = %d, want 24576", got)
 	}
 }

@@ -36,22 +36,23 @@ const (
 )
 
 type State struct {
-	InstanceID  int64     `json:"instanceId"`
-	OfferID     string    `json:"offerId"`
-	Profile     string    `json:"profile"`
-	GPUModel    string    `json:"gpuModel"`
-	HourlyUSD   float64   `json:"hourlyUsd"`
-	Hours       float64   `json:"hours"`
-	StartedAt   time.Time `json:"startedAt"`
-	Deadline    time.Time `json:"deadline"`
-	SSHHost     string    `json:"sshHost,omitempty"`
-	SSHPort     int       `json:"sshPort,omitempty"`
-	TunnelPID   int       `json:"tunnelPid,omitempty"`
-	WatchdogPID int       `json:"watchdogPid,omitempty"`
-	Status      string    `json:"status"`
-	Checkpoint  string    `json:"checkpoint,omitempty"`
-	LastError   string    `json:"lastError,omitempty"`
-	UpdatedAt   time.Time `json:"updatedAt,omitempty"`
+	InstanceID     int64     `json:"instanceId"`
+	OfferID        string    `json:"offerId"`
+	Profile        string    `json:"profile"`
+	GPUModel       string    `json:"gpuModel"`
+	RuntimeContext int       `json:"runtimeContext,omitempty"`
+	HourlyUSD      float64   `json:"hourlyUsd"`
+	Hours          float64   `json:"hours"`
+	StartedAt      time.Time `json:"startedAt"`
+	Deadline       time.Time `json:"deadline"`
+	SSHHost        string    `json:"sshHost,omitempty"`
+	SSHPort        int       `json:"sshPort,omitempty"`
+	TunnelPID      int       `json:"tunnelPid,omitempty"`
+	WatchdogPID    int       `json:"watchdogPid,omitempty"`
+	Status         string    `json:"status"`
+	Checkpoint     string    `json:"checkpoint,omitempty"`
+	LastError      string    `json:"lastError,omitempty"`
+	UpdatedAt      time.Time `json:"updatedAt,omitempty"`
 }
 
 func Path(paths config.Paths) string {

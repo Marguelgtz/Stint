@@ -44,12 +44,16 @@ func runStartResumable(args []string) (retErr error) {
 	hoursValue := fs.String("hours", "1", "maximum paid session duration in hours")
 	yes := fs.Bool("yes", false, "confirm the selected rental without prompting")
 	location := fs.String("location", "", "prefer an offer whose location contains this text")
+	contextTokens := fs.Int("context", interactiveContext, "model context window in tokens")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	hours, err := strconv.ParseFloat(*hoursValue, 64)
 	if err != nil || hours <= 0 {
 		return fmt.Errorf("invalid --hours value %q", *hoursValue)
+	}
+	if err := validateInteractiveContext(*contextTokens); err != nil {
+		return err
 	}
 
 	paths, err := config.DefaultPaths()
@@ -107,7 +111,8 @@ func runStartResumable(args []string) (retErr error) {
 	fmt.Printf("Duration cap   %.2fh\n", hours)
 	fmt.Printf("Compute cap    $%.2f\n", plan.EstimatedTotalUSD)
 	fmt.Printf("Model          %s\n", interactiveModelAlias)
-	fmt.Printf("Context        %d tokens\n", interactiveContext)
+	fmt.Printf("Context        %d tokens\n", *contextTokens)
+	fmt.Printf("Max output     %d tokens\n", interactiveMaxOutput)
 	fmt.Printf("Cline endpoint http://127.0.0.1:%d/v1\n", clinePort)
 	fmt.Println()
 	if !*yes {
@@ -126,6 +131,7 @@ func runStartResumable(args []string) (retErr error) {
 	deadline := startedAt.Add(time.Duration(hours * float64(time.Hour)))
 	state := sessionstate.State{
 		OfferID: selected.ID, Profile: profileName, GPUModel: selected.GPUModel,
+		RuntimeContext: *contextTokens,
 		HourlyUSD: selected.HourlyUSD, Hours: hours, StartedAt: startedAt, Deadline: deadline,
 		Status: sessionstate.StatusRenting,
 	}
@@ -280,14 +286,14 @@ func checkpointIsRecoverable(checkpoint string) bool {
 
 func startRemoteModelSafe(ctx context.Context, paths config.Paths, state sessionstate.State) error {
 	fmt.Println("Starting Qwen3.8-27B Q4_K_M on the remote GPU...")
-	remoteCommand := remoteModelLaunchCommand()
+	remoteCommand := remoteModelLaunchCommand(effectiveInteractiveContext(state.RuntimeContext))
 	if _, err := runSSH(ctx, paths, state, remoteCommand); err != nil {
 		return fmt.Errorf("start remote llama server: %w", err)
 	}
 	return nil
 }
 
-func remoteModelLaunchCommand() string {
+func remoteModelLaunchCommand(contextTokens int) string {
 	return fmt.Sprintf(`set -eu
 mkdir -p /workspace/stint
 pid_file=/workspace/stint/llama.pid
@@ -329,5 +335,5 @@ if ! kill -0 "$new_pid" 2>/dev/null; then
   tail -n 20 "$log_file" >&2 || true
   exit 1
 fi
-`, interactiveModelRef, interactiveModelAlias, clineRemotePort, interactiveContext)
+`, interactiveModelRef, interactiveModelAlias, clineRemotePort, contextTokens)
 }
