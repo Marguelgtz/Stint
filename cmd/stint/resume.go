@@ -64,6 +64,9 @@ func runResume(args []string) (retErr error) {
 			state.LastError = retErr.Error()
 		}
 		_ = sessionstate.Save(paths, state)
+		if retErr != nil {
+			fmt.Fprintf(os.Stderr, "\nPaid instance %d remains resumable at %s. Run: stint resume\n", state.InstanceID, valueOr(state.Checkpoint, state.Status))
+		}
 	}()
 
 	if !state.Deadline.IsZero() && !time.Now().Before(state.Deadline) {
@@ -204,10 +207,12 @@ func runResume(args []string) (retErr error) {
 		if err := sessionstate.Save(paths, state); err != nil {
 			return err
 		}
-		if err := startRemoteModel(rootCtx, paths, state); err != nil {
+		if err := startRemoteModelSafe(rootCtx, paths, state); err != nil {
 			return err
 		}
+		state.Status = sessionstate.StatusModelStarted
 		state.Checkpoint = sessionstate.CheckpointModelStarted
+		state.LastError = ""
 		if err := sessionstate.Save(paths, state); err != nil {
 			return err
 		}
@@ -244,7 +249,7 @@ func remoteRuntimeReady(ctx context.Context, paths config.Paths, state sessionst
 }
 
 func remoteModelRunning(ctx context.Context, paths config.Paths, state sessionstate.State) (bool, error) {
-	command := fmt.Sprintf("if pgrep -f '/workspace/stint/llama.cpp/build/bin/llama-server.*--port %d' >/dev/null 2>&1; then echo running; else echo stopped; fi", clineRemotePort)
+	command := `pid="$(cat /workspace/stint/llama.pid 2>/dev/null || true)"; if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo running; elif command -v pgrep >/dev/null 2>&1 && pgrep -x llama-server >/dev/null 2>&1; then echo running; else echo stopped; fi`
 	out, err := runSSH(ctx, paths, state, command)
 	if err != nil {
 		return false, fmt.Errorf("check remote model process: %w", err)
