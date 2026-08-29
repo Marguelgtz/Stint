@@ -24,10 +24,9 @@ func SSHExecutable() (string, error) {
 	}
 
 	// Vast SSH authentication can be transient while an instance is settling.
-	// More importantly, once one connection succeeds, keep that authenticated
-	// transport alive and multiplex later lifecycle commands over it. This avoids
-	// re-authenticating between runtime bootstrap, model launch, log checks, and
-	// the long-lived Cline forward.
+	// Short lifecycle commands reuse an authenticated transport, while long-lived
+	// -N tunnels deliberately bypass multiplexing so the wrapper remains the owner
+	// of the forwarding child and Ctrl+C can tear it down deterministically.
 	//
 	// Bootstrap commands are intentionally noisy (apt, git, cmake, compiler). When
 	// the remote command contains the llama.cpp build, collapse that stream into a
@@ -67,6 +66,20 @@ stop_parent_guard() {
 }
 
 run_ssh() {
+  case " $* " in
+    *" -N "*)
+      "$ssh_bin" \
+        -o IdentitiesOnly=yes \
+        "$@" &
+      ssh_pid=$!
+      start_parent_guard "$ssh_pid"
+      wait "$ssh_pid"
+      status=$?
+      stop_parent_guard
+      return "$status"
+      ;;
+  esac
+
   if [ "$progress_mode" -ne 1 ] || [ ! -t 1 ]; then
     "$ssh_bin" \
       -o IdentitiesOnly=yes \
