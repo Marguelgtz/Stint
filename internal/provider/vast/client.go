@@ -17,6 +17,7 @@ import (
 )
 
 const DefaultBaseURL = "https://console.vast.ai"
+const discoveryPriceCeilingUSD = 0.60
 
 type SearchOptions struct {
 	Hours     float64
@@ -125,7 +126,7 @@ func (c *Client) SearchOffers(ctx context.Context, profile core.Profile, options
 	}
 	limit := options.Limit
 	if limit <= 0 || limit > 250 {
-		limit = 100
+		limit = 250
 	}
 	storageGB := options.StorageGB
 	if storageGB <= 0 {
@@ -140,31 +141,20 @@ func (c *Client) SearchOffers(ctx context.Context, profile core.Profile, options
 		gpuFilter = map[string]any{"in": profile.GPU.PreferredModels}
 	}
 
+	// Provider search is deliberately broader than local eligibility. Vast discovers
+	// inventory; Stint owns hard policy and ranking so failed plans remain diagnosable.
 	payload := map[string]any{
-		"limit":               limit,
-		"type":                "ondemand",
-		"verified":            map[string]any{"eq": true},
-		"rentable":            map[string]any{"eq": true},
-		"rented":              map[string]any{"eq": false},
-		"gpu_name":            gpuFilter,
-		"num_gpus":            map[string]any{"eq": 1},
-		"reliability":         map[string]any{"gte": profile.GPU.MinReliability},
-		"dph_total":           map[string]any{"lte": profile.GPU.MaxHourlyUSD},
-		"duration":            map[string]any{"gte": int(math.Ceil(options.Hours * 3600))},
-		"allocated_storage":   storageGB,
-		"order":               [][]string{{"dlperf", "desc"}, {"dph_total", "asc"}},
-	}
-	if profile.GPU.MinInetDownMBps > 0 {
-		payload["inet_down"] = map[string]any{"gte": profile.GPU.MinInetDownMBps}
-	}
-	if profile.GPU.MinDirectPorts > 0 {
-		payload["direct_port_count"] = map[string]any{"gte": profile.GPU.MinDirectPorts}
-	}
-	if profile.GPU.MinGPURAMMB > 0 {
-		payload["gpu_ram"] = map[string]any{"gte": profile.GPU.MinGPURAMMB}
-	}
-	if profile.GPU.MinGPUMaxPowerW > 0 {
-		payload["gpu_max_power"] = map[string]any{"gte": profile.GPU.MinGPUMaxPowerW}
+		"limit":             limit,
+		"type":              "ondemand",
+		"verified":          map[string]any{"eq": true},
+		"rentable":          map[string]any{"eq": true},
+		"rented":            map[string]any{"eq": false},
+		"gpu_name":          gpuFilter,
+		"num_gpus":          map[string]any{"eq": 1},
+		"dph_total":         map[string]any{"lte": discoveryPriceCeilingUSD},
+		"duration":          map[string]any{"gte": int(math.Ceil(options.Hours * 3600))},
+		"allocated_storage": storageGB,
+		"order":             [][]string{{"dlperf", "desc"}, {"dph_total", "asc"}},
 	}
 
 	raw, err := c.search(ctx, payload)
@@ -280,7 +270,7 @@ func FixtureOffers(profile string) []core.Offer {
 	if profile == "interactive" {
 		return []core.Offer{
 			{ID: "fixture-4090-fast", GPUModel: "RTX_4090", GPURAMMB: 24576, GPUMaxPowerW: 450, HourlyUSD: 0.35, Reliability: 0.995, DLPerf: 110, InetDownMBps: 500, DirectPortCount: 2, Verified: true, Rentable: true, Geolocation: "fixture-fast"},
-			{ID: "fixture-4090-cheap", GPUModel: "RTX_4090", GPURAMMB: 24576, GPUMaxPowerW: 450, HourlyUSD: 0.31, Reliability: 0.99, DLPerf: 96, InetDownMBps: 500, DirectPortCount: 2, Verified: true, Rentable: true, Geolocation: "fixture-cheap"},
+			{ID: "fixture-4090-cheap", GPUModel: "RTX_4090", GPURAMMB: 24576, GPUMaxPowerW: 300, HourlyUSD: 0.31, Reliability: 0.99, DLPerf: 96, InetDownMBps: 40, DirectPortCount: 2, Verified: true, Rentable: true, Geolocation: "fixture-cheap"},
 		}
 	}
 	return []core.Offer{
