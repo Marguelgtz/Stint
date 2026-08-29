@@ -14,14 +14,27 @@ const (
 	ObjectiveValidatedWorkPerDollar Objective = "validated_work_per_dollar"
 )
 
+type RejectionReason string
+
+const (
+	RejectGPU         RejectionReason = "gpu"
+	RejectPrice       RejectionReason = "price"
+	RejectReliability RejectionReason = "reliability"
+	RejectPorts       RejectionReason = "direct_ports"
+	RejectVRAM        RejectionReason = "vram"
+	RejectVerified    RejectionReason = "verified"
+	RejectRentable    RejectionReason = "rentable"
+	RejectRented      RejectionReason = "already_rented"
+)
+
 type GPUPolicy struct {
 	PreferredModels   []string `json:"preferredModels"`
 	MaxHourlyUSD      float64  `json:"maxHourlyUsd"`
 	MinReliability    float64  `json:"minReliability"`
-	MinInetDownMBps   float64  `json:"minInetDownMBps"`
+	PreferredInetDownMBps float64 `json:"preferredInetDownMBps"`
 	MinDirectPorts    int      `json:"minDirectPorts"`
 	MinGPURAMMB       int      `json:"minGpuRamMb"`
-	MinGPUMaxPowerW   float64  `json:"minGpuMaxPowerW"`
+	PreferredGPUMaxPowerW float64 `json:"preferredGpuMaxPowerW"`
 	RequireVerified   bool     `json:"requireVerified"`
 	RequireRentable   bool     `json:"requireRentable"`
 	RequireNotRented  bool     `json:"requireNotRented"`
@@ -60,6 +73,12 @@ type Offer struct {
 	Rented            bool    `json:"rented"`
 }
 
+type OfferEvaluation struct {
+	Offer      Offer             `json:"offer"`
+	Qualified  bool              `json:"qualified"`
+	Rejections []RejectionReason `json:"rejections,omitempty"`
+}
+
 type PlannedWorker struct {
 	Offer               Offer   `json:"offer"`
 	EstimatedSessionUSD float64 `json:"estimatedSessionUsd"`
@@ -78,16 +97,16 @@ var BuiltinProfiles = map[string]Profile{
 		Objective: ObjectiveLatency,
 		Workers:   1,
 		GPU: GPUPolicy{
-			PreferredModels:  []string{"RTX_4090"},
-			MaxHourlyUSD:     0.40,
-			MinReliability:   0.985,
-			MinInetDownMBps:  100,
-			MinDirectPorts:   1,
-			MinGPURAMMB:      24000,
-			MinGPUMaxPowerW:  350,
-			RequireVerified:  true,
-			RequireRentable:  true,
-			RequireNotRented: true,
+			PreferredModels:          []string{"RTX_4090"},
+			MaxHourlyUSD:             0.40,
+			MinReliability:           0.985,
+			PreferredInetDownMBps:    50,
+			MinDirectPorts:           1,
+			MinGPURAMMB:              24000,
+			PreferredGPUMaxPowerW:    350,
+			RequireVerified:          true,
+			RequireRentable:          true,
+			RequireNotRented:         true,
 		},
 		Session: SessionPolicy{DefaultHours: 5, MaxCostUSD: 2.50, StorageGB: 50},
 	},
@@ -96,15 +115,15 @@ var BuiltinProfiles = map[string]Profile{
 		Objective: ObjectiveValidatedWorkPerDollar,
 		Workers:   2,
 		GPU: GPUPolicy{
-			PreferredModels:  []string{"RTX_3090"},
-			MaxHourlyUSD:     0.18,
-			MinReliability:   0.98,
-			MinInetDownMBps:  50,
-			MinDirectPorts:   1,
-			MinGPURAMMB:      24000,
-			RequireVerified:  true,
-			RequireRentable:  true,
-			RequireNotRented: true,
+			PreferredModels:       []string{"RTX_3090"},
+			MaxHourlyUSD:          0.18,
+			MinReliability:        0.98,
+			PreferredInetDownMBps: 50,
+			MinDirectPorts:        1,
+			MinGPURAMMB:           24000,
+			RequireVerified:       true,
+			RequireRentable:       true,
+			RequireNotRented:      true,
 		},
 		Session: SessionPolicy{DefaultHours: 8, MaxCostUSD: 3.00, StorageGB: 50},
 	},
@@ -121,38 +140,45 @@ func preferredRank(profile Profile, model string) int {
 	return 1 << 30
 }
 
-func Qualifies(profile Profile, offer Offer) bool {
+func EvaluateOffer(profile Profile, offer Offer) OfferEvaluation {
+	rejections := make([]RejectionReason, 0, 8)
 	if preferredRank(profile, offer.GPUModel) == 1<<30 {
-		return false
+		rejections = append(rejections, RejectGPU)
 	}
 	if offer.HourlyUSD <= 0 || offer.HourlyUSD > profile.GPU.MaxHourlyUSD {
-		return false
+		rejections = append(rejections, RejectPrice)
 	}
 	if offer.Reliability < profile.GPU.MinReliability {
-		return false
-	}
-	if offer.InetDownMBps < profile.GPU.MinInetDownMBps {
-		return false
+		rejections = append(rejections, RejectReliability)
 	}
 	if offer.DirectPortCount < profile.GPU.MinDirectPorts {
-		return false
+		rejections = append(rejections, RejectPorts)
 	}
 	if offer.GPURAMMB < profile.GPU.MinGPURAMMB {
-		return false
-	}
-	if profile.GPU.MinGPUMaxPowerW > 0 && offer.GPUMaxPowerW < profile.GPU.MinGPUMaxPowerW {
-		return false
+		rejections = append(rejections, RejectVRAM)
 	}
 	if profile.GPU.RequireVerified && !offer.Verified {
-		return false
+		rejections = append(rejections, RejectVerified)
 	}
 	if profile.GPU.RequireRentable && !offer.Rentable {
-		return false
+		rejections = append(rejections, RejectRentable)
 	}
 	if profile.GPU.RequireNotRented && offer.Rented {
-		return false
+		rejections = append(rejections, RejectRented)
 	}
-	return true
+	return OfferEvaluation{Offer: offer, Qualified: len(rejections) == 0, Rejections: rejections}
+}
+
+func EvaluateOffers(profile Profile, offers []Offer) []OfferEvaluation {
+	result := make([]OfferEvaluation, 0, len(offers))
+	for _, offer := range offers {
+		result = append(result, EvaluateOffer(profile, offer))
+	}
+	return result
+}
+
+func Qualifies(profile Profile, offer Offer) bool {
+	return EvaluateOffer(profile, offer).Qualified
 }
 
 func RankOffers(profile Profile, offers []Offer) []Offer {
@@ -176,11 +202,16 @@ func RankOffers(profile Profile, offers []Offer) []Offer {
 			if a.Reliability != b.Reliability {
 				return a.Reliability > b.Reliability
 			}
+			if a.InetDownMBps != b.InetDownMBps {
+				return a.InetDownMBps > b.InetDownMBps
+			}
+			if a.HourlyUSD != b.HourlyUSD {
+				return a.HourlyUSD < b.HourlyUSD
+			}
 			if a.GPUMaxPowerW != b.GPUMaxPowerW {
 				return a.GPUMaxPowerW > b.GPUMaxPowerW
 			}
-		}
-		if a.HourlyUSD != b.HourlyUSD {
+		} else if a.HourlyUSD != b.HourlyUSD {
 			return a.HourlyUSD < b.HourlyUSD
 		}
 		return a.ID < b.ID
