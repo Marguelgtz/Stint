@@ -83,6 +83,7 @@ func TestNInferLaunchUsesQualified4090Profile(t *testing.T) {
 		ninferModelSHA256,
 		"/workspace/stint/llama.pid",
 		"/workspace/stint/llama.log",
+		"--model-id qwen3.8-27b",
 		"--max-context 126976",
 		"--kv-capacity 126976",
 		"--kv-dtype int8",
