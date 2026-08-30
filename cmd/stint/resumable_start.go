@@ -90,10 +90,12 @@ func runStartResumable(args []string) (retErr error) {
 	client := vast.NewClient(credentials.Vast.APIKey)
 
 	fmt.Println("Searching Vast for interactive compute...")
-	searchCtx, searchCancel := context.WithTimeout(context.Background(), 35*time.Second)
-	offers, err := client.SearchOffers(searchCtx, profile, vast.SearchOptions{
+	searchProfile, searchOptions := prepareVastSearchForRuntime(profile, vast.SearchOptions{
 		Hours: hours, Limit: 250, StorageGB: profile.Session.StorageGB,
-	})
+	}, runtimeRequest)
+	profile = searchProfile
+	searchCtx, searchCancel := context.WithTimeout(context.Background(), 35*time.Second)
+	offers, err := client.SearchOffers(searchCtx, profile, searchOptions)
 	searchCancel()
 	if err != nil {
 		return err
@@ -198,7 +200,7 @@ func runStartResumable(args []string) (retErr error) {
 
 	fmt.Println("Renting selected offer...")
 	instanceID, err := client.CreateInstance(rootCtx, selected.ID, vast.CreateInstanceOptions{
-		Image:  interactiveImage,
+		Image:  vastImageForRuntime(selectedRuntime),
 		DiskGB: profile.Session.StorageGB,
 		Label:  "stint-interactive",
 	})
