@@ -193,6 +193,12 @@ func (c *Client) AttachSSHKey(ctx context.Context, instanceID int64, publicKey s
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return classifyInstanceWriteError(decodeAPIError(resp))
 	}
+
+	// The per-instance attach endpoint can report success even when a host has
+	// created authorized_keys with modes OpenSSH StrictModes refuses. Vast's
+	// instance command channel does not depend on SSH, so use it as a best-effort
+	// repair path. Fresh instances also receive an onstart permission watcher.
+	_ = c.RepairSSHPermissions(ctx, instanceID)
 	return nil
 }
 
