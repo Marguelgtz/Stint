@@ -2,6 +2,13 @@ package vast
 
 import "testing"
 
+func TestNInferCUDA128ImageUsesUbuntu2404(t *testing.T) {
+	const want = "vastai/base-image:cuda-12.8.1-cudnn-devel-ubuntu24.04-py310"
+	if NInferCUDA128Image != want {
+		t.Fatalf("NInferCUDA128Image = %q, want %q", NInferCUDA128Image, want)
+	}
+}
+
 func TestApplyMinCUDARequirement(t *testing.T) {
 	payload := map[string]any{}
 	applyMinCUDARequirement(NInferMinCUDAVersion, payload)
