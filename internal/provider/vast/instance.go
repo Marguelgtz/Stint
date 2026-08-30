@@ -24,24 +24,16 @@ type CreateInstanceOptions struct {
 	OnStart string
 }
 
-type PortBinding struct {
-	HostIP   string `json:"HostIp"`
-	HostPort string `json:"HostPort"`
-}
-
 type Instance struct {
-	ID           int64                    `json:"id"`
-	ActualStatus string                   `json:"actual_status"`
-	StatusMsg    string                   `json:"status_msg"`
-	ImageRuntype string                   `json:"image_runtype"`
-	SSHHost      string                   `json:"ssh_host"`
-	SSHPort      int                      `json:"ssh_port"`
-	PublicIPAddr string                   `json:"public_ipaddr"`
-	Ports        map[string][]PortBinding `json:"ports"`
-	GPUName      string                   `json:"gpu_name"`
-	GPURAM       int                      `json:"gpu_ram"`
-	DPHTotal     float64                  `json:"dph_total"`
-	Verification string                   `json:"verification"`
+	ID           int64   `json:"id"`
+	ActualStatus string  `json:"actual_status"`
+	StatusMsg    string  `json:"status_msg"`
+	SSHHost      string  `json:"ssh_host"`
+	SSHPort      int     `json:"ssh_port"`
+	GPUName      string  `json:"gpu_name"`
+	GPURAM       int     `json:"gpu_ram"`
+	DPHTotal     float64 `json:"dph_total"`
+	Verification string  `json:"verification"`
 }
 
 type createInstanceResponse struct {
@@ -126,21 +118,6 @@ func normalizeInstanceImage(image string) string {
 	return image
 }
 
-func (i Instance) resolvedSSHEndpoint() (string, int) {
-	if strings.EqualFold(strings.TrimSpace(i.ImageRuntype), "ssh_direct") {
-		host := strings.TrimSpace(i.PublicIPAddr)
-		if host != "" {
-			for _, binding := range i.Ports["22/tcp"] {
-				port, err := strconv.Atoi(strings.TrimSpace(binding.HostPort))
-				if err == nil && port > 0 && port <= 65535 {
-					return host, port
-				}
-			}
-		}
-	}
-	return strings.TrimSpace(i.SSHHost), i.SSHPort
-}
-
 func (c *Client) ShowInstance(ctx context.Context, instanceID int64) (Instance, error) {
 	if instanceID <= 0 {
 		return Instance{}, errors.New("invalid Vast instance id")
@@ -162,9 +139,7 @@ func (c *Client) ShowInstance(ctx context.Context, instanceID int64) (Instance, 
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&result); err != nil {
 		return Instance{}, fmt.Errorf("decode Vast show instance response: %w", err)
 	}
-	instance := result.Instances
-	instance.SSHHost, instance.SSHPort = instance.resolvedSSHEndpoint()
-	return instance, nil
+	return result.Instances, nil
 }
 
 func (c *Client) AttachSSHKey(ctx context.Context, instanceID int64, publicKey string) error {
