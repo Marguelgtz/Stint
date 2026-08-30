@@ -9,11 +9,17 @@ const (
 	// Keep llama.cpp on Vast's SSH-capable CUDA base. The upstream llama.cpp
 	// server-cuda image is intentionally minimal and does not provide the SSH
 	// lifecycle Stint relies on for start/resume.
-	llamaVastImage       = vast.NInferCUDA128Image
-	llamaVastMinCUDA     = 12.8
-	llamaModelFileName   = "Qwen3.8-27B-Q4_K_M.gguf"
-	llamaModelSHA256     = "31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34"
+	llamaVastImage        = vast.NInferCUDA128Image
+	llamaVastMinCUDA      = 12.8
+	llamaModelFileName    = "Qwen3.8-27B-Q4_K_M.gguf"
+	llamaModelSHA256      = "31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34"
 	llamaModelDownloadURL = "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-Q4_K_M.gguf"
+
+	// Some Vast hosts have been observed creating /root/.ssh/authorized_keys
+	// with ownership or modes that OpenSSH StrictModes rejects. Keep a tiny
+	// background repair loop alive through the provider startup window so late
+	// key injection cannot leave an otherwise healthy paid instance unreachable.
+	vastSSHPermissionsOnStart = `install -d -m 700 -o root -g root /root/.ssh; chmod 700 /root /root/.ssh 2>/dev/null || true; nohup sh -c 'i=0; while [ "$i" -lt 450 ]; do if [ -e /root/.ssh/authorized_keys ]; then chown root:root /root /root/.ssh /root/.ssh/authorized_keys 2>/dev/null || true; chmod 700 /root /root/.ssh 2>/dev/null || true; chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true; fi; i=$((i+1)); sleep 2; done' >/tmp/stint-ssh-permissions.log 2>&1 &`
 )
 
 func prepareVastSearchForRuntime(profile core.Profile, options vast.SearchOptions, runtimeRequest string) (core.Profile, vast.SearchOptions) {
@@ -36,8 +42,8 @@ func vastImageForRuntime(runtime string) string {
 }
 
 func vastOnStartForRuntime(runtime string) string {
-	// Runtime preparation happens after Stint has proved SSH responsiveness.
-	// Do not replace Vast's SSH-capable container lifecycle with a minimal
-	// inference-only entrypoint.
-	return ""
+	// Runtime preparation still happens only after Stint has proved SSH
+	// responsiveness. This hook is intentionally limited to repairing OpenSSH's
+	// required ownership/modes while Vast may still be injecting authorized_keys.
+	return vastSSHPermissionsOnStart
 }
