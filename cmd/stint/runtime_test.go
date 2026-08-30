@@ -58,17 +58,26 @@ func TestRuntimeContextsAndLegacyResume(t *testing.T) {
 	}
 }
 
-func TestNInferBootstrapIsPinned(t *testing.T) {
+func TestNInferBootstrapIsPinnedAndPrefetchesInParallel(t *testing.T) {
 	command := ninferBootstrapCommand()
 	for _, required := range []string{
 		ninferSourceRepository,
 		ninferSourceCommit,
+		ninferModelURL,
+		ninferModelSHA256,
 		"CUDA toolkit 12.8 or newer",
 		"gcc-13",
 		"g++-13",
 		"CMake 3.28",
 		"-DCMAKE_CUDA_ARCHITECTURES=89",
 		"--target ninfer ninfer-serve",
+		"model-download.pid",
+		"model-download.log",
+		"Starting Qwen3.8-27B model prefetch in parallel",
+		"--retry-all-errors",
+		"-C -",
+		"waiting for the parallel Qwen model transfer",
+		"18210531328",
 	} {
 		if !strings.Contains(command, required) {
 			t.Fatalf("NInfer bootstrap missing %q", required)
