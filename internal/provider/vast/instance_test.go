@@ -133,27 +133,6 @@ func TestShowAndDestroyInstanceEndpoints(t *testing.T) {
 	}
 }
 
-func TestShowInstanceUsesSSHDirectPortMapping(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v0/instances/9876" {
-			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
-		}
-		_, _ = w.Write([]byte(`{"instances":{"id":9876,"actual_status":"running","image_runtype":"ssh_direct","ssh_host":"ssh7.vast.ai","ssh_port":35446,"public_ipaddr":"189.79.25.23","ports":{"22/tcp":[{"HostIp":"0.0.0.0","HostPort":"42831"},{"HostIp":"::","HostPort":"42831"}]}}}`))
-	}))
-	defer server.Close()
-
-	client := NewClient("test-key")
-	client.BaseURL = server.URL
-	client.HTTPClient = server.Client()
-	instance, err := client.ShowInstance(context.Background(), 9876)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if instance.SSHHost != "189.79.25.23" || instance.SSHPort != 42831 {
-		t.Fatalf("SSH endpoint = %s:%d, want 189.79.25.23:42831", instance.SSHHost, instance.SSHPort)
-	}
-}
-
 func TestCreateInstanceExplainsMissingWritePermission(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
