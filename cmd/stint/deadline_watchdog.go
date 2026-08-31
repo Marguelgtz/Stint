@@ -112,7 +112,17 @@ func watchSessionDeadline(
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("load session state: %w", err)
+			// A temporary local read failure must not silently remove the only
+			// deadline enforcer for a paid resource. Retry without contacting the
+			// provider; session state writes are atomic so the next read should
+			// normally recover immediately.
+			if waitErr := deps.wait(ctx, pollInterval); waitErr != nil {
+				if errors.Is(waitErr, context.Canceled) || errors.Is(waitErr, context.DeadlineExceeded) {
+					return nil
+				}
+				return waitErr
+			}
+			continue
 		}
 		if state.InstanceID != expectedInstanceID {
 			// A watchdog from an older session must never touch a replacement
@@ -150,7 +160,13 @@ func watchSessionDeadline(
 		}
 		if loadErr != nil {
 			release()
-			return fmt.Errorf("reload session state at deadline: %w", loadErr)
+			if waitErr := deps.wait(ctx, pollInterval); waitErr != nil {
+				if errors.Is(waitErr, context.Canceled) || errors.Is(waitErr, context.DeadlineExceeded) {
+					return nil
+				}
+				return waitErr
+			}
+			continue
 		}
 		if fresh.InstanceID != expectedInstanceID {
 			release()
@@ -162,12 +178,15 @@ func watchSessionDeadline(
 		}
 
 		destroyErr := deps.destroy(fresh)
+		if destroyErr != nil && deps.recordFail != nil {
+			// Persist the failure while the same lifecycle lock is still held.
+			// Writing stale state after release could otherwise clobber a
+			// concurrent extend/resume/down mutation.
+			deps.recordFail(fresh, destroyErr)
+		}
 		release()
 		if destroyErr == nil {
 			return nil
-		}
-		if deps.recordFail != nil {
-			deps.recordFail(fresh, destroyErr)
 		}
 		// Keep the watchdog alive after a provider/API failure. The paid
 		// resource remains recorded and we retry until teardown succeeds or
