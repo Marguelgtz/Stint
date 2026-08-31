@@ -19,8 +19,10 @@ jobs:
         run: |
           test -f .spark/profile.yml
           grep -q 'cmd/stint/\*\*' .spark/profile.yml
+          grep -q 'internal/session/\*\*' .spark/profile.yml
           grep -q 'internal/provider/vast/\*\*' .spark/profile.yml
           grep -q 'go-vet' .spark/profile.yml
+          grep -q 'race-tests' .spark/profile.yml
 
   go-vet:
     name: go-vet
