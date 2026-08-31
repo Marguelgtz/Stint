@@ -10,8 +10,7 @@ func TestDashboardTerminalModePreservesOutputProcessing(t *testing.T) {
 	// This is the regression behind the live resize screenshots: `stty raw`
 	// disables OPOST/ONLCR, so newlines no longer return to column zero and the
 	// whole screen appears to drift horizontally after redraw/resize.
-	mode := []string{"-icanon", "-echo", "-isig", "min", "1", "time", "0"}
-	joined := " " + strings.Join(mode, " ") + " "
+	joined := " " + strings.Join(dashboardInputModeArgs(), " ") + " "
 	if strings.Contains(joined, " raw ") || strings.Contains(joined, " -opost ") || strings.Contains(joined, " -onlcr ") {
 		t.Fatalf("dashboard input mode may not disable terminal output processing: %q", joined)
 	}
