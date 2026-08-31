@@ -157,6 +157,7 @@ var (
 			{name: "--runtime", argument: "<name>", defaultVal: "auto", purpose: "inference runtime: auto, ninfer, or llama.cpp"},
 			{name: "--context", argument: "<int>", defaultVal: "16384", purpose: "llama.cpp context tokens (1024-131072)"},
 			{name: "--ninfer-config", argument: "<name>", defaultVal: "coding", purpose: "NInfer config: coding, precision, or native"},
+			{name: "--clients", argument: "<int>", defaultVal: "1", purpose: "NInfer client lanes: 1 or 2; lanes share the configured KV/context pool dynamically"},
 			{name: "--min-network-mbps", argument: "<float>", defaultVal: "500", purpose: "minimum Vast advertised download bandwidth in Mbps; 0 disables the prefilter"},
 			{name: "--min-measured-download-mbps", argument: "<float>", defaultVal: "40", purpose: "minimum measured post-SSH model-transfer throughput in MB/s; 0 disables"},
 			{name: "--network-candidate-attempts", argument: "<int>", defaultVal: "3", purpose: "maximum distinct Vast machines to try during provider startup and network qualification"},
@@ -164,12 +165,14 @@ var (
 		examples: []string{
 			"stint start interactive --hours 2",
 			"stint start interactive --yes --runtime ninfer --ninfer-config coding",
+			"stint start interactive --runtime ninfer --ninfer-config native --clients 2",
 			"stint start interactive --location germany --min-measured-download-mbps 50",
 			"stint start interactive --runtime llama.cpp --context 32768",
 		},
 		notes: []string{
 			"Requires `stint auth vast`, a free local port 8409, and the Stint SSH key (`stint setup ssh`).",
 			"NInfer is qualified for RTX 4090 hosts with CUDA >= 12.8 only; with --runtime auto, a 4090 uses NInfer and any other qualifying GPU falls back to llama.cpp (auto also falls back if the NInfer bootstrap is unavailable).",
+			"--clients 2 is NInfer-only. It maps to two generation lanes over one shared dynamic KV pool; Stint does not split the configured context in half. Auto mode will not silently fall back to llama.cpp when two clients were requested.",
 			"Provider or SSH startup failures reject the host and try the next candidate. Failures after SSH is ready preserve the paid instance: run `stint resume` to continue.",
 			"The endpoint is OpenAI-compatible: base URL http://127.0.0.1:8409/v1, model qwen3.8-27b.",
 		},
@@ -317,6 +320,7 @@ func printUsage() {
 	}
 	b.WriteString("EXAMPLES\n")
 	b.WriteString("  stint start interactive --hours 2 --runtime ninfer\n")
+	b.WriteString("  stint start interactive --runtime ninfer --ninfer-config native --clients 2\n")
 	b.WriteString("  stint start interactive --yes --min-measured-download-mbps 50\n")
 	b.WriteString("  stint plan interactive --hours 5 --json\n")
 	b.WriteString("  stint status && stint perf --runs 5\n\n")

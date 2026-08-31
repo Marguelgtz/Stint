@@ -79,7 +79,10 @@ func bootstrapSelectedRuntime(ctx context.Context, paths config.Paths, state ses
 	case runtimeNInfer:
 		if err := bootstrapNInfer(ctx, paths, state); err == nil {
 			return runtimeNInfer, nil
-		} else if state.RuntimeRequest != runtimeAuto {
+		} else if !allowLlamaFallbackForState(state) {
+			if state.RuntimeRequest == runtimeAuto && clientsForState(state) > defaultNInferClients {
+				return "", fmt.Errorf("ninfer bootstrap failed and --clients %d requires NInfer; refusing llama.cpp fallback: %w", clientsForState(state), err)
+			}
 			return "", err
 		} else {
 			fmt.Printf("NInfer bootstrap unavailable on this host (%v). Falling back to llama.cpp.\n", err)
@@ -242,7 +245,7 @@ func selectedModelProcessName(state sessionstate.State) string {
 
 func remoteModelLaunchCommandForState(state sessionstate.State) string {
 	if runtimeForState(state) == runtimeNInfer {
-		return ninferModelLaunchCommand(contextForState(state))
+		return ninferModelLaunchCommandWithClients(contextForState(state), clientsForState(state))
 	}
 	return llamaModelLaunchCommand(contextForState(state))
 }
@@ -360,7 +363,13 @@ fi
 `, llamaModelFileName, llamaModelSHA256, llamaModelDownloadURL, llamaModelFileName, interactiveModelAlias, clineRemotePort, contextTokens)
 }
 
+// ninferModelLaunchCommand preserves the historical single-client helper used
+// by tests and callers that do not have session state.
 func ninferModelLaunchCommand(contextTokens int) string {
+	return ninferModelLaunchCommandWithClients(contextTokens, defaultNInferClients)
+}
+
+func ninferModelLaunchCommandWithClients(contextTokens, clients int) string {
 	config := ninferConfigForContext(contextTokens)
 	return fmt.Sprintf(`set -eu
 mkdir -p /workspace/stint/models
@@ -399,7 +408,7 @@ exec /workspace/stint/ninfer/build/apps/ninfer-serve "$model" \
   --model-id %s \
   --max-context %d \
   --kv-capacity %d \
-  --max-concurrency 1 \
+  --max-concurrency %d \
   --max-pending-requests 16 \
   --pending-timeout-ms 600000 \
   --prefill-chunk 1024 \
@@ -416,5 +425,5 @@ if ! kill -0 "$new_pid" 2>/dev/null; then
   tail -n 20 "$log_file" >&2 || true
   exit 1
 fi
-`, ninferModelSHA256, ninferModelURL, ninferModelSHA256, clineRemotePort, interactiveModelAlias, contextTokens, contextTokens, config.KVDType)
+`, ninferModelSHA256, ninferModelURL, ninferModelSHA256, clineRemotePort, interactiveModelAlias, contextTokens, contextTokens, clients, config.KVDType)
 }

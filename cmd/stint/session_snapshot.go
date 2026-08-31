@@ -20,6 +20,7 @@ type sessionInfo struct {
 	Runtime       string `json:"runtime,omitempty"`
 	Model         string `json:"model,omitempty"`
 	ContextTokens int    `json:"contextTokens,omitempty"`
+	Clients       int    `json:"clients,omitempty"`
 	Profile       string `json:"profile,omitempty"`
 	Checkpoint    string `json:"checkpoint,omitempty"`
 	LastError     string `json:"lastError,omitempty"`
@@ -117,6 +118,7 @@ func buildSessionSnapshot(state sessionstate.State, now time.Time) sessionSnapsh
 			Runtime:       runtimeForState(state),
 			Model:         interactiveModelAlias,
 			ContextTokens: contextForState(state),
+			Clients:       clientsForState(state),
 			Profile:       state.Profile,
 			Checkpoint:    state.Checkpoint,
 			LastError:     state.LastError,
