@@ -22,19 +22,16 @@ func Remaining(state State, now time.Time) time.Duration {
 	return state.Deadline.Sub(now)
 }
 
-// Elapsed returns the non-negative elapsed time since the paid session began.
+// Elapsed returns the non-negative wall time since the paid session began.
+// It intentionally continues past the configured deadline: if provider
+// teardown fails, status must not under-report how long the resource has
+// actually remained allocated. ScheduledDuration separately represents the
+// configured deadline window.
 func Elapsed(state State, now time.Time) time.Duration {
 	if state.StartedAt.IsZero() || !now.After(state.StartedAt) {
 		return 0
 	}
-	end := now
-	if !state.Deadline.IsZero() && end.After(state.Deadline) {
-		end = state.Deadline
-	}
-	if !end.After(state.StartedAt) {
-		return 0
-	}
-	return end.Sub(state.StartedAt)
+	return now.Sub(state.StartedAt)
 }
 
 // ScheduledDuration returns the currently scheduled paid duration.
