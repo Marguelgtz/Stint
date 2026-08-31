@@ -47,6 +47,7 @@ func runStartResumable(args []string) (retErr error) {
 	runtimeValue := fs.String("runtime", runtimeAuto, "inference runtime: auto, ninfer, or llama.cpp")
 	contextValue := fs.String("context", "", "llama.cpp context tokens (1024-131072; default 16384)")
 	ninferConfigValue := fs.String("ninfer-config", ninferConfigCoding, "NInfer config: coding, precision, or native")
+	clients := fs.Int("clients", defaultNInferClients, "NInfer client lanes (1 or 2; shared dynamic KV pool)")
 	minNetworkMbps := fs.Float64("min-network-mbps", defaultMinAdvertisedNetworkMbps, "minimum Vast advertised download bandwidth in Mbps; 0 disables")
 	minMeasuredDownloadMBps := fs.Float64("min-measured-download-mbps", defaultMinMeasuredDownloadMBps, "minimum measured post-SSH download throughput in MB/s; 0 disables")
 	networkCandidateAttempts := fs.Int("network-candidate-attempts", defaultNetworkCandidateAttempts, "maximum distinct Vast machines to try during provider startup and measured-network qualification")
@@ -63,9 +64,15 @@ func runStartResumable(args []string) (retErr error) {
 	if err := validateNetworkCandidateAttempts(*networkCandidateAttempts); err != nil {
 		return err
 	}
+	if err := validateNInferClients(*clients); err != nil {
+		return err
+	}
 	runtimeRequest, err := normalizeRuntime(*runtimeValue)
 	if err != nil {
 		return err
+	}
+	if runtimeRequest == runtimeLlamaCpp && *clients > defaultNInferClients {
+		return validateClientsForRuntime(runtimeLlamaCpp, *clients)
 	}
 	requestedNInferConfig, err := resolveNInferConfig(*ninferConfigValue)
 	if err != nil {
@@ -137,6 +144,9 @@ func runStartResumable(args []string) (retErr error) {
 	if err != nil {
 		return err
 	}
+	if err := validateClientsForRuntime(selectedRuntime, *clients); err != nil {
+		return err
+	}
 	selectedContext := contextForRuntime(selectedRuntime)
 	if strings.TrimSpace(*contextValue) != "" {
 		if selectedRuntime != runtimeLlamaCpp {
@@ -171,6 +181,7 @@ func runStartResumable(args []string) (retErr error) {
 	fmt.Println()
 	if selectedRuntime == runtimeNInfer {
 		fmt.Printf("NInfer config  %s (%s)\n", requestedNInferConfig.Name, requestedNInferConfig.Description)
+		fmt.Printf("Clients        %d concurrent lane(s), shared KV\n", *clients)
 	}
 	fmt.Printf("Context        %d tokens\n", selectedContext)
 	fmt.Printf("Cline endpoint http://127.0.0.1:%d/v1\n", clinePort)
@@ -224,6 +235,9 @@ func runStartResumable(args []string) (retErr error) {
 		if candidateErr != nil {
 			return candidateErr
 		}
+		if err := validateClientsForRuntime(candidateRuntime, *clients); err != nil {
+			return err
+		}
 		candidateContext := contextForRuntime(candidateRuntime)
 		if strings.TrimSpace(*contextValue) != "" {
 			if candidateRuntime != runtimeLlamaCpp {
@@ -245,7 +259,7 @@ func runStartResumable(args []string) (retErr error) {
 		deadline := startedAt.Add(time.Duration(hours * float64(time.Hour)))
 		state = sessionstate.State{
 			OfferID: selected.ID, Profile: profileName, GPUModel: selected.GPUModel,
-			RuntimeRequest: runtimeRequest, Runtime: selectedRuntime, ContextTokens: selectedContext,
+			RuntimeRequest: runtimeRequest, Runtime: selectedRuntime, ContextTokens: selectedContext, Clients: *clients,
 			HourlyUSD: selected.HourlyUSD, Hours: hours, StartedAt: startedAt, Deadline: deadline,
 			Status: sessionstate.StatusRenting,
 		}

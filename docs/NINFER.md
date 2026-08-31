@@ -8,7 +8,7 @@ Stint serves Qwen3.8-27B through a pinned NInfer build on RTX 4090 hosts. NInfer
 
 | Value | Behavior |
 | --- | --- |
-| `auto` (default) | RTX 4090 host → NInfer; any other qualifying GPU → llama.cpp. If the NInfer bootstrap is unavailable on the 4090 host, auto mode falls back to llama.cpp on the same host and reports the switch. |
+| `auto` (default) | RTX 4090 host → NInfer; any other qualifying GPU → llama.cpp. If the NInfer bootstrap is unavailable on the 4090 host, auto mode falls back to llama.cpp on the same host and reports the switch. The fallback is disabled when `--clients 2` was requested because llama.cpp is intentionally unchanged and cannot preserve that NInfer lane contract. |
 | `ninfer` | NInfer only; the search is restricted to RTX 4090 offers and any non-4090 selection is an error. Bootstrap failure is fatal (no silent fallback). |
 | `llama.cpp` (aliases `llama`, `llamacpp`, `llama-cpp`) | Always llama.cpp. |
 
@@ -16,6 +16,7 @@ Read-only surfaces stay consistent with paid starts:
 
 - `stint plan interactive` prints `Runtime (auto)` for the selected offer, using the same selection rule as `stint start`.
 - `stint status` prints `NInfer config` (derived from the persisted context) for NInfer sessions.
+- `stint status --refresh` and `stint dash` observe the engine's `/slots` endpoint, so a two-client NInfer session exposes both lanes directly.
 - `stint dash` shows the runtime and context in the session header.
 
 ## Host qualification
@@ -41,6 +42,38 @@ All presets run MTP3 speculative decoding (`--spec mtp --draft-tokens 3 --lm-hea
 
 NInfer context is owned by the config preset; `--context` is accepted for llama.cpp only (1024–131072, default 16384) and is rejected with an explanatory error when the selected runtime is NInfer. The launch command re-derives the same preset from the context size, so the on-host flags always match the preset chosen at start.
 
+## Client lanes
+
+`--clients <n>` controls NInfer generation lanes. The first supported values are deliberately narrow:
+
+| Value | Behavior |
+| --- | --- |
+| `1` (default) | Historical single-lane behavior. Existing session files without a `clients` field resume as one lane. |
+| `2` | Launches NInfer with `--max-concurrency 2` so two Cline requests can execute concurrently. |
+
+Two lanes **share the configured KV pool dynamically**. Stint does not halve the selected context preset. For example, `--ninfer-config native --clients 2` still launches with:
+
+```text
+--max-context 262144
+--kv-capacity 262144
+--max-concurrency 2
+```
+
+That means one lane may temporarily hold substantially more context than the other as long as the engine can satisfy the combined resident KV demand. The physical KV pool is shared; conversational histories remain separate NInfer lanes/sessions.
+
+The requested client count is persisted in `session.json`. `stint resume` therefore recreates the same NInfer concurrency instead of silently returning a two-client session to one lane. `--clients 2` is rejected for llama.cpp, and auto mode refuses a llama.cpp bootstrap fallback if doing so would violate a requested two-client contract.
+
+Example maximum-context two-client session:
+
+```bash
+stint start interactive \
+  --runtime ninfer \
+  --ninfer-config native \
+  --clients 2
+```
+
+Use `stint status --refresh` while both clients are active. The live inference section should report two processing lanes rather than one processing request plus a deferred request when both Cline clients are generating concurrently.
+
 ## Pinned Vast image
 
 - Image: `ghcr.io/marguelgtz/stint-ninfer:981b685e-cuda12.8` (also tagged `:edge`).
@@ -54,8 +87,8 @@ NInfer context is owned by the config preset; `--context` is accepted for llama.
 1. Stint rents the qualified offer with the runtime's Vast image and a startup hook that (a) repairs `/root/.ssh` ownership/modes for a bounded window (hosts are observed creating `authorized_keys` in modes OpenSSH `StrictModes` rejects) and (b) bridges the prebuilt binary: a wrapper at `/workspace/stint/ninfer/build/apps/ninfer-serve` that execs `/opt/ninfer/bin/ninfer-serve`, plus a `.stint-commit` marker with the pinned commit.
 2. The bootstrap fast path validates the wrapper and marker, so the paid instance never compiles NInfer; it goes straight to the model transfer.
 3. The model artifact is the pinned `qwen3_8_27b.ninfer` from `huggingface.co/neroued/Qwen3.8-27B-NInfer` (SHA-256 `eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e`), downloaded resumably and verified before launch.
-4. `ninfer-serve` binds remote `127.0.0.1:8080` with `--max-context`/`--kv-capacity` set to the preset context, `--kv-dtype` from the preset, `--max-concurrency 1`, `--max-pending-requests 16`, `--pending-timeout-ms 600000`, and `--prefill-chunk 1024`. Stint tunnels it to `http://127.0.0.1:8409/v1` as model `qwen3.8-27b`.
-5. If the runtime actually bootstrapped as llama.cpp (auto fallback), the persisted session records `llama.cpp` and resume/extend/down behave identically for both runtimes.
+4. `ninfer-serve` binds remote `127.0.0.1:8080` with `--max-context`/`--kv-capacity` set to the preset context, `--kv-dtype` from the preset, `--max-concurrency` set from the persisted client count (1 or 2), `--max-pending-requests 16`, `--pending-timeout-ms 600000`, and `--prefill-chunk 1024`. Stint tunnels it to `http://127.0.0.1:8409/v1` as model `qwen3.8-27b`.
+5. If a single-client runtime actually bootstrapped as llama.cpp (auto fallback), the persisted session records `llama.cpp` and resume/extend/down behave identically for both runtimes. Two-client sessions fail instead of silently changing their concurrency contract.
 
 The llama.cpp fallback is pinned the same way: `vastai/llama-cpp:b10472-mix-4b653db-cuda-12.9` prebuilt binary, `Qwen3.8-27B-Q4_K_M.gguf` (SHA-256 `31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34`), launched with `-ngl all`, q8_0 K/V cache, flash attention, and `--metrics --slots` so Stint's live inference observation can poll its `/metrics` and `/slots` endpoints (llama.cpp serves them only with those flags; NInfer serves both by default).
 
