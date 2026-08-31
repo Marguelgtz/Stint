@@ -20,14 +20,14 @@ func TestRemainingClampsAtZero(t *testing.T) {
 	}
 }
 
-func TestElapsedClampsToScheduledWindow(t *testing.T) {
+func TestElapsedTracksWallTimePastScheduledDeadline(t *testing.T) {
 	started := time.Date(2026, 8, 31, 6, 0, 0, 0, time.UTC)
 	state := State{StartedAt: started, Deadline: started.Add(time.Hour)}
 	if got := Elapsed(state, started.Add(15*time.Minute)); got != 15*time.Minute {
 		t.Fatalf("elapsed = %s, want 15m", got)
 	}
-	if got := Elapsed(state, started.Add(2*time.Hour)); got != time.Hour {
-		t.Fatalf("elapsed after deadline = %s, want 1h", got)
+	if got := Elapsed(state, started.Add(2*time.Hour)); got != 2*time.Hour {
+		t.Fatalf("elapsed after deadline = %s, want 2h", got)
 	}
 }
 
