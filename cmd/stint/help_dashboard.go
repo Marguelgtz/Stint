@@ -1,12 +1,12 @@
 package main
 
 var cmdDash = cliCommand{
-	name:     "dash",
-	aliases:  []string{"dashboard"},
-	section:  "diagnostics",
-	summary:  "open the live session cockpit",
-	detail:   "Opens an interactive terminal dashboard over the existing session snapshot and telemetry layers. Local timing updates every second without I/O; endpoint/runtime/GPU telemetry refreshes passively about every 10 seconds. Recoverable paid sessions can be resumed through the existing lifecycle path. Exiting the dashboard never destroys compute.",
-	usage:    "stint dash [flags]",
+	name:    "dash",
+	aliases: []string{"dashboard"},
+	section: "diagnostics",
+	summary: "open the live session cockpit",
+	detail:  "Opens an interactive terminal dashboard over the existing session snapshot and telemetry layers. Local timing updates every second without I/O; endpoint/runtime/GPU telemetry refreshes passively about every 10 seconds. Recoverable paid sessions can be resumed through the existing lifecycle path. Exiting the dashboard never destroys compute.",
+	usage:   "stint dash [flags]",
 	flags: []cliFlag{
 		{name: "--no-color", defaultVal: "false", purpose: "disable ANSI colors"},
 	},

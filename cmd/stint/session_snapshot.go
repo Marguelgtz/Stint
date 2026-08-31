@@ -69,14 +69,14 @@ type sessionHealth struct {
 }
 
 type gpuTelemetry struct {
-	Refreshed          bool     `json:"refreshed"`
-	Available          bool     `json:"available"`
-	UtilizationPercent *float64 `json:"utilizationPercent,omitempty"`
-	MemoryUsedMiB      *float64 `json:"memoryUsedMiB,omitempty"`
-	MemoryTotalMiB     *float64 `json:"memoryTotalMiB,omitempty"`
-	PowerDrawW         *float64 `json:"powerDrawW,omitempty"`
-	PowerLimitW        *float64 `json:"powerLimitW,omitempty"`
-	TemperatureC       *float64 `json:"temperatureC,omitempty"`
+	Refreshed          bool       `json:"refreshed"`
+	Available          bool       `json:"available"`
+	UtilizationPercent *float64   `json:"utilizationPercent,omitempty"`
+	MemoryUsedMiB      *float64   `json:"memoryUsedMiB,omitempty"`
+	MemoryTotalMiB     *float64   `json:"memoryTotalMiB,omitempty"`
+	PowerDrawW         *float64   `json:"powerDrawW,omitempty"`
+	PowerLimitW        *float64   `json:"powerLimitW,omitempty"`
+	TemperatureC       *float64   `json:"temperatureC,omitempty"`
 	Meta               sampleMeta `json:"meta"`
 }
 

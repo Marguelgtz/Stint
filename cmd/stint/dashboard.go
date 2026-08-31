@@ -109,8 +109,8 @@ func runDashboard(args []string) error {
 	}
 	width, height := dash.Size()
 	controller := &dashboardController{
-		paths: paths,
-		model: dash.Model{Width: width, Height: height, NoColor: *noColor || os.Getenv("NO_COLOR") != "", View: dash.Home},
+		paths:       paths,
+		model:       dash.Model{Width: width, Height: height, NoColor: *noColor || os.Getenv("NO_COLOR") != "", View: dash.Home},
 		refreshCh:   make(chan dashboardLoadResult, 1),
 		benchmarkCh: make(chan dashboardBenchmarkResult, 1),
 	}

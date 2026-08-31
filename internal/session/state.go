@@ -29,10 +29,10 @@ const (
 
 const (
 	CheckpointInstanceCreated = "INSTANCE_CREATED"
-	CheckpointSSHReady         = "SSH_READY"
-	CheckpointRuntimeReady     = "RUNTIME_READY"
-	CheckpointModelStarted     = "MODEL_STARTED"
-	CheckpointReady            = "READY"
+	CheckpointSSHReady        = "SSH_READY"
+	CheckpointRuntimeReady    = "RUNTIME_READY"
+	CheckpointModelStarted    = "MODEL_STARTED"
+	CheckpointReady           = "READY"
 )
 
 type State struct {

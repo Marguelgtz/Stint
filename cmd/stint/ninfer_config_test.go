@@ -7,12 +7,12 @@ import (
 
 func TestResolveNInferConfig(t *testing.T) {
 	tests := []struct {
-		name       string
-		value      string
-		wantName   string
-		wantCtx    int
-		wantKVD    string
-		wantErr    bool
+		name     string
+		value    string
+		wantName string
+		wantCtx  int
+		wantKVD  string
+		wantErr  bool
 	}{
 		{name: "coding default", value: "coding", wantName: ninferConfigCoding, wantCtx: 126976, wantKVD: "int8"},
 		{name: "coding alias", value: "cline", wantName: ninferConfigCoding, wantCtx: 126976, wantKVD: "int8"},
