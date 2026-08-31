@@ -72,24 +72,22 @@ type Modal struct {
 }
 
 type Model struct {
-	Width      int
-	Height     int
-	NoColor    bool
-	NoSession  bool
-	View       View
-	Session    Session
-	Health     Health
-	GPU        GPU
-	Perf       Perf
-	Logs       []string
-	Notice     string
-	Error      string
-	Modal      *Modal
+	Width     int
+	Height    int
+	NoColor   bool
+	NoSession bool
+	View      View
+	Session   Session
+	Health    Health
+	GPU       GPU
+	Perf      Perf
+	Logs      []string
+	Notice    string
+	Error     string
+	Modal     *Modal
 }
 
-type palette struct {
-	noColor bool
-}
+type palette struct{ noColor bool }
 
 func (p palette) wrap(code, text string) string {
 	if p.noColor || text == "" {
@@ -97,7 +95,6 @@ func (p palette) wrap(code, text string) string {
 	}
 	return "\x1b[" + code + "m" + text + "\x1b[0m"
 }
-
 func (p palette) accent(s string) string  { return p.wrap("34;1", s) }
 func (p palette) success(s string) string { return p.wrap("32;1", s) }
 func (p palette) warn(s string) string    { return p.wrap("33;1", s) }
@@ -116,13 +113,10 @@ func Render(m Model) string {
 	var b strings.Builder
 	b.WriteString(renderHeader(m, p))
 	b.WriteByte('\n')
-
 	if m.NoSession {
-		b.WriteString("\n")
-		b.WriteString(p.bold("NO ACTIVE SESSION"))
-		b.WriteString("\n\nNo paid compute is recorded in local Stint state.\n")
-		b.WriteString(p.muted("Start a session from another shell, then press r to refresh."))
-		b.WriteString("\n")
+		b.WriteString("\n" + p.bold("NO ACTIVE SESSION") + "\n\n")
+		b.WriteString("No paid compute is recorded in local Stint state.\n")
+		b.WriteString(p.muted("Start a session from another shell, then press r to refresh.") + "\n")
 	} else {
 		switch m.View {
 		case Performance:
@@ -135,22 +129,14 @@ func Render(m Model) string {
 			b.WriteString(renderHome(m, p))
 		}
 	}
-
 	if m.Error != "" {
-		b.WriteString("\n")
-		b.WriteString(p.danger("ERROR  " + compact(m.Error, max(20, m.Width-8))))
-		b.WriteString("\n")
+		b.WriteString("\n" + p.danger("ERROR  "+compact(m.Error, max(20, m.Width-8))) + "\n")
 	} else if m.Notice != "" {
-		b.WriteString("\n")
-		b.WriteString(p.accent(compact(m.Notice, max(20, m.Width-2))))
-		b.WriteString("\n")
+		b.WriteString("\n" + p.accent(compact(m.Notice, max(20, m.Width-2))) + "\n")
 	}
-
-	b.WriteString("\n")
-	b.WriteString(renderFooter(m, p))
+	b.WriteString("\n" + renderFooter(m, p))
 	if m.Modal != nil {
-		b.WriteString("\n\n")
-		b.WriteString(renderModal(*m.Modal, m.Width, p))
+		b.WriteString("\n\n" + renderModal(*m.Modal, m.Width, p))
 	}
 	return trimHeight(b.String(), m.Height)
 }
@@ -179,7 +165,7 @@ func renderHeader(m Model, p palette) string {
 	}
 	line := left + strings.Repeat(" ", gap) + right
 	if visibleLen(line) > innerWidth {
-		line = compactPlain(line, innerWidth)
+		line = compact(line, innerWidth)
 	}
 	return p.accent("┌─ STINT ") + strings.Repeat("─", max(0, m.Width-10)) + "┐\n" +
 		"│ " + padVisible(line, max(1, m.Width-4)) + " │\n" +
@@ -189,30 +175,16 @@ func renderHeader(m Model, p palette) string {
 func renderHome(m Model, p palette) string {
 	var b strings.Builder
 	if m.Width >= 100 {
-		left := []string{
-			p.bold(valueOr(m.Session.Model, "unknown model")),
-			valueOr(m.Session.Runtime, "unknown runtime"),
-			fmt.Sprintf("%,d ctx", m.Session.Context),
-		}
-		mid := []string{
-			p.bold(valueOr(m.Session.GPUModel, "unknown GPU")),
-			fmt.Sprintf("$%.3f/hr", m.Session.Rate),
-			fmt.Sprintf("$%.2f spent est.", m.Session.Spent),
-		}
-		right := []string{
-			p.bold("HEALTH"),
-			"Endpoint " + m.Health.Endpoint,
-			"Runtime  " + m.Health.Runtime,
-		}
+		left := []string{p.bold(valueOr(m.Session.Model, "unknown model")), valueOr(m.Session.Runtime, "unknown runtime"), fmt.Sprintf("%d ctx", m.Session.Context)}
+		mid := []string{p.bold(valueOr(m.Session.GPUModel, "unknown GPU")), fmt.Sprintf("$%.3f/hr", m.Session.Rate), fmt.Sprintf("$%.2f spent est.", m.Session.Spent)}
+		right := []string{p.bold("HEALTH"), "Endpoint " + m.Health.Endpoint, "Runtime  " + m.Health.Runtime}
 		b.WriteString(columns(m.Width, left, mid, right))
 		b.WriteString("\n\n")
 	} else {
 		fmt.Fprintf(&b, "%s  ·  %s  ·  %s\n", p.bold(valueOr(m.Session.Model, "unknown")), valueOr(m.Session.GPUModel, "unknown GPU"), valueOr(m.Session.Runtime, "unknown runtime"))
-		fmt.Fprintf(&b, "Context %,d  ·  $%.3f/hr  ·  $%.2f spent est.\n\n", m.Session.Context, m.Session.Rate, m.Session.Spent)
+		fmt.Fprintf(&b, "Context %d  ·  $%.3f/hr  ·  $%.2f spent est.\n\n", m.Session.Context, m.Session.Rate, m.Session.Spent)
 	}
-
-	b.WriteString(p.bold("SESSION"))
-	b.WriteByte('\n')
+	b.WriteString(p.bold("SESSION") + "\n")
 	barWidth := clamp(m.Width-26, 16, 54)
 	progress := 0.0
 	if m.Session.Scheduled > 0 {
@@ -225,14 +197,9 @@ func renderHome(m Model, p palette) string {
 	if !m.Session.Deadline.IsZero() {
 		fmt.Fprintf(&b, "Auto-destroy  %s\n", m.Session.Deadline.Local().Format("15:04:05"))
 	}
-
-	b.WriteString("\n")
-	b.WriteString(p.bold("GPU"))
-	b.WriteByte('\n')
+	b.WriteString("\n" + p.bold("GPU") + "\n")
 	if m.GPU.Available {
-		parts := nonEmpty(m.GPU.Utilization, m.GPU.VRAM, m.GPU.Power, m.GPU.Temperature)
-		b.WriteString(strings.Join(parts, "  ·  "))
-		b.WriteByte('\n')
+		b.WriteString(strings.Join(nonEmpty(m.GPU.Utilization, m.GPU.VRAM, m.GPU.Power, m.GPU.Temperature), "  ·  ") + "\n")
 	} else if m.Health.Refreshed {
 		b.WriteString(p.muted("Unavailable"))
 		if m.GPU.Error != "" {
@@ -240,89 +207,55 @@ func renderHome(m Model, p palette) string {
 		}
 		b.WriteByte('\n')
 	} else {
-		b.WriteString(p.muted("Not refreshed yet"))
-		b.WriteByte('\n')
+		b.WriteString(p.muted("Not refreshed yet") + "\n")
 	}
-
-	b.WriteString("\n")
-	b.WriteString(p.bold("PERFORMANCE"))
-	b.WriteByte('\n')
+	b.WriteString("\n" + p.bold("PERFORMANCE") + "\n")
 	if m.Perf.Available {
 		fmt.Fprintf(&b, "Decode %s  ·  TTFT %s  ·  measured %s ago\n", m.Perf.Decode, m.Perf.TTFT, m.Perf.Age)
 	} else if m.Perf.Benchmarking {
-		b.WriteString(p.accent("Benchmarking…"))
-		b.WriteByte('\n')
+		b.WriteString(p.accent("Benchmarking…") + "\n")
 	} else {
-		b.WriteString(p.muted("No matching benchmark sample · press b to benchmark"))
-		b.WriteByte('\n')
+		b.WriteString(p.muted("No matching benchmark sample · press b to benchmark") + "\n")
 	}
 	return b.String()
 }
 
 func renderPerformance(m Model, p palette) string {
 	var b strings.Builder
-	b.WriteString(p.bold("PERFORMANCE"))
-	b.WriteString("\n\n")
+	b.WriteString(p.bold("PERFORMANCE") + "\n\n")
 	if !m.Perf.Available {
 		if m.Perf.Benchmarking {
-			b.WriteString(p.accent("Benchmarking active model…\n"))
+			b.WriteString(p.accent("Benchmarking active model…") + "\n")
 		} else {
 			b.WriteString("No benchmark sample matches this instance/runtime/context.\n")
-			b.WriteString(p.muted("Press b to run one explicit 1 × 128-token sample."))
-			b.WriteByte('\n')
+			b.WriteString(p.muted("Press b to run one explicit 1 × 128-token sample.") + "\n")
 		}
 		return b.String()
 	}
-	rows := [][2]string{
-		{"Decode", m.Perf.Decode},
-		{"TTFT", m.Perf.TTFT},
-		{"Total latency", m.Perf.Total},
-		{"Prompt tokens", fmt.Sprintf("%d", m.Perf.PromptTokens)},
-		{"Output tokens", fmt.Sprintf("%d", m.Perf.CompletionTokens)},
-		{"Sample age", m.Perf.Age},
-		{"Runtime", m.Session.Runtime},
-		{"Context", fmt.Sprintf("%,d", m.Session.Context)},
-	}
+	rows := [][2]string{{"Decode", m.Perf.Decode}, {"TTFT", m.Perf.TTFT}, {"Total latency", m.Perf.Total}, {"Prompt tokens", fmt.Sprintf("%d", m.Perf.PromptTokens)}, {"Output tokens", fmt.Sprintf("%d", m.Perf.CompletionTokens)}, {"Sample age", m.Perf.Age}, {"Runtime", m.Session.Runtime}, {"Context", fmt.Sprintf("%d", m.Session.Context)}}
 	for _, row := range rows {
 		fmt.Fprintf(&b, "%-18s %s\n", row[0], row[1])
 	}
-	b.WriteString("\n")
-	b.WriteString(p.muted("Benchmarks are never automatic. Press b to replace this sample."))
-	b.WriteByte('\n')
+	b.WriteString("\n" + p.muted("Benchmarks are never automatic. Press b to replace this sample.") + "\n")
 	return b.String()
 }
 
 func renderConfig(m Model, p palette) string {
 	var b strings.Builder
-	b.WriteString(p.bold("CONFIG"))
-	b.WriteString("\n\n")
-	rows := [][2]string{
-		{"Model", valueOr(m.Session.Model, "unknown")},
-		{"Runtime", valueOr(m.Session.Runtime, "unknown")},
-		{"Profile", valueOr(m.Session.Profile, "unknown")},
-		{"Context", fmt.Sprintf("%,d tokens", m.Session.Context)},
-		{"GPU", valueOr(m.Session.GPUModel, "unknown")},
-		{"Instance", fmt.Sprintf("%d", m.Session.InstanceID)},
-		{"Rate", fmt.Sprintf("$%.3f/hr", m.Session.Rate)},
-		{"Scheduled exposure", fmt.Sprintf("$%.2f", m.Session.Exposure)},
-		{"Endpoint", "http://127.0.0.1:8409/v1"},
-	}
+	b.WriteString(p.bold("CONFIG") + "\n\n")
+	rows := [][2]string{{"Model", valueOr(m.Session.Model, "unknown")}, {"Runtime", valueOr(m.Session.Runtime, "unknown")}, {"Profile", valueOr(m.Session.Profile, "unknown")}, {"Context", fmt.Sprintf("%d tokens", m.Session.Context)}, {"GPU", valueOr(m.Session.GPUModel, "unknown")}, {"Instance", fmt.Sprintf("%d", m.Session.InstanceID)}, {"Rate", fmt.Sprintf("$%.3f/hr", m.Session.Rate)}, {"Scheduled exposure", fmt.Sprintf("$%.2f", m.Session.Exposure)}, {"Endpoint", "http://127.0.0.1:8409/v1"}}
 	for _, row := range rows {
 		fmt.Fprintf(&b, "%-22s %s\n", row[0], row[1])
 	}
-	b.WriteString("\n")
-	b.WriteString(p.muted("Only authoritative session metadata is shown; runtime internals are not inferred."))
-	b.WriteByte('\n')
+	b.WriteString("\n" + p.muted("Only authoritative session metadata is shown; runtime internals are not inferred.") + "\n")
 	return b.String()
 }
 
 func renderLogs(m Model, p palette) string {
 	var b strings.Builder
-	b.WriteString(p.bold("LOCAL LOGS"))
-	b.WriteString("\n\n")
+	b.WriteString(p.bold("LOCAL LOGS") + "\n\n")
 	if len(m.Logs) == 0 {
-		b.WriteString(p.muted("No local log lines loaded. Press r to refresh."))
-		b.WriteByte('\n')
+		b.WriteString(p.muted("No local log lines loaded. Press r to refresh.") + "\n")
 		return b.String()
 	}
 	maxLines := max(4, m.Height-12)
@@ -331,18 +264,13 @@ func renderLogs(m Model, p palette) string {
 		start = len(m.Logs) - maxLines
 	}
 	for _, line := range m.Logs[start:] {
-		b.WriteString(compact(line, max(20, m.Width-2)))
-		b.WriteByte('\n')
+		b.WriteString(compact(line, max(20, m.Width-2)) + "\n")
 	}
 	return b.String()
 }
 
 func renderFooter(m Model, p palette) string {
-	views := []struct {
-		key  string
-		name string
-		view View
-	}{{"1", "Home", Home}, {"2", "Performance", Performance}, {"3", "Config", Config}, {"4", "Logs", Logs}}
+	views := []struct{ key, name string; view View }{{"1", "Home", Home}, {"2", "Performance", Performance}, {"3", "Config", Config}, {"4", "Logs", Logs}}
 	parts := make([]string, 0, len(views))
 	for _, item := range views {
 		label := item.key + " " + item.name
@@ -363,8 +291,7 @@ func renderModal(modal Modal, width int, p palette) string {
 	boxWidth := clamp(width-8, 36, 72)
 	var b strings.Builder
 	b.WriteString(p.accent("┌") + strings.Repeat("─", boxWidth-2) + p.accent("┐") + "\n")
-	title := " " + modal.Title + " "
-	b.WriteString("│" + padVisible(p.bold(compact(title, boxWidth-2)), boxWidth-2) + "│\n")
+	b.WriteString("│" + padVisible(p.bold(compact(" "+modal.Title+" ", boxWidth-2)), boxWidth-2) + "│\n")
 	b.WriteString("├" + strings.Repeat("─", boxWidth-2) + "┤\n")
 	for _, line := range modal.Lines {
 		b.WriteString("│" + padVisible(" "+compact(line, boxWidth-4), boxWidth-2) + "│\n")
@@ -462,10 +389,9 @@ func compact(s string, width int) string {
 		return s
 	}
 	if width <= 3 {
-		return compactPlain(s, width)
+		return compactPlain(stripANSI(s), width)
 	}
-	plain := stripANSI(s)
-	return compactPlain(plain, width-1) + "…"
+	return compactPlain(stripANSI(s), width-1) + "…"
 }
 
 func compactPlain(s string, width int) string {
@@ -485,7 +411,6 @@ func padVisible(s string, width int) string {
 	}
 	return s
 }
-
 func visibleLen(s string) int { return len([]rune(stripANSI(s))) }
 
 func stripANSI(s string) string {
@@ -516,14 +441,12 @@ func nonEmpty(values ...string) []string {
 	}
 	return out
 }
-
 func valueOr(value, fallback string) string {
 	if strings.TrimSpace(value) == "" {
 		return fallback
 	}
 	return value
 }
-
 func clamp(v, lo, hi int) int {
 	if v < lo {
 		return lo
@@ -533,7 +456,6 @@ func clamp(v, lo, hi int) int {
 	}
 	return v
 }
-
 func max(a, b int) int {
 	if a > b {
 		return a
