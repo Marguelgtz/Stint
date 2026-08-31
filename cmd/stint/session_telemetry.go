@@ -27,10 +27,46 @@ type remoteTelemetrySample struct {
 	GPU     gpuTelemetry
 }
 
+// inferenceLane is one concurrent runtime lane (llama.cpp slot or NInfer
+// lane). It is parsed from the runtime's /slots endpoint, so the field names
+// mirror both JSON schemas: llama.cpp publishes id/n_ctx/speculative/
+// is_processing plus n_prompt_tokens* while a task runs, and NInfer adds
+// retained and session_digest to identify the agent owning the lane.
+type inferenceLane struct {
+	ID          int    `json:"id"`
+	NCTX        int    `json:"n_ctx,omitempty"`
+	Speculative bool   `json:"speculative"`
+	Processing  bool   `json:"is_processing"`
+	Retained    bool   `json:"retained,omitempty"`
+	Session     string `json:"session_digest,omitempty"`
+	NPrompt     int    `json:"n_prompt_tokens,omitempty"`
+	NCached     int    `json:"n_prompt_tokens_cache,omitempty"`
+}
+
+// inferenceTelemetry is the live, observational inference domain. It is
+// always a fresh read of /metrics and /slots through the tunnel and is never
+// mixed with the cached stint perf benchmark sample (Performance).
+type inferenceTelemetry struct {
+	Refreshed         bool
+	Available         bool
+	Processing        int
+	Deferred          int
+	Agents            int
+	ResidentDepth     int
+	DecodeTokensSec   *float64
+	PrefillTokensSec  *float64
+	CacheReuseRatio   *float64
+	SpecAcceptRatio   *float64
+	Lanes             []inferenceLane
+	UnavailableReason string
+	Meta              sampleMeta
+}
+
 type snapshotProbeDeps struct {
 	processRunning func(int) bool
 	endpoint       func(context.Context) endpointHealth
 	remote         func(context.Context, config.Paths, sessionstate.State) remoteTelemetrySample
+	inference      func(context.Context) inferenceTelemetry
 	performance    func(config.Paths, sessionstate.State, time.Time) performanceSnapshot
 }
 
@@ -39,13 +75,16 @@ func defaultSnapshotProbeDeps() snapshotProbeDeps {
 		processRunning: localProcessRunning,
 		endpoint:       probeEndpointHealth,
 		remote:         probeRemoteTelemetry,
+		inference:      probeInference,
 		performance:    loadPerformanceSnapshot,
 	}
 }
 
 // collectSessionSnapshot assembles lifecycle state with best-effort observations.
-// refresh=false is intentionally local-only: it never opens SSH and never sends
-// an inference request. refresh=true adds endpoint and one read-only SSH sample.
+// refresh=false is intentionally local-only: it never opens SSH, never touches
+// the inference endpoint, and never sends an inference request. refresh=true
+// adds an endpoint probe, one read-only SSH sample, and a two-epoch
+// /metrics+/slots inference observation.
 func collectSessionSnapshot(ctx context.Context, paths config.Paths, state sessionstate.State, now time.Time, refresh bool, deps snapshotProbeDeps) sessionSnapshot {
 	snapshot := buildSessionSnapshot(state, now)
 	snapshot.Health.Tunnel.Running = deps.processRunning(state.TunnelPID)
@@ -57,6 +96,7 @@ func collectSessionSnapshot(ctx context.Context, paths config.Paths, state sessi
 
 	endpointCh := make(chan endpointHealth, 1)
 	remoteCh := make(chan remoteTelemetrySample, 1)
+	inferenceCh := make(chan inferenceTelemetry, 1)
 
 	go func() {
 		endpointCtx, cancel := context.WithTimeout(ctx, endpointTelemetryTimeout)
@@ -68,14 +108,19 @@ func collectSessionSnapshot(ctx context.Context, paths config.Paths, state sessi
 		defer cancel()
 		remoteCh <- deps.remote(remoteCtx, paths, state)
 	}()
+	go func() {
+		inferenceCh <- deps.inference(ctx)
+	}()
 
-	for received := 0; received < 2; received++ {
+	for received := 0; received < 3; received++ {
 		select {
 		case endpoint := <-endpointCh:
 			snapshot.Health.Endpoint = endpoint
 		case remote := <-remoteCh:
 			snapshot.Health.Runtime = remote.Runtime
 			snapshot.GPU = remote.GPU
+		case inference := <-inferenceCh:
+			snapshot.Inference = inference
 		case <-ctx.Done():
 			if !snapshot.Health.Endpoint.Refreshed {
 				snapshot.Health.Endpoint = endpointHealth{Refreshed: true, Meta: sampleMeta{SampledAt: time.Now().UTC(), Error: ctx.Err().Error()}}
@@ -83,6 +128,9 @@ func collectSessionSnapshot(ctx context.Context, paths config.Paths, state sessi
 			if !snapshot.Health.Runtime.Refreshed {
 				snapshot.Health.Runtime = runtimeHealth{Refreshed: true, Meta: sampleMeta{SampledAt: time.Now().UTC(), Error: ctx.Err().Error()}}
 				snapshot.GPU = gpuTelemetry{Refreshed: true, Meta: sampleMeta{SampledAt: time.Now().UTC(), Error: ctx.Err().Error()}}
+			}
+			if !snapshot.Inference.Refreshed {
+				snapshot.Inference = inferenceTelemetry{Refreshed: true, Meta: sampleMeta{SampledAt: time.Now().UTC(), Error: ctx.Err().Error()}}
 			}
 			return snapshot
 		}

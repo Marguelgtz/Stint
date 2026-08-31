@@ -47,6 +47,15 @@ type Modal struct {
 	Hint  string
 }
 
+type Inference struct {
+	Available, Refreshed bool
+	Agents, Depth        int
+	Decode, Prefill      string
+	Queue, CacheReuse    string
+	Speculative          string
+	Lanes, Error         string
+}
+
 type Model struct {
 	Width, Height      int
 	NoColor, NoSession bool
@@ -54,6 +63,7 @@ type Model struct {
 	Session            Session
 	Health             Health
 	GPU                GPU
+	Inference          Inference
 	Perf               Perf
 	Logs               []string
 	Notice, Error      string
@@ -194,6 +204,8 @@ func homeView(m Model, p palette) string {
 		}
 	}
 
+	b.WriteString("\n\n" + p.bold("LIVE") + "  " + homeLiveLine(m, p))
+
 	gpu := []string{p.bold("GPU")}
 	if m.GPU.Available {
 		gpu = append(gpu,
@@ -227,20 +239,90 @@ func performanceView(m Model, p palette) string {
 	b.WriteString(p.bold("PERFORMANCE") + "\n\n")
 	if !m.Perf.Available {
 		if m.Perf.Benchmarking {
-			return b.String() + p.accent("Benchmarking active model…")
+			b.WriteString(p.accent("Benchmarking active model…") + "\n\n")
+		} else {
+			b.WriteString("No benchmark sample matches this instance/runtime/context.\n" + p.muted("Press b to run one explicit 1 × 128-token sample at the standard 8192 prompt depth.") + "\n\n")
 		}
-		return b.String() + "No benchmark sample matches this instance/runtime/context.\n" + p.muted("Press b to run one explicit 1 × 128-token sample at the standard 8192 prompt depth.")
+	} else {
+		rows := [][2]string{
+			{"Decode", m.Perf.Decode}, {"TTFT", m.Perf.TTFT}, {"Total latency", m.Perf.Total},
+			{"Prompt tokens", fmt.Sprint(m.Perf.PromptTokens)}, {"Output tokens", fmt.Sprint(m.Perf.CompletionTokens)},
+			{"Sample age", m.Perf.Age}, {"Runtime", m.Session.Runtime}, {"Context", fmt.Sprint(m.Session.Context)},
+		}
+		for _, x := range rows {
+			fmt.Fprintf(&b, "%-18s %s\n", x[0], x[1])
+		}
+		b.WriteString("\n" + p.muted("Benchmarks are never automatic. Press b to replace this sample.") + "\n\n")
 	}
-	rows := [][2]string{
-		{"Decode", m.Perf.Decode}, {"TTFT", m.Perf.TTFT}, {"Total latency", m.Perf.Total},
-		{"Prompt tokens", fmt.Sprint(m.Perf.PromptTokens)}, {"Output tokens", fmt.Sprint(m.Perf.CompletionTokens)},
-		{"Sample age", m.Perf.Age}, {"Runtime", m.Session.Runtime}, {"Context", fmt.Sprint(m.Session.Context)},
+	b.WriteString(p.bold("LIVE TRAFFIC") + "\n")
+	if !m.Inference.Refreshed {
+		b.WriteString(p.muted("Not probed yet — auto-refresh polls /metrics and /slots about every 10s."))
+	} else if !m.Inference.Available {
+		reason := "probe failed"
+		if m.Inference.Error != "" {
+			reason = m.Inference.Error
+		}
+		b.WriteString(p.muted("Unavailable · " + reason))
+	} else {
+		agents := "engine idle"
+		if m.Inference.Agents > 0 {
+			agents = fmt.Sprintf("%d active", m.Inference.Agents)
+		}
+		rows := [][2]string{
+			{"Agents", agents},
+			{"Live prompt depth", fmt.Sprintf("%d tokens", m.Inference.Depth)},
+			{"Decode", or(m.Inference.Decode, "—")},
+			{"Prefill", or(m.Inference.Prefill, "—")},
+			{"Queue", or(m.Inference.Queue, "empty")},
+			{"Cache reuse", or(m.Inference.CacheReuse, "—")},
+			{"Speculative", or(m.Inference.Speculative, "—")},
+			{"Lanes", or(m.Inference.Lanes, "—")},
+		}
+		for _, x := range rows {
+			fmt.Fprintf(&b, "%-18s %s\n", x[0], x[1])
+		}
 	}
-	for _, x := range rows {
-		fmt.Fprintf(&b, "%-18s %s\n", x[0], x[1])
-	}
-	b.WriteString("\n" + p.muted("Benchmarks are never automatic. Press b to replace this sample."))
+	b.WriteString("\n" + p.muted("Live traffic is observed, never benchmarked; press b for an explicit 1 × 128 sample."))
 	return b.String()
+}
+
+// homeLiveLine renders the one-line live inference strip on the home view.
+// It deliberately summarizes observed traffic only; the cached PERFORMANCE
+// sample remains the only benchmarked figure in this app.
+func homeLiveLine(m Model, p palette) string {
+	if !m.Inference.Refreshed {
+		return p.muted("not probed yet — auto-refresh polls /metrics and /slots every ~10s")
+	}
+	if !m.Inference.Available {
+		line := "unavailable"
+		if m.Inference.Error != "" {
+			line += " · " + m.Inference.Error
+		}
+		return p.muted(line)
+	}
+	parts := make([]string, 0, 5)
+	if m.Inference.Agents > 0 {
+		plural := "agent"
+		if m.Inference.Agents != 1 {
+			plural = "agents"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s active", m.Inference.Agents, plural))
+	} else {
+		parts = append(parts, "engine idle")
+	}
+	if m.Inference.Depth > 0 {
+		parts = append(parts, fmt.Sprintf("depth %d tok", m.Inference.Depth))
+	}
+	if m.Inference.Decode != "" {
+		parts = append(parts, "decode "+m.Inference.Decode)
+	}
+	if m.Inference.Queue != "" {
+		parts = append(parts, m.Inference.Queue)
+	}
+	if m.Inference.CacheReuse != "" {
+		parts = append(parts, "cache "+m.Inference.CacheReuse)
+	}
+	return p.accent(strings.Join(parts, " · "))
 }
 
 func configView(m Model, p palette) string {

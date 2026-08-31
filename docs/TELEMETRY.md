@@ -34,8 +34,9 @@ Refresh adds passive observations:
 
 1. `GET http://127.0.0.1:8409/v1/models` checks the complete local serving path and confirms that `qwen3.8-27b` is advertised.
 2. One read-only SSH round trip checks the expected remote runtime process and executes `nvidia-smi` for GPU utilization, VRAM, power, and temperature.
+3. A two-epoch scrape of the engine's `/metrics` and `/slots` endpoints through the same local tunnel observes live inference activity without sending any inference traffic.
 
-The endpoint and SSH probes run concurrently. Endpoint probing is bounded to approximately 2 seconds, remote probing to approximately 3 seconds, and the status refresh has a top-level bound of approximately 4 seconds.
+The endpoint and SSH probes run concurrently with the inference probe. Endpoint probing is bounded to approximately 2 seconds, remote probing to approximately 3 seconds, and the status refresh has a top-level bound of approximately 4 seconds. The inference probe scrapes once, waits a 1.2s epoch gap, and scrapes again; each fetch is bounded to 1.2s so both epochs stay inside the refresh budget.
 
 A failed observation is represented inside its telemetry domain. It does not change the session lifecycle state, deadline, tunnel, watchdog, or provider resource.
 
@@ -61,9 +62,27 @@ A previous-session, previous-runtime, or previous-context sample is treated as u
 
 `stint status` never runs a benchmark automatically.
 
+## Live inference observation
+
+Independent from the cached benchmark sample, `--refresh` (and the dashboard) observe live engine activity by polling two read-only surfaces through the local tunnel:
+
+- `/metrics` — Prometheus counters. Both runtimes publish the shared `llamacpp:*` series (`prompt_tokens_total`, `prompt_tokens_cached_total`, `tokens_predicted_total`, `requests_processing`, `requests_deferred`); NInfer additionally publishes `ninfer:prefix_cache_hit_tokens_total` and draft/speculative counters.
+- `/slots` — one lane object per concurrent runtime lane (llama.cpp slot or NInfer lane), including per-lane prompt token depth, processing state, and — on NInfer — `retained`/`session_digest` so a lane can be attributed to the agent that owns it.
+
+From two epochs separated by a 1.2s gap the snapshot derives:
+
+- active agents: lanes that are processing or hold a resident prompt
+- deferred/queued requests from the engine
+- resident prompt depth: the deepest per-lane prompt token count
+- decode and prefill token rates from counter deltas
+- cache reuse ratio (cached prompt tokens ÷ prompt tokens, clamped at 100%)
+- speculative accept ratio (accepted draft tokens ÷ draft tokens)
+
+The domain degrades by surface: missing `/metrics` still yields lane-level activity from `/slots`; missing both yields an unavailable reason (for llama.cpp: launch with `--metrics --slots`; NInfer serves both by default). Live observation never sends an inference request and never mutates the remote session; it is also never mixed with the cached `performance` benchmark domain.
+
 ## Snapshot domains
 
-The snapshot is organized into six domains:
+The snapshot is organized into seven domains:
 
 ```text
 session       identity, runtime, model, context, lifecycle status
@@ -71,6 +90,7 @@ session       identity, runtime, model, context, lifecycle status
  cost          hourly rate, estimated spend, scheduled exposure
  health        tunnel, watchdog, endpoint, remote runtime
  gpu           utilization, VRAM, power, temperature
+ inference     live agents, resident prompt depth, token rates, lanes
  performance   cached TTFT/decode sample, its measured prompt depth, and its age
 ```
 
@@ -91,6 +111,7 @@ Top-level shape:
   "cost": {},
   "health": {},
   "gpu": {},
+  "inference": {},
   "performance": {}
 }
 ```
@@ -117,6 +138,8 @@ Durations use explicit units rather than Go's raw `time.Duration` nanoseconds:
 
 Remote observation objects contain a `refreshed` indicator plus sample time/error metadata so consumers can distinguish **not sampled** from **sampled and unhealthy**.
 
+The `inference` block uses: `refreshed`, `available`, `processing`, `deferred`, `agents`, `residentDepth` (tokens), `decodeTokensSec` / `prefillTokensSec` (null when the runtime does not publish the counter or only one epoch is usable), `cacheReuseRatio` / `specAcceptRatio` (0–1, null when not applicable), per-lane objects under `lanes`, and `unavailableReason` when the probe could not observe the engine.
+
 ## Intended dashboard cadence
 
 The telemetry API is designed for a later live TUI with different refresh classes:
@@ -134,6 +157,7 @@ The telemetry API is designed for a later live TUI with different refresh classe
   VRAM
   temperature
   power
+  live inference: agents, resident prompt depth, token rates, lanes
 
 manual / explicit
   TTFT
@@ -153,3 +177,4 @@ Telemetry must preserve these invariants:
 5. A remote refresh uses read-only commands only.
 6. Missing metrics degrade to unavailable rather than failing the full snapshot.
 7. Cached performance is never reused across a mismatched instance/runtime/context.
+8. Live inference observation is strictly read-only: it polls `/metrics` and `/slots` over the local tunnel, never sends an inference request, and never mutates the remote session.
