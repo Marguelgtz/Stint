@@ -136,6 +136,10 @@ func runPerf(args []string) error {
 		fmt.Printf("Output tokens   %d\n", avg.CompletionTokens)
 	}
 	fmt.Printf("Decode speed    %.1f tok/s\n", avg.DecodeTokensSec)
+	if err := savePerformanceSample(paths, state, avg, time.Now().UTC()); err != nil {
+		return fmt.Errorf("benchmark completed but cache write failed: %w", err)
+	}
+	fmt.Println("Sample          cached for status/dashboard telemetry")
 	fmt.Println("\nUses the local OpenAI-compatible endpoint, so llama.cpp and NInfer are measured through the same path.")
 	return nil
 }
