@@ -21,6 +21,32 @@ import (
 
 const dashboardRefreshInterval = 10 * time.Second
 
+type dashboardActionKind int
+
+const (
+	dashboardActionNone dashboardActionKind = iota
+	dashboardActionBenchmark
+	dashboardActionExtend
+	dashboardActionShorten
+	dashboardActionDown
+)
+
+type dashboardAction struct {
+	Kind     dashboardActionKind
+	Duration time.Duration
+}
+
+type dashboardModalMode int
+
+const (
+	dashboardModalNone dashboardModalMode = iota
+	dashboardModalBenchmark
+	dashboardModalDeadlineChoice
+	dashboardModalDeadlineCustom
+	dashboardModalDeadlineConfirm
+	dashboardModalDownConfirm
+)
+
 func init() {
 	if len(os.Args) < 2 || os.Args[1] != "dashboard" {
 		return
@@ -43,12 +69,18 @@ type dashboardLoadResult struct {
 }
 
 type dashboardController struct {
-	paths      config.Paths
-	model      dash.Model
-	snapshot   sessionSnapshot
-	refreshing bool
-	refreshCh  chan dashboardLoadResult
-	logs       []string
+	paths             config.Paths
+	model             dash.Model
+	snapshot          sessionSnapshot
+	refreshing        bool
+	refreshCh         chan dashboardLoadResult
+	benchmarking      bool
+	benchmarkCh       chan dashboardBenchmarkResult
+	logs              []string
+	modalMode         dashboardModalMode
+	deadlineDirection deadlineDirection
+	deadlineDelta     time.Duration
+	customDuration    string
 }
 
 func runDashboard(args []string) error {
@@ -61,10 +93,7 @@ func runDashboard(args []string) error {
 	if fs.NArg() != 0 {
 		return errors.New("dashboard does not accept positional arguments")
 	}
-
 	if !dash.IsTTY(os.Stdin) || !dash.IsTTY(os.Stdout) {
-		// Piped dashboard output should stay useful and contain no terminal control
-		// sequences. Reuse the status snapshot instead of emitting an ANSI TUI.
 		return runStatusTelemetry([]string{"--refresh"})
 	}
 	paths, err := config.DefaultPaths()
@@ -74,13 +103,9 @@ func runDashboard(args []string) error {
 	width, height := dash.Size()
 	controller := &dashboardController{
 		paths: paths,
-		model: dash.Model{
-			Width:   width,
-			Height:  height,
-			NoColor: *noColor || os.Getenv("NO_COLOR") != "",
-			View:    dash.Home,
-		},
-		refreshCh: make(chan dashboardLoadResult, 1),
+		model: dash.Model{Width: width, Height: height, NoColor: *noColor || os.Getenv("NO_COLOR") != "", View: dash.Home},
+		refreshCh:   make(chan dashboardLoadResult, 1),
+		benchmarkCh: make(chan dashboardBenchmarkResult, 1),
 	}
 	controller.loadLocal()
 	controller.startRefresh()
@@ -89,7 +114,11 @@ func runDashboard(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer terminal.Restore()
+	defer func() {
+		if terminal != nil {
+			terminal.Restore()
+		}
+	}()
 	if err := terminal.Draw(dash.Render(controller.model)); err != nil {
 		return err
 	}
@@ -97,12 +126,10 @@ func runDashboard(args []string) error {
 	inputCh := make(chan byte, 16)
 	inputErrCh := make(chan error, 1)
 	go readDashboardInput(os.Stdin, inputCh, inputErrCh)
-
 	localTick := time.NewTicker(time.Second)
 	defer localTick.Stop()
 	remoteTick := time.NewTicker(dashboardRefreshInterval)
 	defer remoteTick.Stop()
-
 	sigCh := make(chan os.Signal, 4)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGWINCH)
 	defer signal.Stop(sigCh)
@@ -111,9 +138,29 @@ func runDashboard(args []string) error {
 		redraw := false
 		select {
 		case key := <-inputCh:
-			quit, changed := controller.handleKey(key)
+			quit, changed, action := controller.handleKey(key)
 			if quit {
 				return nil
+			}
+			if action.Kind != dashboardActionNone {
+				if action.Kind == dashboardActionBenchmark {
+					controller.startBenchmark()
+				} else {
+					terminal.Restore()
+					err := controller.executeBlockingAction(action)
+					terminal, _ = dash.OpenTerminal(os.Stdin, os.Stdout)
+					if terminal == nil {
+						return errors.New("failed to restore dashboard terminal after session action")
+					}
+					controller.loadLocal()
+					controller.startRefresh()
+					if err != nil {
+						controller.model.Error = compactTelemetryError(err)
+					} else {
+						controller.model.Notice = dashboardActionSuccess(action)
+					}
+				}
+				changed = true
 			}
 			redraw = changed
 		case err := <-inputErrCh:
@@ -123,6 +170,9 @@ func runDashboard(args []string) error {
 			return err
 		case result := <-controller.refreshCh:
 			controller.applyRefresh(result)
+			redraw = true
+		case result := <-controller.benchmarkCh:
+			controller.applyBenchmark(result)
 			redraw = true
 		case <-localTick.C:
 			controller.tick(time.Now().UTC())
@@ -160,50 +210,248 @@ func readDashboardInput(reader io.Reader, keys chan<- byte, errs chan<- error) {
 	}
 }
 
-func (c *dashboardController) handleKey(key byte) (quit, changed bool) {
+func (c *dashboardController) handleKey(key byte) (quit, changed bool, action dashboardAction) {
 	if key == 3 || key == 'q' || key == 'Q' {
-		return true, false
+		return true, false, dashboardAction{}
+	}
+	if c.modalMode != dashboardModalNone {
+		return c.handleModalKey(key)
 	}
 	c.model.Notice = ""
 	c.model.Error = ""
 	switch key {
 	case '1':
 		c.model.View = dash.Home
-		return false, true
 	case '2':
 		c.model.View = dash.Performance
-		return false, true
 	case '3':
 		c.model.View = dash.Config
-		return false, true
 	case '4':
 		c.model.View = dash.Logs
 		c.reloadLogs()
-		return false, true
 	case '\t':
 		c.model.View = (c.model.View + 1) % 4
 		if c.model.View == dash.Logs {
 			c.reloadLogs()
 		}
-		return false, true
 	case 'r', 'R':
 		if c.model.View == dash.Logs {
 			c.reloadLogs()
 		}
 		c.startRefresh()
-		return false, true
 	case 'b', 'B':
-		c.model.Notice = "Benchmark action is disabled until the read-only dashboard slice is validated."
-		return false, true
-	case '+', '-':
-		c.model.Notice = "Deadline actions are disabled until the read-only dashboard slice is validated."
-		return false, true
-	case 'd', 'D':
-		c.model.Notice = "Down is disabled until the read-only dashboard slice is validated."
-		return false, true
+		if c.model.NoSession || c.benchmarking {
+			return false, false, dashboardAction{}
+		}
+		c.modalMode = dashboardModalBenchmark
+		c.model.Modal = &dash.Modal{Title: "RUN PERFORMANCE SAMPLE", Lines: []string{"Runs       1", "Tokens     128", "", "This sends one real generation request to the active model."}, Hint: "Enter run · Esc cancel"}
+	case '+':
+		c.openDeadlineChoice(deadlineExtend)
+	case '-':
+		c.openDeadlineChoice(deadlineShorten)
+	case 'd':
+		if !c.model.NoSession {
+			c.modalMode = dashboardModalDownConfirm
+			c.model.Modal = &dash.Modal{Title: "DESTROY SESSION?", Lines: []string{fmt.Sprintf("Instance       %d", c.model.Session.InstanceID), fmt.Sprintf("Remaining      %s", formatSessionDuration(c.model.Session.Remaining)), "", "This immediately destroys the Vast instance."}, Hint: "Press uppercase D to confirm · Esc cancel"}
+		}
 	default:
-		return false, false
+		return false, false, dashboardAction{}
 	}
+	return false, true, dashboardAction{}
+}
+
+func (c *dashboardController) handleModalKey(key byte) (bool, bool, dashboardAction) {
+	if key == 27 {
+		c.clearModal()
+		return false, true, dashboardAction{}
+	}
+	switch c.modalMode {
+	case dashboardModalBenchmark:
+		if key == '\r' || key == '\n' {
+			c.clearModal()
+			return false, true, dashboardAction{Kind: dashboardActionBenchmark}
+		}
+	case dashboardModalDeadlineChoice:
+		var delta time.Duration
+		switch key {
+		case '1':
+			delta = 15 * time.Minute
+		case '2':
+			delta = 30 * time.Minute
+		case '3':
+			delta = time.Hour
+		case '4':
+			c.modalMode = dashboardModalDeadlineCustom
+			c.customDuration = ""
+			c.renderCustomDurationModal()
+			return false, true, dashboardAction{}
+		default:
+			return false, false, dashboardAction{}
+		}
+		c.prepareDeadlinePreview(delta)
+		return false, true, dashboardAction{}
+	case dashboardModalDeadlineCustom:
+		if key == 127 || key == 8 {
+			if len(c.customDuration) > 0 {
+				c.customDuration = c.customDuration[:len(c.customDuration)-1]
+			}
+			c.renderCustomDurationModal()
+			return false, true, dashboardAction{}
+		}
+		if key == '\r' || key == '\n' {
+			delta, err := parseSessionDuration(c.customDuration)
+			if err != nil {
+				c.model.Error = err.Error()
+				return false, true, dashboardAction{}
+			}
+			c.prepareDeadlinePreview(delta)
+			return false, true, dashboardAction{}
+		}
+		if (key >= '0' && key <= '9') || key == 'h' || key == 'm' || key == 's' || key == '.' {
+			c.customDuration += string(key)
+			c.renderCustomDurationModal()
+			return false, true, dashboardAction{}
+		}
+	case dashboardModalDeadlineConfirm:
+		if key == '\r' || key == '\n' {
+			kind := dashboardActionExtend
+			if c.deadlineDirection == deadlineShorten {
+				kind = dashboardActionShorten
+			}
+			action := dashboardAction{Kind: kind, Duration: c.deadlineDelta}
+			c.clearModal()
+			return false, true, action
+		}
+	case dashboardModalDownConfirm:
+		if key == 'D' {
+			c.clearModal()
+			return false, true, dashboardAction{Kind: dashboardActionDown}
+		}
+	}
+	return false, false, dashboardAction{}
+}
+
+func (c *dashboardController) openDeadlineChoice(direction deadlineDirection) {
+	if c.model.NoSession {
+		return
+	}
+	c.deadlineDirection = direction
+	c.modalMode = dashboardModalDeadlineChoice
+	title := "EXTEND SESSION"
+	if direction == deadlineShorten {
+		title = "SHORTEN SESSION"
+	}
+	c.model.Modal = &dash.Modal{Title: title, Lines: []string{"1   15m", "2   30m", "3   1h", "4   Custom"}, Hint: "Choose duration · Esc cancel"}
+}
+
+func (c *dashboardController) renderCustomDurationModal() {
+	title := "CUSTOM EXTENSION"
+	if c.deadlineDirection == deadlineShorten {
+		title = "CUSTOM SHORTENING"
+	}
+	value := c.customDuration
+	if value == "" {
+		value = "_"
+	}
+	c.model.Modal = &dash.Modal{Title: title, Lines: []string{"Duration: " + value, "Examples: 20m, 45m, 1h30m"}, Hint: "Enter preview · Backspace edit · Esc cancel"}
+}
+
+func (c *dashboardController) prepareDeadlinePreview(delta time.Duration) {
+	state, err := sessionstate.Load(c.paths)
+	if err != nil {
+		c.model.Error = err.Error()
+		c.clearModal()
+		return
+	}
+	preview, err := buildDeadlineMutationPreview(state, time.Now().UTC(), c.deadlineDirection, delta)
+	if err != nil {
+		c.model.Error = err.Error()
+		c.clearModal()
+		return
+	}
+	c.deadlineDelta = delta
+	c.modalMode = dashboardModalDeadlineConfirm
+	verb := "Extension"
+	exposureLabel := "Additional exposure"
+	exposure := preview.ExposureDeltaUSD
+	if c.deadlineDirection == deadlineShorten {
+		verb = "Reduction"
+		exposureLabel = "Exposure reduction"
+		exposure = -preview.ExposureDeltaUSD
+	}
+	c.model.Modal = &dash.Modal{Title: strings.ToUpper(string(c.deadlineDirection)) + " SESSION", Lines: []string{
+		fmt.Sprintf("Current remaining     %s", formatSessionDuration(preview.CurrentRemaining)),
+		fmt.Sprintf("Current deadline      %s", preview.PreviousDeadline.Local().Format("15:04:05")),
+		fmt.Sprintf("%s             %s", verb, formatSessionDuration(delta)),
+		fmt.Sprintf("New deadline          %s", preview.NewDeadline.Local().Format("15:04:05")),
+		"",
+		fmt.Sprintf("%s   $%.2f", exposureLabel, exposure),
+		fmt.Sprintf("Projected session     $%.2f", preview.ProjectedUSD),
+		fmt.Sprintf("Session ceiling       $%.2f", preview.SessionCeilingUSD),
+	}, Hint: "Enter confirm · Esc cancel"}
+}
+
+func (c *dashboardController) clearModal() {
+	c.modalMode = dashboardModalNone
+	c.model.Modal = nil
+	c.customDuration = ""
+}
+
+func (c *dashboardController) executeBlockingAction(action dashboardAction) error {
+	switch action.Kind {
+	case dashboardActionExtend:
+		return runDeadlineMutation(deadlineExtend, []string{action.Duration.String(), "--yes"})
+	case dashboardActionShorten:
+		return runDeadlineMutation(deadlineShorten, []string{action.Duration.String(), "--yes"})
+	case dashboardActionDown:
+		return runDown(nil)
+	default:
+		return nil
+	}
+}
+
+func dashboardActionSuccess(action dashboardAction) string {
+	switch action.Kind {
+	case dashboardActionExtend:
+		return "Session extended by " + formatSessionDuration(action.Duration)
+	case dashboardActionShorten:
+		return "Session shortened by " + formatSessionDuration(action.Duration)
+	case dashboardActionDown:
+		return "Session destroyed"
+	default:
+		return ""
+	}
+}
+
+func (c *dashboardController) startBenchmark() {
+	if c.benchmarking || c.model.NoSession {
+		return
+	}
+	c.benchmarking = true
+	c.model.Perf.Benchmarking = true
+	c.model.Notice = "Benchmarking active model…"
+	paths := c.paths
+	go func() {
+		sample, err := runDashboardBenchmark(paths)
+		c.benchmarkCh <- dashboardBenchmarkResult{Sample: sample, Err: err}
+	}()
+}
+
+func (c *dashboardController) applyBenchmark(result dashboardBenchmarkResult) {
+	c.benchmarking = false
+	c.model.Perf.Benchmarking = false
+	if result.Err != nil {
+		c.model.Error = compactTelemetryError(result.Err)
+		return
+	}
+	state, err := sessionstate.Load(c.paths)
+	if err != nil {
+		c.model.Error = err.Error()
+		return
+	}
+	c.snapshot.Performance = loadPerformanceSnapshot(c.paths, state, time.Now().UTC())
+	c.projectSnapshot()
+	c.model.Notice = "Performance sample updated"
 }
 
 func (c *dashboardController) loadLocal() {
@@ -306,34 +554,12 @@ func (c *dashboardController) projectSnapshot() {
 	if s.Time.Expired {
 		status = "EXPIRED"
 	}
-	c.model.Session = dash.Session{
-		InstanceID: s.Session.InstanceID,
-		Status:     status,
-		Model:      s.Session.Model,
-		GPUModel:   s.Session.GPUModel,
-		Runtime:    s.Session.Runtime,
-		Context:    s.Session.ContextTokens,
-		Profile:    s.Session.Profile,
-		Rate:       s.Cost.HourlyUSD,
-		Spent:      s.Cost.EstimatedSpentUSD,
-		Exposure:   s.Cost.ScheduledUSD,
-		Started:    s.Time.StartedAt,
-		Deadline:   s.Time.Deadline,
-		Elapsed:    s.Time.Elapsed,
-		Remaining:  s.Time.Remaining,
-		Scheduled:  s.Time.ScheduledDuration,
-	}
-	c.model.Health = dash.Health{
-		Endpoint:   dashboardEndpointLabel(s.Health.Endpoint),
-		Tunnel:     dashboardRunningLabel(s.Health.Tunnel.Running),
-		Runtime:    dashboardRuntimeLabel(s.Health.Runtime),
-		Watchdog:   dashboardRunningLabel(s.Health.Watchdog.Running),
-		SSH:        dashboardSSHLabel(s.Health.Runtime),
-		Refreshed:  s.Health.Endpoint.Refreshed || s.Health.Runtime.Refreshed,
-		Refreshing: c.refreshing,
-	}
+	c.model.Session = dash.Session{InstanceID: s.Session.InstanceID, Status: status, Model: s.Session.Model, GPUModel: s.Session.GPUModel, Runtime: s.Session.Runtime, Context: s.Session.ContextTokens, Profile: s.Session.Profile, Rate: s.Cost.HourlyUSD, Spent: s.Cost.EstimatedSpentUSD, Exposure: s.Cost.ScheduledUSD, Started: s.Time.StartedAt, Deadline: s.Time.Deadline, Elapsed: s.Time.Elapsed, Remaining: s.Time.Remaining, Scheduled: s.Time.ScheduledDuration}
+	c.model.Health = dash.Health{Endpoint: dashboardEndpointLabel(s.Health.Endpoint), Tunnel: dashboardRunningLabel(s.Health.Tunnel.Running), Runtime: dashboardRuntimeLabel(s.Health.Runtime), Watchdog: dashboardRunningLabel(s.Health.Watchdog.Running), SSH: dashboardSSHLabel(s.Health.Runtime), Refreshed: s.Health.Endpoint.Refreshed || s.Health.Runtime.Refreshed, Refreshing: c.refreshing}
 	c.model.GPU = dashboardGPU(s.GPU)
-	c.model.Perf = dashboardPerf(s.Performance)
+	perf := dashboardPerf(s.Performance)
+	perf.Benchmarking = c.benchmarking
+	c.model.Perf = perf
 	c.model.Logs = c.logs
 }
 
@@ -346,14 +572,12 @@ func dashboardEndpointLabel(value endpointHealth) string {
 	}
 	return "unavailable"
 }
-
 func dashboardRunningLabel(running bool) string {
 	if running {
 		return "running"
 	}
 	return "not running"
 }
-
 func dashboardRuntimeLabel(value runtimeHealth) string {
 	if !value.Refreshed {
 		return "not refreshed"
@@ -363,7 +587,6 @@ func dashboardRuntimeLabel(value runtimeHealth) string {
 	}
 	return "not running"
 }
-
 func dashboardSSHLabel(value runtimeHealth) string {
 	if !value.Refreshed {
 		return "not refreshed"
