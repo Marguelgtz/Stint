@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -152,7 +151,7 @@ func TestOptionalTelemetryFloat(t *testing.T) {
 	if err != nil || value == nil || *value != 42.5 {
 		t.Fatalf("42.5 = %v, %v", value, err)
 	}
-	if _, err := parseOptionalTelemetryFloat("forty"); !errors.Is(err, nil) && err == nil {
+	if _, err := parseOptionalTelemetryFloat("forty"); err == nil {
 		t.Fatal("expected invalid telemetry float error")
 	}
 }
