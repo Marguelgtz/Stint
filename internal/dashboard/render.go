@@ -229,7 +229,7 @@ func performanceView(m Model, p palette) string {
 		if m.Perf.Benchmarking {
 			return b.String() + p.accent("Benchmarking active model…")
 		}
-		return b.String() + "No benchmark sample matches this instance/runtime/context.\n" + p.muted("Press b to run one explicit 1 × 128-token sample.")
+		return b.String() + "No benchmark sample matches this instance/runtime/context.\n" + p.muted("Press b to run one explicit 1 × 128-token sample at the standard 8192 prompt depth.")
 	}
 	rows := [][2]string{
 		{"Decode", m.Perf.Decode}, {"TTFT", m.Perf.TTFT}, {"Total latency", m.Perf.Total},
