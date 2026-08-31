@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
+	"github.com/Marguelgtz/Stint/internal/config"
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
@@ -81,15 +81,15 @@ type gpuTelemetry struct {
 }
 
 type performanceSnapshot struct {
-	Available          bool          `json:"available"`
-	TTFT               time.Duration `json:"-"`
-	TotalLatency       time.Duration `json:"-"`
-	PromptTokens       int           `json:"promptTokens,omitempty"`
-	CompletionTokens   int           `json:"completionTokens,omitempty"`
-	DecodeTokensSec    float64       `json:"decodeTokensSec,omitempty"`
-	SampledAt          time.Time     `json:"sampledAt,omitempty"`
-	Age                time.Duration `json:"-"`
-	UnavailableReason  string        `json:"unavailableReason,omitempty"`
+	Available         bool          `json:"available"`
+	TTFT              time.Duration `json:"-"`
+	TotalLatency      time.Duration `json:"-"`
+	PromptTokens      int           `json:"promptTokens,omitempty"`
+	CompletionTokens  int           `json:"completionTokens,omitempty"`
+	DecodeTokensSec   float64       `json:"decodeTokensSec,omitempty"`
+	SampledAt         time.Time     `json:"sampledAt,omitempty"`
+	Age               time.Duration `json:"-"`
+	UnavailableReason string        `json:"unavailableReason,omitempty"`
 }
 
 type sessionSnapshot struct {
@@ -140,42 +140,16 @@ func buildSessionSnapshot(state sessionstate.State, now time.Time) sessionSnapsh
 	}
 }
 
-func printActiveSessionStatus(snapshot sessionSnapshot) {
-	fmt.Printf("Active compute     instance %d (%s)\n", snapshot.Session.InstanceID, snapshot.Session.Status)
-	fmt.Printf("GPU                %s\n", snapshot.Session.GPUModel)
-	if snapshot.Session.Runtime != "" {
-		fmt.Printf("Runtime            %s\n", snapshot.Session.Runtime)
+// printActiveSessionStatus preserves the existing arg-less status call site
+// while routing it through the new local-only snapshot collector. The richer
+// flag path (`status --refresh`, `status --json`) lives in status_telemetry.go.
+func printActiveSessionStatus(state sessionstate.State) {
+	paths, err := config.DefaultPaths()
+	if err != nil {
+		fmt.Printf("Telemetry          unavailable (%v)\n", err)
+		printSessionSnapshotHuman(buildSessionSnapshot(state, time.Now().UTC()), false)
+		return
 	}
-	if snapshot.Session.ContextTokens > 0 {
-		fmt.Printf("Context            %d tokens\n", snapshot.Session.ContextTokens)
-	}
-	fmt.Printf("Rate               $%.3f/hr\n", snapshot.Cost.HourlyUSD)
-	if !snapshot.Time.StartedAt.IsZero() {
-		fmt.Printf("Started            %s\n", snapshot.Time.StartedAt.Local().Format(time.RFC1123))
-		fmt.Printf("Elapsed            %s\n", formatSessionDuration(snapshot.Time.Elapsed))
-	}
-	if snapshot.Time.Expired {
-		fmt.Println("Remaining          expired")
-	} else if !snapshot.Time.Deadline.IsZero() {
-		fmt.Printf("Remaining          %s\n", formatSessionDuration(snapshot.Time.Remaining))
-	}
-	if snapshot.Cost.EstimatedSpentUSD > 0 {
-		fmt.Printf("Spent estimate     $%.2f\n", snapshot.Cost.EstimatedSpentUSD)
-	}
-	if snapshot.Cost.ScheduledUSD > 0 {
-		fmt.Printf("Session exposure   $%.2f scheduled\n", snapshot.Cost.ScheduledUSD)
-	}
-	if snapshot.Session.Checkpoint != "" {
-		fmt.Printf("Checkpoint         %s\n", snapshot.Session.Checkpoint)
-	}
-	if snapshot.Session.LastError != "" {
-		lastError := strings.ReplaceAll(snapshot.Session.LastError, "\n", " ")
-		if len(lastError) > 140 {
-			lastError = lastError[:137] + "..."
-		}
-		fmt.Printf("Last error         %s\n", lastError)
-	}
-	if !snapshot.Time.Deadline.IsZero() {
-		fmt.Printf("Auto-destroy       %s\n", snapshot.Time.Deadline.Local().Format(time.RFC1123))
-	}
+	snapshot := collectSessionSnapshot(contextBackground(), paths, state, time.Now().UTC(), false, defaultSnapshotProbeDeps())
+	printSessionSnapshotHuman(snapshot, false)
 }
