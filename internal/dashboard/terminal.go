@@ -46,7 +46,7 @@ func OpenTerminal(stdin, stdout *os.File) (*Terminal, error) {
 	// or layout calculation. Keep output semantics intact while disabling
 	// canonical input, echo, and signal-character handling so Ctrl+C reaches
 	// the dashboard as byte 3 and can exit through the normal restore path.
-	cmd := exec.Command("stty", "-icanon", "-echo", "-isig", "min", "1", "time", "0")
+	cmd := exec.Command("stty", dashboardInputModeArgs()...)
 	cmd.Stdin = stdin
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("enable dashboard input mode: %w", err)
@@ -54,6 +54,10 @@ func OpenTerminal(stdin, stdout *os.File) (*Terminal, error) {
 	t := &Terminal{stdin: stdin, stdout: stdout, sttyState: state, active: true}
 	fmt.Fprint(stdout, "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")
 	return t, nil
+}
+
+func dashboardInputModeArgs() []string {
+	return []string{"-icanon", "-echo", "-isig", "min", "1", "time", "0"}
 }
 
 func (t *Terminal) Restore() {
