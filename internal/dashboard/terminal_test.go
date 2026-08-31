@@ -21,6 +21,18 @@ func TestDashboardTerminalModePreservesOutputProcessing(t *testing.T) {
 	}
 }
 
+func TestDashboardTerminalModeDoesNotUseIdleEOFReads(t *testing.T) {
+	joined := " " + strings.Join(dashboardInputModeArgs(), " ") + " "
+	for _, required := range []string{"min 1", "time 0"} {
+		if !strings.Contains(joined, " "+required+" ") {
+			t.Fatalf("dashboard input mode missing %q: %q", required, joined)
+		}
+	}
+	if strings.Contains(joined, " min 0 ") {
+		t.Fatalf("VMIN=0 can surface idle terminal reads as io.EOF and make the dashboard exit: %q", joined)
+	}
+}
+
 func TestSizeFallbackUsesCurrentViewportEnvironment(t *testing.T) {
 	oldColumns, hadColumns := os.LookupEnv("COLUMNS")
 	oldLines, hadLines := os.LookupEnv("LINES")
