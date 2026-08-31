@@ -45,6 +45,7 @@ func runStartResumable(args []string) (retErr error) {
 	yes := fs.Bool("yes", false, "confirm the selected rental without prompting")
 	location := fs.String("location", "", "prefer an offer whose location contains this text")
 	runtimeValue := fs.String("runtime", runtimeAuto, "inference runtime: auto, ninfer, or llama.cpp")
+	contextValue := fs.String("context", "", "llama.cpp context tokens (1024-131072; default 16384)")
 	ninferConfigValue := fs.String("ninfer-config", ninferConfigCoding, "NInfer config: coding, precision, or native")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -113,6 +114,15 @@ func runStartResumable(args []string) (retErr error) {
 		return err
 	}
 	selectedContext := contextForRuntime(selectedRuntime)
+	if strings.TrimSpace(*contextValue) != "" {
+		if selectedRuntime != runtimeLlamaCpp {
+			return errors.New("--context is supported only with llama.cpp; use --ninfer-config for NInfer context profiles")
+		}
+		selectedContext, err = resolveLlamaContext(*contextValue)
+		if err != nil {
+			return err
+		}
+	}
 	if selectedRuntime == runtimeNInfer {
 		selectedContext = requestedNInferConfig.ContextTokens
 	}
