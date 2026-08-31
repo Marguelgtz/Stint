@@ -276,7 +276,15 @@ func runStartResumable(args []string) (retErr error) {
 			OnStart: vastOnStartForRuntime(selectedRuntime),
 		})
 		if createErr != nil {
-			return createErr
+			if rootCtx.Err() != nil || !vast.IsOfferUnavailableError(createErr) {
+				return createErr
+			}
+			fmt.Printf("Rejected        candidate %d/%d (offer %s is no longer available)\n", attempt+1, len(candidates), selected.ID)
+			if attempt+1 < len(candidates) {
+				fmt.Println("Trying next network candidate...")
+				continue
+			}
+			return fmt.Errorf("startup exhausted %d distinct candidate(s); final offer disappeared before rental: %w", len(candidates), createErr)
 		}
 		created = true
 		state.InstanceID = instanceID
