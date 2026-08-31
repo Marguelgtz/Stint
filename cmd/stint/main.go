@@ -494,6 +494,7 @@ func yesNo(ok bool) string {
 }
 
 func valueOr(value, fallback string) string {
+	value = strings.TrimSpace(value)
 	if value == "" {
 		return fallback
 	}
