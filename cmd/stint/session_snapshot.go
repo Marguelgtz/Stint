@@ -99,6 +99,7 @@ type sessionSnapshot struct {
 	Cost        sessionCostSnapshot `json:"cost"`
 	Health      sessionHealth       `json:"health"`
 	GPU         gpuTelemetry        `json:"gpu"`
+	Inference   inferenceTelemetry  `json:"inference"`
 	Performance performanceSnapshot `json:"performance"`
 }
 

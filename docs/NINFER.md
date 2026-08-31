@@ -57,7 +57,7 @@ NInfer context is owned by the config preset; `--context` is accepted for llama.
 4. `ninfer-serve` binds remote `127.0.0.1:8080` with `--max-context`/`--kv-capacity` set to the preset context, `--kv-dtype` from the preset, `--max-concurrency 1`, `--max-pending-requests 16`, `--pending-timeout-ms 600000`, and `--prefill-chunk 1024`. Stint tunnels it to `http://127.0.0.1:8409/v1` as model `qwen3.8-27b`.
 5. If the runtime actually bootstrapped as llama.cpp (auto fallback), the persisted session records `llama.cpp` and resume/extend/down behave identically for both runtimes.
 
-The llama.cpp fallback is pinned the same way: `vastai/llama-cpp:b10472-mix-4b653db-cuda-12.9` prebuilt binary, `Qwen3.8-27B-Q4_K_M.gguf` (SHA-256 `31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34`), launched with `-ngl all`, q8_0 K/V cache, and flash attention.
+The llama.cpp fallback is pinned the same way: `vastai/llama-cpp:b10472-mix-4b653db-cuda-12.9` prebuilt binary, `Qwen3.8-27B-Q4_K_M.gguf` (SHA-256 `31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34`), launched with `-ngl all`, q8_0 K/V cache, flash attention, and `--metrics --slots` so Stint's live inference observation can poll its `/metrics` and `/slots` endpoints (llama.cpp serves them only with those flags; NInfer serves both by default).
 
 ## Updating the pin
 

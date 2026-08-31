@@ -3,10 +3,10 @@ package main
 func init() {
 	updated := cmdStatus
 	updated.summary = "show the active session snapshot and cached telemetry"
-	updated.detail = "Prints the local session snapshot without contacting the remote host by default. --refresh adds passive endpoint, runtime, and GPU telemetry; --json exposes the same snapshot as a machine-readable contract. Status never sends an inference request."
+	updated.detail = "Prints the local session snapshot without contacting the remote host by default. --refresh adds passive endpoint, runtime, GPU, and live-inference telemetry; --json exposes the same snapshot as a machine-readable contract. Status never sends an inference request."
 	updated.usage = "stint status [flags]"
 	updated.flags = []cliFlag{
-		{name: "--refresh", defaultVal: "false", purpose: "collect passive endpoint, runtime and GPU telemetry (bounded read-only probes)"},
+		{name: "--refresh", defaultVal: "false", purpose: "collect passive endpoint, runtime, GPU, and live-inference telemetry (bounded read-only probes)"},
 		{name: "--json", defaultVal: "false", purpose: "print the assembled snapshot as machine-readable JSON"},
 	}
 	updated.examples = []string{
@@ -17,7 +17,8 @@ func init() {
 	}
 	updated.notes = []string{
 		"Plain `stint status` is local/cached: it performs no SSH and no model generation.",
-		"`--refresh` probes /v1/models and performs one read-only SSH round trip for runtime + nvidia-smi metrics; telemetry failures are reported inside the snapshot rather than treated as lifecycle failures.",
+		"`--refresh` probes /v1/models, performs one read-only SSH round trip for runtime + nvidia-smi metrics, and polls the engine's /metrics and /slots endpoints; telemetry failures are reported inside the snapshot rather than treated as lifecycle failures.",
+		"Live inference observation is read-only: it polls counters and slot state over the local tunnel, never sends inference traffic, and never mutates the remote session (llama.cpp requires `--metrics --slots` at launch; NInfer exposes both endpoints by default).",
 		"Performance values come from the most recent successful `stint perf` sample for the same instance/runtime/context; status never benchmarks automatically.",
 		"The JSON field and unit contract is documented in docs/TELEMETRY.md.",
 	}

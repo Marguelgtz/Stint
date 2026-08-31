@@ -122,4 +122,11 @@ func TestRuntimeAwareLaunchKeepsLlamaFallbackConservative(t *testing.T) {
 	if !strings.Contains(command, "-c 16384") {
 		t.Fatalf("llama.cpp fallback command did not preserve 16384-token context: %s", command)
 	}
+	// Live inference observation requires the engine's /metrics and /slots
+	// endpoints, which llama.cpp only serves with these explicit flags.
+	for _, required := range []string{"--metrics", "--slots"} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("llama.cpp launch missing %q, live inference telemetry would be unavailable", required)
+		}
+	}
 }

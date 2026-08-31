@@ -33,7 +33,7 @@ func init() {
 func runStatusTelemetry(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	refresh := fs.Bool("refresh", false, "collect endpoint, runtime and GPU telemetry")
+	refresh := fs.Bool("refresh", false, "collect endpoint, runtime, GPU and live-inference telemetry")
 	jsonOutput := fs.Bool("json", false, "print the snapshot as machine-readable JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -175,6 +175,38 @@ func printSessionSnapshotHuman(snapshot sessionSnapshot, refreshed bool) {
 		}
 	}
 
+	fmt.Println("\nINFERENCE LIVE")
+	if !refreshed {
+		fmt.Println("Live inference     not refreshed (use --refresh)")
+	} else if !snapshot.Inference.Available {
+		fmt.Printf("Live inference     unavailable%s\n", inferenceUnavailableSuffix(snapshot.Inference))
+	} else {
+		agents := snapshot.Inference.Agents
+		if agents == 0 {
+			fmt.Println("Agents             0 active (engine idle)")
+		} else {
+			fmt.Printf("Agents             %d active\n", agents)
+		}
+		fmt.Printf("Live prompt depth  %d tokens", snapshot.Inference.ResidentDepth)
+		if snapshot.Inference.Deferred > 0 {
+			fmt.Printf(" · %d queued", snapshot.Inference.Deferred)
+		}
+		fmt.Println()
+		if snapshot.Inference.DecodeTokensSec != nil {
+			fmt.Printf("Decode             %.1f tok/s\n", *snapshot.Inference.DecodeTokensSec)
+		}
+		if snapshot.Inference.PrefillTokensSec != nil {
+			fmt.Printf("Prefill            %.1f tok/s\n", *snapshot.Inference.PrefillTokensSec)
+		}
+		if snapshot.Inference.CacheReuseRatio != nil {
+			fmt.Printf("Cache reuse        %.0f%% of prompt\n", *snapshot.Inference.CacheReuseRatio*100)
+		}
+		if snapshot.Inference.SpecAcceptRatio != nil {
+			fmt.Printf("Speculative        %.0f%% accepted\n", *snapshot.Inference.SpecAcceptRatio*100)
+		}
+		fmt.Printf("Lanes              %s\n", inferenceLaneSummary(snapshot.Inference.Lanes))
+	}
+
 	fmt.Println("\nPERFORMANCE")
 	if snapshot.Performance.Available {
 		fmt.Printf("TTFT               %.2fs\n", snapshot.Performance.TTFT.Seconds())
@@ -213,6 +245,31 @@ func runningLabel(running bool) string {
 	return "not running"
 }
 
+func inferenceUnavailableSuffix(inf inferenceTelemetry) string {
+	if reason := strings.TrimSpace(inf.UnavailableReason); reason != "" {
+		return " · " + reason
+	}
+	return telemetryErrorSuffix(inf.Meta.Error)
+}
+
+func inferenceLaneSummary(lanes []inferenceLane) string {
+	if len(lanes) == 0 {
+		return "no lanes reported"
+	}
+	parts := make([]string, 0, len(lanes))
+	for _, lane := range lanes {
+		switch {
+		case lane.Processing:
+			parts = append(parts, fmt.Sprintf("%d: %d tok", lane.ID, lane.NPrompt))
+		case lane.NPrompt > 0:
+			parts = append(parts, fmt.Sprintf("%d: %d tok (resident)", lane.ID, lane.NPrompt))
+		default:
+			parts = append(parts, fmt.Sprintf("%d: idle", lane.ID))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
 func telemetryErrorSuffix(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
@@ -249,6 +306,22 @@ func snapshotJSON(snapshot sessionSnapshot) map[string]any {
 			"runtime": snapshot.Health.Runtime,
 		},
 		"gpu": snapshot.GPU,
+		"inference": map[string]any{
+			"refreshed":         snapshot.Inference.Refreshed,
+			"available":         snapshot.Inference.Available,
+			"processing":        snapshot.Inference.Processing,
+			"deferred":          snapshot.Inference.Deferred,
+			"agents":            snapshot.Inference.Agents,
+			"residentDepth":     snapshot.Inference.ResidentDepth,
+			"decodeTokensSec":   snapshot.Inference.DecodeTokensSec,
+			"prefillTokensSec":  snapshot.Inference.PrefillTokensSec,
+			"cacheReuseRatio":   snapshot.Inference.CacheReuseRatio,
+			"specAcceptRatio":   snapshot.Inference.SpecAcceptRatio,
+			"lanes":             snapshot.Inference.Lanes,
+			"unavailableReason": snapshot.Inference.UnavailableReason,
+			"sampledAt":         snapshot.Inference.Meta.SampledAt,
+			"error":             snapshot.Inference.Meta.Error,
+		},
 		"performance": map[string]any{
 			"available":         snapshot.Performance.Available,
 			"ttftMilliseconds":  float64(snapshot.Performance.TTFT) / float64(time.Millisecond),

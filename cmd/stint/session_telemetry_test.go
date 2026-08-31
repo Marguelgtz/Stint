@@ -50,6 +50,7 @@ func TestCollectSessionSnapshotLocalModeDoesNotRunRemoteProbes(t *testing.T) {
 	state := sessionstate.State{InstanceID: 9, Deadline: now.Add(time.Hour), TunnelPID: 10, WatchdogPID: 11}
 	endpointCalls := 0
 	remoteCalls := 0
+	inferenceCalls := 0
 	deps := snapshotProbeDeps{
 		processRunning: func(pid int) bool { return pid == 10 },
 		endpoint: func(context.Context) endpointHealth {
@@ -60,13 +61,17 @@ func TestCollectSessionSnapshotLocalModeDoesNotRunRemoteProbes(t *testing.T) {
 			remoteCalls++
 			return remoteTelemetrySample{}
 		},
+		inference: func(context.Context) inferenceTelemetry {
+			inferenceCalls++
+			return inferenceTelemetry{}
+		},
 		performance: func(config.Paths, sessionstate.State, time.Time) performanceSnapshot {
 			return performanceSnapshot{Available: true, DecodeTokensSec: 123}
 		},
 	}
 	snapshot := collectSessionSnapshot(context.Background(), config.Paths{}, state, now, false, deps)
-	if endpointCalls != 0 || remoteCalls != 0 {
-		t.Fatalf("local snapshot invoked remote probes: endpoint=%d remote=%d", endpointCalls, remoteCalls)
+	if endpointCalls != 0 || remoteCalls != 0 || inferenceCalls != 0 {
+		t.Fatalf("local snapshot invoked remote probes: endpoint=%d remote=%d inference=%d", endpointCalls, remoteCalls, inferenceCalls)
 	}
 	if !snapshot.Health.Tunnel.Running || snapshot.Health.Watchdog.Running {
 		t.Fatalf("unexpected local process health: %+v", snapshot.Health)
@@ -93,6 +98,9 @@ func TestCollectSessionSnapshotRefreshRunsIndependentProbesConcurrently(t *testi
 			<-release
 			return remoteTelemetrySample{Runtime: runtimeHealth{Refreshed: true, SSH: true, Running: true}, GPU: gpuTelemetry{Refreshed: true, Available: true}}
 		},
+		inference: func(context.Context) inferenceTelemetry {
+			return inferenceTelemetry{Refreshed: true, Available: true, Agents: 2, ResidentDepth: 40000}
+		},
 		performance: func(config.Paths, sessionstate.State, time.Time) performanceSnapshot { return performanceSnapshot{} },
 	}
 	done := make(chan sessionSnapshot, 1)
@@ -116,6 +124,37 @@ func TestCollectSessionSnapshotRefreshRunsIndependentProbesConcurrently(t *testi
 	if !snapshot.Health.Endpoint.Healthy || !snapshot.Health.Runtime.SSH || !snapshot.GPU.Available {
 		t.Fatalf("refresh results not assembled: %+v", snapshot)
 	}
+	if !snapshot.Inference.Available || snapshot.Inference.Agents != 2 || snapshot.Inference.ResidentDepth != 40000 {
+		t.Fatalf("inference results not assembled: %+v", snapshot.Inference)
+	}
+}
+
+func TestCollectSessionSnapshotRefreshRecordsInferenceWithoutFailing(t *testing.T) {
+	now := time.Now().UTC()
+	state := sessionstate.State{InstanceID: 9, Deadline: now.Add(time.Hour)}
+	deps := snapshotProbeDeps{
+		processRunning: func(int) bool { return false },
+		endpoint:       func(context.Context) endpointHealth { return endpointHealth{Refreshed: true, Healthy: true} },
+		remote: func(context.Context, config.Paths, sessionstate.State) remoteTelemetrySample {
+			return remoteTelemetrySample{Runtime: runtimeHealth{Refreshed: true, SSH: true}, GPU: gpuTelemetry{Refreshed: true}}
+		},
+		// The probe degrades (for example a disabled metrics endpoint) but the
+		// snapshot must still be assembled with the failure recorded.
+		inference: func(context.Context) inferenceTelemetry {
+			return inferenceTelemetry{Refreshed: true, UnavailableReason: "runtime serves neither /metrics nor /slots (start llama.cpp with --metrics --slots)"}
+		},
+		performance: func(config.Paths, sessionstate.State, time.Time) performanceSnapshot { return performanceSnapshot{} },
+	}
+	snapshot := collectSessionSnapshot(context.Background(), config.Paths{}, state, now, true, deps)
+	if !snapshot.Inference.Refreshed || snapshot.Inference.Available {
+		t.Fatalf("inference probe state lost: %+v", snapshot.Inference)
+	}
+	if snapshot.Inference.UnavailableReason == "" {
+		t.Fatal("inference unavailable reason not recorded")
+	}
+	if !snapshot.Health.Endpoint.Healthy || !snapshot.Health.Runtime.SSH {
+		t.Fatalf("inference failure must not affect other domains: %+v", snapshot)
+	}
 }
 
 func TestCollectSessionSnapshotKeepsPartialTelemetryFailures(t *testing.T) {
@@ -132,6 +171,7 @@ func TestCollectSessionSnapshotKeepsPartialTelemetryFailures(t *testing.T) {
 				GPU:     gpuTelemetry{Refreshed: true, Meta: sampleMeta{Error: "ssh timeout"}},
 			}
 		},
+		inference:   func(context.Context) inferenceTelemetry { return inferenceTelemetry{Refreshed: true, Available: true} },
 		performance: func(config.Paths, sessionstate.State, time.Time) performanceSnapshot { return performanceSnapshot{} },
 	}
 	snapshot := collectSessionSnapshot(context.Background(), config.Paths{}, state, now, true, deps)
