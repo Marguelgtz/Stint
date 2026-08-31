@@ -1,0 +1,71 @@
+name: Publish NInfer runtime bundle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-ninfer-runtime-981b685e
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ninfer-runtime-981b685e
+  ARCHIVE: stint-ninfer-981b685e-sm89-linux-amd64.tar.gz
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Refuse to replace an existing immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Release $RELEASE_TAG already exists. Runtime bundle releases are immutable; bump the NInfer source pin instead of replacing assets."
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Prove archive on pristine Vast base
+        run: |
+          docker build \
+            --file images/ninfer/Bundle.Dockerfile \
+            --target archive-smoke \
+            images/ninfer
+
+      - name: Export pinned bundle
+        run: |
+          rm -rf dist
+          mkdir -p dist
+          docker buildx build \
+            --file images/ninfer/Bundle.Dockerfile \
+            --target bundle-artifact \
+            --output type=local,dest=dist \
+            images/ninfer
+          test -f "dist/$ARCHIVE"
+          test -f "dist/$ARCHIVE.sha256"
+          (cd dist && sha256sum -c "$ARCHIVE.sha256")
+          cat "dist/$ARCHIVE.sha256"
+
+      - name: Publish immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "dist/$ARCHIVE" \
+            "dist/$ARCHIVE.sha256" \
+            --target "$GITHUB_SHA" \
+            --title "NInfer runtime bundle 981b685e" \
+            --notes "Pinned Stint NInfer runtime bundle for RTX 4090 / SM89. Source: sergiuszm/ninfer-4090@981b685ea2124fdaed023123d2e63fd29d529ab8. Built and smoke-tested against vastai/base-image:cuda-12.8.1-cudnn-devel-ubuntu24.04-py310. Assets are immutable by policy; publish a new source-pin tag instead of replacing them."
+
+      - name: Print anonymous download contract
+        run: |
+          echo "Archive: https://github.com/Marguelgtz/Stint/releases/download/$RELEASE_TAG/$ARCHIVE"
+          echo "SHA256:  https://github.com/Marguelgtz/Stint/releases/download/$RELEASE_TAG/$ARCHIVE.sha256"
