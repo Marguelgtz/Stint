@@ -42,6 +42,26 @@ func TestParseSessionDuration(t *testing.T) {
 	}
 }
 
+func TestParseDeadlineMutationArgsAcceptsYesBeforeOrAfterDuration(t *testing.T) {
+	for _, args := range [][]string{{"30m", "--yes"}, {"--yes", "30m"}} {
+		delta, yes, err := parseDeadlineMutationArgs(deadlineExtend, args)
+		if err != nil {
+			t.Fatalf("parse %v: %v", args, err)
+		}
+		if delta != 30*time.Minute || !yes {
+			t.Fatalf("parse %v = %s, yes=%v; want 30m, true", args, delta, yes)
+		}
+	}
+}
+
+func TestParseDeadlineMutationArgsRejectsUnknownOrExtraArguments(t *testing.T) {
+	for _, args := range [][]string{{"30m", "--force"}, {"30m", "15m"}, {"--yes"}} {
+		if _, _, err := parseDeadlineMutationArgs(deadlineExtend, args); err == nil {
+			t.Fatalf("parse %v unexpectedly succeeded", args)
+		}
+	}
+}
+
 func TestBuildExtendPreview(t *testing.T) {
 	now := time.Date(2026, 8, 31, 7, 10, 0, 0, time.UTC)
 	state := deadlineTestState(now)
@@ -72,6 +92,15 @@ func TestBuildShortenPreview(t *testing.T) {
 	}
 	if got, want := preview.NewDeadline, state.Deadline.Add(-15*time.Minute); !got.Equal(want) {
 		t.Fatalf("new deadline = %s, want %s", got, want)
+	}
+}
+
+func TestDeadlinePreviewRejectsInvalidHourlyRate(t *testing.T) {
+	now := time.Date(2026, 8, 31, 7, 10, 0, 0, time.UTC)
+	state := deadlineTestState(now)
+	state.HourlyUSD = 0
+	if _, err := buildDeadlineMutationPreview(state, now, deadlineExtend, 30*time.Minute); err == nil {
+		t.Fatal("expected invalid hourly rate to fail")
 	}
 }
 
