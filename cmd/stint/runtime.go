@@ -236,6 +236,7 @@ fi
 }
 
 func ninferModelLaunchCommand(contextTokens int) string {
+	config := ninferConfigForContext(contextTokens)
 	return fmt.Sprintf(`set -eu
 mkdir -p /workspace/stint/models
 pid_file=/workspace/stint/llama.pid
@@ -277,7 +278,7 @@ exec /workspace/stint/ninfer/build/apps/ninfer-serve "$model" \
   --max-pending-requests 16 \
   --pending-timeout-ms 600000 \
   --prefill-chunk 1024 \
-  --kv-dtype int8 \
+  --kv-dtype %s \
   --spec mtp \
   --draft-tokens 3 \
   --lm-head-draft \
@@ -290,5 +291,5 @@ if ! kill -0 "$new_pid" 2>/dev/null; then
   tail -n 20 "$log_file" >&2 || true
   exit 1
 fi
-`, ninferModelSHA256, ninferModelURL, ninferModelSHA256, clineRemotePort, interactiveModelAlias, contextTokens, contextTokens)
+`, ninferModelSHA256, ninferModelURL, ninferModelSHA256, clineRemotePort, interactiveModelAlias, contextTokens, contextTokens, config.KVDType)
 }
