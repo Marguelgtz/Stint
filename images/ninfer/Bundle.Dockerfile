@@ -18,6 +18,7 @@ RUN apt-get update \
         gcc-13 \
         g++-13 \
         git \
+        gzip \
         libavcodec-dev \
         libavformat-dev \
         libavutil-dev \
@@ -67,8 +68,9 @@ RUN set -eux; \
       "$NINFER_COMMIT" "$VAST_BASE" > /bundle/manifest.json; \
     short="$(printf '%s' "$NINFER_COMMIT" | cut -c1-8)"; \
     archive="stint-ninfer-${short}-sm89-linux-amd64.tar.gz"; \
-    tar -C / -czf "/out/${archive}" bundle; \
-    sha256sum "/out/${archive}" > "/out/${archive}.sha256"; \
+    tar --sort=name --mtime='UTC 2026-01-01' --owner=0 --group=0 --numeric-owner -C / -cf - bundle \
+      | gzip -n > "/out/${archive}"; \
+    (cd /out && sha256sum "$archive" > "$archive.sha256"); \
     du -h "/out/${archive}"; \
     cat "/out/${archive}.sha256"
 
