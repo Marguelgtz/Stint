@@ -203,19 +203,25 @@ var (
 	cmdPerf = cliCommand{
 		name:    "perf",
 		section: "diagnostics",
-		summary: "benchmark the local endpoint (TTFT, tok/s)",
-		detail:  "Benchmarks the local OpenAI-compatible endpoint of the active session: time to first token, total latency, and decode speed per run, plus averages. Both NInfer and llama.cpp are measured through the same localhost path, and transient endpoint EOFs are retried.",
+		summary: "benchmark the local endpoint at a chosen prompt depth",
+		detail:  "Benchmarks the local OpenAI-compatible endpoint of the active session: time to first token, total latency, decode speed, and post-run VRAM per run, plus averages. Both NInfer and llama.cpp are measured through the same localhost path, and transient endpoint EOFs are retried. The benchmark prompt is built to the requested depth so TTFT and VRAM reflect real prompt encoding, not just decode.",
 		usage:   "stint perf [flags]",
 		flags: []cliFlag{
+			{name: "--prompt-tokens", argument: "<int>", defaultVal: "8192", purpose: "target prompt depth in tokens (32-200000); the exact depth is reported from the endpoint"},
 			{name: "--runs", argument: "<int>", defaultVal: "3", purpose: "number of benchmark requests (1-10)"},
 			{name: "--tokens", argument: "<int>", defaultVal: "256", purpose: "maximum completion tokens per request (32-2048)"},
 		},
 		examples: []string{
 			"stint perf",
 			"stint perf --runs 5 --tokens 512",
+			"stint perf --prompt-tokens 32768",
+			"stint perf --prompt-tokens 131072 --runs 1",
 		},
 		notes: []string{
 			"Requires an active session: run `stint start` or `stint resume` first.",
+			"Configured context is a ceiling, not the measured depth: prompt plus completion tokens must fit inside the active context.",
+			"Use deeper prompts to measure long-context agent behavior: 8192 is a typical mid-session agent turn; 32768-131072 approaches long-context agent workloads.",
+			"VRAM is sampled on the remote GPU immediately after the run, so it reflects memory pressure at the measured depth.",
 		},
 	}
 

@@ -61,21 +61,19 @@ type perfSample struct {
 	DecodeTokensSec  float64
 }
 
-type perfBenchmarkFunc func(context.Context, *http.Client, int) (perfSample, error)
+type perfBenchmarkFunc func(context.Context, *http.Client, string, int) (perfSample, error)
 
 func runPerf(args []string) error {
 	fs := flag.NewFlagSet("perf", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	runs := fs.Int("runs", 3, "number of benchmark requests")
 	maxTokens := fs.Int("tokens", 256, "maximum completion tokens per request")
+	promptTokens := fs.Int("prompt-tokens", perfDefaultPromptTokens, "target prompt depth in tokens (32-200000)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *runs < 1 || *runs > 10 {
 		return errors.New("--runs must be between 1 and 10")
-	}
-	if *maxTokens < 32 || *maxTokens > 2048 {
-		return errors.New("--tokens must be between 32 and 2048")
 	}
 
 	paths, err := config.DefaultPaths()
@@ -89,6 +87,10 @@ func runPerf(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := validatePerfDepth(contextForState(state), *promptTokens, *maxTokens); err != nil {
+		return err
+	}
+	prompt := buildPerfPrompt(*promptTokens)
 
 	fmt.Println("SESSION PERFORMANCE")
 	fmt.Println()
@@ -96,6 +98,7 @@ func runPerf(args []string) error {
 	fmt.Printf("Runtime         %s\n", runtimeForState(state))
 	fmt.Printf("Context         %d\n", contextForState(state))
 	fmt.Printf("Instance        %d\n", state.InstanceID)
+	fmt.Printf("Prompt depth    %d tokens requested\n", *promptTokens)
 	fmt.Printf("Benchmark       %d runs x %d max tokens\n", *runs, *maxTokens)
 	fmt.Println()
 
@@ -104,14 +107,15 @@ func runPerf(args []string) error {
 	// connection while keeping the SSH forwarding path identical for all runtimes.
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DisableKeepAlives = true
+	timeout := perfBenchmarkTimeout(*promptTokens, *maxTokens)
 	client := &http.Client{
-		Timeout:   3 * time.Minute,
+		Timeout:   timeout,
 		Transport: transport,
 	}
 	samples := make([]perfSample, 0, *runs)
 	for i := 0; i < *runs; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		sample, attempts, err := benchmarkCompletionWithRetry(ctx, client, *maxTokens, benchmarkCompletion)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		sample, attempts, err := benchmarkCompletionWithRetry(ctx, client, prompt, *maxTokens, benchmarkCompletion)
 		cancel()
 		if err != nil {
 			return fmt.Errorf("benchmark run %d after %d attempts: %w", i+1, attempts, err)
@@ -136,6 +140,15 @@ func runPerf(args []string) error {
 		fmt.Printf("Output tokens   %d\n", avg.CompletionTokens)
 	}
 	fmt.Printf("Decode speed    %.1f tok/s\n", avg.DecodeTokensSec)
+	if gpu, err := samplePerfGPU(context.Background(), paths, state); err == nil && gpu.MemoryUsedMiB != nil && gpu.MemoryTotalMiB != nil {
+		extra := ""
+		if gpu.UtilizationPercent != nil {
+			extra = fmt.Sprintf(" (utilization %.0f%%)", *gpu.UtilizationPercent)
+		}
+		fmt.Printf("VRAM at depth   %.1f / %.1f GB%s\n", *gpu.MemoryUsedMiB/1024, *gpu.MemoryTotalMiB/1024, extra)
+	} else if err != nil {
+		fmt.Printf("VRAM at depth   unavailable · %s\n", err)
+	}
 	if err := savePerformanceSample(paths, state, avg, time.Now().UTC()); err != nil {
 		return fmt.Errorf("benchmark completed but cache write failed: %w", err)
 	}
@@ -144,10 +157,10 @@ func runPerf(args []string) error {
 	return nil
 }
 
-func benchmarkCompletionWithRetry(ctx context.Context, client *http.Client, maxTokens int, benchmark perfBenchmarkFunc) (perfSample, int, error) {
+func benchmarkCompletionWithRetry(ctx context.Context, client *http.Client, prompt string, maxTokens int, benchmark perfBenchmarkFunc) (perfSample, int, error) {
 	var lastErr error
 	for attempt := 1; attempt <= perfMaxAttempts; attempt++ {
-		sample, err := benchmark(ctx, client, maxTokens)
+		sample, err := benchmark(ctx, client, prompt, maxTokens)
 		if err == nil {
 			return sample, attempt, nil
 		}
@@ -173,18 +186,8 @@ func benchmarkCompletionWithRetry(ctx context.Context, client *http.Client, maxT
 	return perfSample{}, perfMaxAttempts, lastErr
 }
 
-func benchmarkCompletion(ctx context.Context, client *http.Client, maxTokens int) (perfSample, error) {
-	payload := map[string]any{
-		"model": interactiveModelAlias,
-		"messages": []map[string]string{{
-			"role":    "user",
-			"content": "Write a compact technical explanation of how a work-stealing scheduler operates. Be precise and use complete sentences.",
-		}},
-		"max_tokens":     maxTokens,
-		"temperature":    0,
-		"stream":         true,
-		"stream_options": map[string]bool{"include_usage": true},
-	}
+func benchmarkCompletion(ctx context.Context, client *http.Client, prompt string, maxTokens int) (perfSample, error) {
+	payload := perfCompletionPayload(prompt, maxTokens)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return perfSample{}, err

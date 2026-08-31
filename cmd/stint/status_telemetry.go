@@ -179,6 +179,9 @@ func printSessionSnapshotHuman(snapshot sessionSnapshot, refreshed bool) {
 	if snapshot.Performance.Available {
 		fmt.Printf("TTFT               %.2fs\n", snapshot.Performance.TTFT.Seconds())
 		fmt.Printf("Decode             %.1f tok/s\n", snapshot.Performance.DecodeTokensSec)
+		if snapshot.Performance.PromptTokens > 0 {
+			fmt.Printf("Sample prompt    %d tokens\n", snapshot.Performance.PromptTokens)
+		}
 		fmt.Printf("Sample             %s ago\n", formatSessionDuration(snapshot.Performance.Age))
 	} else {
 		fmt.Printf("Sample             unavailable · %s\n", snapshot.Performance.UnavailableReason)
