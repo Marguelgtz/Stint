@@ -1,10 +1,13 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Marguelgtz/Stint/internal/config"
 	"github.com/Marguelgtz/Stint/internal/router"
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
@@ -137,6 +140,65 @@ func TestMaxAdditionalDurationUsesProfileCeiling(t *testing.T) {
 	got := maxAdditionalDuration(state, profile)
 	if got < 14*time.Minute+59*time.Second || got > 15*time.Minute+time.Second {
 		t.Fatalf("max additional = %s, want about 15m", got)
+	}
+}
+
+func TestDeadlineCommandsPersistUpdatedDeadline(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+
+	paths, err := config.DefaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	state := sessionstate.State{
+		InstanceID:  123,
+		Profile:     "interactive",
+		GPUModel:    "RTX_4090",
+		HourlyUSD:   0.40,
+		Hours:       1,
+		StartedAt:   now,
+		Deadline:    now.Add(time.Hour),
+		WatchdogPID: os.Getpid(), // test process stands in for a live watchdog
+		Status:      sessionstate.StatusReady,
+	}
+	if err := sessionstate.Save(paths, state); err != nil {
+		t.Fatal(err)
+	}
+	originalDeadline := state.Deadline
+
+	if err := runExtend([]string{"30m", "--yes"}); err != nil {
+		t.Fatalf("extend: %v", err)
+	}
+	extended, err := sessionstate.Load(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := originalDeadline.Add(30 * time.Minute); !extended.Deadline.Equal(want) {
+		t.Fatalf("extended deadline = %s, want %s", extended.Deadline, want)
+	}
+	if extended.Hours < 1.499 || extended.Hours > 1.501 {
+		t.Fatalf("extended Hours = %.4f, want 1.5", extended.Hours)
+	}
+	if extended.WatchdogPID != os.Getpid() {
+		t.Fatalf("watchdog pid changed from live test process: %d", extended.WatchdogPID)
+	}
+
+	if err := runShorten([]string{"--yes", "10m"}); err != nil {
+		t.Fatalf("shorten: %v", err)
+	}
+	shortened, err := sessionstate.Load(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := originalDeadline.Add(20 * time.Minute); !shortened.Deadline.Equal(want) {
+		t.Fatalf("shortened deadline = %s, want %s", shortened.Deadline, want)
+	}
+	if shortened.Hours < 1.332 || shortened.Hours > 1.334 {
+		t.Fatalf("shortened Hours = %.4f, want about 1.333", shortened.Hours)
 	}
 }
 
