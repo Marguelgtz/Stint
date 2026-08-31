@@ -98,6 +98,9 @@ func printSessionSnapshotHuman(snapshot sessionSnapshot, refreshed bool) {
 	fmt.Printf("Active compute     instance %d (%s)\n", snapshot.Session.InstanceID, snapshot.Session.Status)
 	fmt.Printf("GPU                %s\n", snapshot.Session.GPUModel)
 	fmt.Printf("Runtime            %s\n", snapshot.Session.Runtime)
+	if snapshot.Session.Runtime == runtimeNInfer {
+		fmt.Printf("NInfer config      %s\n", ninferConfigForContext(snapshot.Session.ContextTokens).Name)
+	}
 	fmt.Printf("Model              %s\n", snapshot.Session.Model)
 	fmt.Printf("Context            %d tokens\n", snapshot.Session.ContextTokens)
 	fmt.Printf("Rate               $%.3f/hr\n", snapshot.Cost.HourlyUSD)
