@@ -27,6 +27,10 @@ func init() {
 	if len(os.Args) < 2 || os.Args[1] != "perf" {
 		return
 	}
+	if wantsHelp(os.Args[2:]) {
+		printCommandHelp("perf")
+		os.Exit(0)
+	}
 	if err := runPerf(os.Args[2:]); err != nil {
 		fmt.Fprintln(os.Stderr, "stint:", err)
 		os.Exit(1)
@@ -169,12 +173,12 @@ func benchmarkCompletion(ctx context.Context, client *http.Client, maxTokens int
 	payload := map[string]any{
 		"model": interactiveModelAlias,
 		"messages": []map[string]string{{
-			"role": "user",
+			"role":    "user",
 			"content": "Write a compact technical explanation of how a work-stealing scheduler operates. Be precise and use complete sentences.",
 		}},
-		"max_tokens": maxTokens,
-		"temperature": 0,
-		"stream": true,
+		"max_tokens":     maxTokens,
+		"temperature":    0,
+		"stream":         true,
 		"stream_options": map[string]bool{"include_usage": true},
 	}
 	body, err := json.Marshal(payload)
