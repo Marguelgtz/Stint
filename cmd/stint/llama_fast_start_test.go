@@ -112,33 +112,67 @@ func TestLlamaModelProgressReportsTransferAndLoadStages(t *testing.T) {
 	}
 }
 
-func TestNInferUsesPinnedPrebuiltVastImage(t *testing.T) {
+func TestNInferDefaultRemainsPinnedPrebuiltImage(t *testing.T) {
+	t.Setenv(ninferDeploymentEnv, "")
 	got := vastImageForRuntime(runtimeNInfer)
 	if got != ninferVastImage {
-		t.Fatalf("NInfer image = %q, want %q", got, ninferVastImage)
+		t.Fatalf("NInfer default image = %q, want control image %q", got, ninferVastImage)
 	}
 	if !strings.HasPrefix(got, "ghcr.io/marguelgtz/stint-ninfer:") {
-		t.Fatalf("NInfer image = %q, want Stint GHCR image", got)
+		t.Fatalf("NInfer default image = %q, want Stint GHCR control image", got)
 	}
-	for _, forbidden := range []string{vast.NInferCUDA128Image, ":latest", ":edge"} {
+	command := vastOnStartForRuntime(runtimeNInfer)
+	for _, required := range []string{ninferPrebuiltBinary, ninferRuntimeBridgePath, ninferSourceCommit} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("default NInfer onstart missing %q: %s", required, command)
+		}
+	}
+	if strings.Contains(command, ninferRuntimeBundleURL) {
+		t.Fatalf("default NInfer deployment unexpectedly references experimental bundle: %s", command)
+	}
+}
+
+func TestNInferBundleDeploymentUsesPlainVastBase(t *testing.T) {
+	t.Setenv(ninferDeploymentEnv, ninferDeploymentBundle)
+	got := vastImageForRuntime(runtimeNInfer)
+	if got != vast.NInferCUDA128Image {
+		t.Fatalf("NInfer bundle image = %q, want plain Vast CUDA base %q", got, vast.NInferCUDA128Image)
+	}
+	if !strings.HasPrefix(got, "vastai/base-image:cuda-12.8.1-") {
+		t.Fatalf("NInfer bundle image = %q, want pinned Vast CUDA 12.8.1 base", got)
+	}
+	for _, forbidden := range []string{"ghcr.io/marguelgtz/stint-ninfer", ":latest", ":edge"} {
 		if strings.Contains(got, forbidden) {
-			t.Fatalf("NInfer image unexpectedly contains %q: %s", forbidden, got)
+			t.Fatalf("NInfer bundle image unexpectedly contains %q: %s", forbidden, got)
 		}
 	}
 }
 
-func TestNInferOnStartBridgesPrebuiltBinaryWithoutLaunchingRuntime(t *testing.T) {
+func TestNInferUnknownDeploymentFallsBackToControlImage(t *testing.T) {
+	t.Setenv(ninferDeploymentEnv, "future-mode")
+	if got := vastImageForRuntime(runtimeNInfer); got != ninferVastImage {
+		t.Fatalf("unknown deployment selected %q, want safe control image %q", got, ninferVastImage)
+	}
+}
+
+func TestNInferBundleOnStartWritesLazyRuntimeBridge(t *testing.T) {
+	t.Setenv(ninferDeploymentEnv, ninferDeploymentBundle)
 	command := vastOnStartForRuntime(runtimeNInfer)
 	for _, required := range []string{
-		ninferPrebuiltBinary,
 		ninferRuntimeBridgePath,
 		ninferSourceCommit,
 		"/workspace/stint/ninfer/.stint-commit",
 		"chmod 600 /root/.ssh/authorized_keys",
-		`exec /opt/ninfer/bin/ninfer-serve "$@"`,
+		"<<'STINT_NINFER_WRAPPER'",
+		ninferRuntimeBundleURL,
+		ninferRuntimeBundleSHAURL,
+		"hashlib.sha256",
+		"tarfile.open",
+		"LD_LIBRARY_PATH",
+		`exec "$real" "$@"`,
 	} {
 		if !strings.Contains(command, required) {
-			t.Fatalf("NInfer onstart missing %q: %s", required, command)
+			t.Fatalf("NInfer bundle onstart bridge missing %q: %s", required, command)
 		}
 	}
 	for _, forbidden := range []string{
@@ -152,7 +186,35 @@ func TestNInferOnStartBridgesPrebuiltBinaryWithoutLaunchingRuntime(t *testing.T)
 		"--kv-capacity",
 	} {
 		if strings.Contains(command, forbidden) {
-			t.Fatalf("NInfer onstart unexpectedly performs runtime/model bootstrap %q: %s", forbidden, command)
+			t.Fatalf("NInfer bundle onstart unexpectedly performs runtime/model bootstrap %q: %s", forbidden, command)
 		}
+	}
+
+	// The provider hook may write a self-installing wrapper, but it must not run
+	// the bundle downloader while Vast is still in the opaque loading phase.
+	parts := strings.SplitN(command, "<<'STINT_NINFER_WRAPPER'", 2)
+	if len(parts) != 2 {
+		t.Fatalf("NInfer onstart does not contain wrapper heredoc: %s", command)
+	}
+	beforeWrapper := parts[0]
+	for _, forbidden := range []string{"python3", ninferRuntimeReleaseTag, ninferRuntimeArchive} {
+		if strings.Contains(beforeWrapper, forbidden) {
+			t.Fatalf("NInfer provider hook executes bundle preparation before SSH (%q): %s", forbidden, beforeWrapper)
+		}
+	}
+	if out, err := exec.Command("bash", "-n", "-c", command).CombinedOutput(); err != nil {
+		t.Fatalf("NInfer bundle onstart bridge has invalid shell syntax: %v\n%s\ncommand:\n%s", err, out, command)
+	}
+}
+
+func TestNInferBootstrapOverlapsModelPrefetchWithBundleResolution(t *testing.T) {
+	command := ninferBootstrapCommand()
+	prefetch := strings.Index(command, "Starting Qwen3.8-27B model prefetch")
+	bridgeValidation := strings.Index(command, `if [ -x "$bin" ]`)
+	if prefetch < 0 || bridgeValidation < 0 {
+		t.Fatalf("NInfer bootstrap markers missing: prefetch=%d bridge=%d", prefetch, bridgeValidation)
+	}
+	if prefetch >= bridgeValidation {
+		t.Fatalf("NInfer runtime validation begins before model prefetch; bundle/model transfers would serialize")
 	}
 }

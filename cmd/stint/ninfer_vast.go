@@ -1,6 +1,10 @@
 package main
 
 import (
+	"fmt"
+	"os"
+	"strings"
+
 	"github.com/Marguelgtz/Stint/internal/core"
 	"github.com/Marguelgtz/Stint/internal/provider/vast"
 )
@@ -18,13 +22,29 @@ const (
 	llamaModelSHA256       = "31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34"
 	llamaModelDownloadURL  = "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-Q4_K_M.gguf"
 
-	// Stint's NInfer image is built from the same Vast CUDA 12.8.1 base used by
-	// the previous cold path, but NInfer itself is compiled into the image at the
-	// exact pinned source commit. This preserves Vast's SSH lifecycle while
-	// removing GCC/CMake/CUDA compilation from paid startup.
+	// Keep the already-proven full NInfer image as the default/control. The
+	// runtime-bundle path is opt-in until matched startup timing demonstrates a
+	// total rental-to-READY win without a reliability regression.
 	ninferVastImage         = "ghcr.io/marguelgtz/stint-ninfer:981b685e-cuda12.8"
 	ninferPrebuiltBinary    = "/opt/ninfer/bin/ninfer-serve"
 	ninferRuntimeBridgePath = "/workspace/stint/ninfer/build/apps/ninfer-serve"
+
+	ninferDeploymentEnv    = "STINT_NINFER_DEPLOYMENT"
+	ninferDeploymentImage  = "image"
+	ninferDeploymentBundle = "bundle"
+
+	// Experimental NInfer bundle deployment. Vast only needs to start its own
+	// CUDA base image; the small pinned runtime bundle is fetched after SSH by a
+	// self-installing bridge script. The existing NInfer bootstrap starts the
+	// Qwen prefetch before validating this bridge, so runtime and model transfer
+	// overlap instead of serializing.
+	ninferBundleVastImage     = vast.NInferCUDA128Image
+	ninferRuntimeReleaseTag   = "ninfer-runtime-981b685e"
+	ninferRuntimeArchive      = "stint-ninfer-981b685e-sm89-linux-amd64.tar.gz"
+	ninferRuntimeInstallRoot  = "/workspace/stint/runtime/ninfer/981b685e"
+	ninferRuntimeReleaseBase  = "https://github.com/Marguelgtz/Stint/releases/download/" + ninferRuntimeReleaseTag
+	ninferRuntimeBundleURL    = ninferRuntimeReleaseBase + "/" + ninferRuntimeArchive
+	ninferRuntimeBundleSHAURL = ninferRuntimeBundleURL + ".sha256"
 
 	// Some Vast hosts have been observed creating /root/.ssh/authorized_keys
 	// with ownership or modes that OpenSSH StrictModes rejects. Keep a tiny
@@ -38,16 +58,14 @@ const (
 	// than silently falling back to a source compile and hiding the experiment.
 	vastLlamaPrebuiltBridgeOnStart = `install -d -m 755 /workspace/stint/llama.cpp/build/bin; printf '%s\n' '#!/bin/sh' 'exec /opt/llama.cpp/llama-server "$@"' > /workspace/stint/llama.cpp/build/bin/llama-server; chmod 755 /workspace/stint/llama.cpp/build/bin/llama-server`
 
-	// NInfer's existing bootstrap fast path recognizes an executable server plus
-	// a matching .stint-commit marker. Bridge the image binary into those exact
-	// paths so bootstrap validates the prebuilt server and proceeds directly to
-	// the model transfer instead of cloning/building NInfer on paid compute.
+	// Default/full-image NInfer bridge. This is deliberately retained unchanged
+	// as the A/B control until bundle deployment earns promotion.
 	vastNInferPrebuiltBridgeOnStart = `install -d -m 755 /workspace/stint/ninfer/build/apps; printf '%s\n' '#!/bin/sh' 'exec /opt/ninfer/bin/ninfer-serve "$@"' > /workspace/stint/ninfer/build/apps/ninfer-serve; chmod 755 /workspace/stint/ninfer/build/apps/ninfer-serve; printf '%s\n' 981b685ea2124fdaed023123d2e63fd29d529ab8 > /workspace/stint/ninfer/.stint-commit`
 )
 
 func prepareVastSearchForRuntime(profile core.Profile, options vast.SearchOptions, runtimeRequest string) (core.Profile, vast.SearchOptions) {
-	// The official llama.cpp image is CUDA 12.9. The pinned NInfer image remains
-	// on its qualified CUDA 12.8.1 base. Reject incompatible hosts before rental.
+	// The official llama.cpp image is CUDA 12.9. Both NInfer deployment modes
+	// remain qualified against CUDA >= 12.8 before rental.
 	options.MinCUDAMaxGood = llamaVastMinCUDA
 	if runtimeRequest == runtimeNInfer {
 		profile.GPU.PreferredModels = []string{"RTX 4090"}
@@ -56,8 +74,18 @@ func prepareVastSearchForRuntime(profile core.Profile, options vast.SearchOption
 	return profile, options
 }
 
+func ninferDeploymentMode() string {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv(ninferDeploymentEnv)), ninferDeploymentBundle) {
+		return ninferDeploymentBundle
+	}
+	return ninferDeploymentImage
+}
+
 func vastImageForRuntime(runtime string) string {
 	if runtime == runtimeNInfer {
+		if ninferDeploymentMode() == ninferDeploymentBundle {
+			return ninferBundleVastImage
+		}
 		return ninferVastImage
 	}
 	return llamaVastImage
@@ -65,14 +93,109 @@ func vastImageForRuntime(runtime string) string {
 
 func vastOnStartForRuntime(runtime string) string {
 	// Runtime/model preparation still happens only after Stint has proved SSH
-	// responsiveness. These hooks install compatibility bridges only; they do
-	// not launch a server or download model artifacts.
+	// responsiveness. Bundle mode writes a self-installing bridge but does not
+	// download the runtime while Vast is in provider loading.
 	switch runtime {
 	case runtimeLlamaCpp:
 		return vastSSHPermissionsOnStart + " " + vastLlamaPrebuiltBridgeOnStart
 	case runtimeNInfer:
+		if ninferDeploymentMode() == ninferDeploymentBundle {
+			return vastSSHPermissionsOnStart + "\n" + vastNInferBundleBridgeOnStart()
+		}
 		return vastSSHPermissionsOnStart + " " + vastNInferPrebuiltBridgeOnStart
 	default:
 		return vastSSHPermissionsOnStart
 	}
+}
+
+func vastNInferBundleBridgeOnStart() string {
+	return fmt.Sprintf(`install -d -m 755 /workspace/stint/ninfer/build/apps /workspace/stint/ninfer
+cat > %s <<'STINT_NINFER_WRAPPER'
+#!/bin/sh
+set -eu
+runtime=%q
+real="$runtime/bin/ninfer-serve"
+commit=%q
+archive_url=%q
+sha_url=%q
+
+if [ ! -x "$real" ] || [ "$(cat "$runtime/commit" 2>/dev/null || true)" != "$commit" ]; then
+  parent="$(dirname "$runtime")"
+  tmp="${runtime}.tmp.$$"
+  rm -rf "$tmp"
+  mkdir -p "$tmp" "$parent"
+  python3 - "$archive_url" "$sha_url" "$tmp" <<'PY'
+import hashlib
+import pathlib
+import shutil
+import sys
+import tarfile
+import time
+import urllib.request
+
+archive_url, sha_url, tmp_arg = sys.argv[1:]
+tmp = pathlib.Path(tmp_arg)
+archive = tmp / "runtime.tar.gz"
+
+
+def fetch(url, dest=None):
+    last = None
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response:
+                if dest is None:
+                    return response.read()
+                with open(dest, "wb") as out:
+                    shutil.copyfileobj(response, out, length=1024 * 1024)
+                return None
+        except Exception as exc:
+            last = exc
+            if attempt == 3:
+                raise
+            time.sleep(attempt * 2)
+    raise last
+
+expected = fetch(sha_url).decode("utf-8").strip().split()[0].lower()
+if len(expected) != 64:
+    raise RuntimeError(f"invalid NInfer bundle SHA256 sidecar: {expected!r}")
+fetch(archive_url, archive)
+hasher = hashlib.sha256()
+with open(archive, "rb") as source:
+    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+        hasher.update(chunk)
+actual = hasher.hexdigest()
+if actual != expected:
+    raise RuntimeError(f"NInfer bundle checksum mismatch: got {actual}, want {expected}")
+
+root = tmp.resolve()
+with tarfile.open(archive, "r:gz") as tf:
+    for member in tf.getmembers():
+        target = (root / member.name).resolve()
+        if target != root and root not in target.parents:
+            raise RuntimeError(f"unsafe path in NInfer bundle: {member.name}")
+        if member.issym() or member.islnk():
+            raise RuntimeError(f"links are not allowed in NInfer bundle: {member.name}")
+    tf.extractall(root)
+archive.unlink()
+PY
+  test -x "$tmp/bundle/bin/ninfer-serve"
+  test "$(cat "$tmp/bundle/commit")" = "$commit"
+  rm -rf "$runtime"
+  mv "$tmp/bundle" "$runtime"
+  rm -rf "$tmp"
+fi
+
+export LD_LIBRARY_PATH="$runtime/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$real" "$@"
+STINT_NINFER_WRAPPER
+chmod 755 %s
+printf '%%s\n' %s > /workspace/stint/ninfer/.stint-commit`,
+		ninferRuntimeBridgePath,
+		ninferRuntimeInstallRoot,
+		ninferSourceCommit,
+		ninferRuntimeBundleURL,
+		ninferRuntimeBundleSHAURL,
+		ninferRuntimeBridgePath,
+		ninferSourceCommit,
+	)
 }
