@@ -43,3 +43,14 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go test ./...
+
+  race-tests:
+    name: race-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test -race ./...
