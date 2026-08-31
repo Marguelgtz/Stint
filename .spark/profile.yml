@@ -4,6 +4,7 @@ areas:
   - id: interactive-control-plane
     paths:
       - "cmd/stint/**"
+      - "internal/dashboard/**"
       - "internal/config/**"
       - "internal/local/**"
       - "internal/core/**"
