@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -70,12 +71,23 @@ func TestLlamaLaunchDownloadsModelAfterSSH(t *testing.T) {
 		"HF_XET_HIGH_PERFORMANCE",
 		"hf download ggml-org/Qwen3.8-27B-GGUF",
 		"curl -L -C -",
+		`mem_kb="$(grep -m1 ^MemTotal: /proc/meminfo | tr -cd 0-9)"`,
 		"-m \"$model\"",
 		"-c 60000",
 	} {
 		if !strings.Contains(command, required) {
 			t.Fatalf("llama.cpp detached launch missing %q", required)
 		}
+	}
+	if strings.Contains(command, `awk "/MemTotal:/`) || strings.Contains(command, `\\$2`) {
+		t.Fatalf("llama.cpp launch retained unsafe nested awk quoting: %s", command)
+	}
+}
+
+func TestLlamaLaunchCommandHasValidBashSyntax(t *testing.T) {
+	command := llamaModelLaunchCommand(60000)
+	if out, err := exec.Command("bash", "-n", "-c", command).CombinedOutput(); err != nil {
+		t.Fatalf("llama.cpp launch command has invalid bash syntax: %v\n%s\ncommand:\n%s", err, out, command)
 	}
 }
 
