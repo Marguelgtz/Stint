@@ -35,7 +35,7 @@ func TestBuildSessionSnapshot(t *testing.T) {
 
 func TestBuildSessionSnapshotExpired(t *testing.T) {
 	started := time.Date(2026, 8, 31, 6, 0, 0, 0, time.UTC)
-	state := sessionstate.State{InstanceID: 1, StartedAt: started, Deadline: started.Add(time.Hour)}
+	state := sessionstate.State{InstanceID: 1, HourlyUSD: 0.40, StartedAt: started, Deadline: started.Add(time.Hour)}
 	snapshot := buildSessionSnapshot(state, started.Add(2*time.Hour))
 	if !snapshot.Expired {
 		t.Fatal("snapshot should be expired")
@@ -43,7 +43,13 @@ func TestBuildSessionSnapshotExpired(t *testing.T) {
 	if snapshot.Remaining != 0 {
 		t.Fatalf("remaining = %s, want 0", snapshot.Remaining)
 	}
-	if snapshot.Elapsed != time.Hour {
-		t.Fatalf("elapsed = %s, want scheduled 1h", snapshot.Elapsed)
+	if snapshot.Elapsed != 2*time.Hour {
+		t.Fatalf("elapsed = %s, want actual wall time 2h", snapshot.Elapsed)
+	}
+	if snapshot.EstimatedSpentUSD < 0.799 || snapshot.EstimatedSpentUSD > 0.801 {
+		t.Fatalf("spent estimate = %.4f, want about 0.80", snapshot.EstimatedSpentUSD)
+	}
+	if snapshot.ScheduledExposure < 0.399 || snapshot.ScheduledExposure > 0.401 {
+		t.Fatalf("scheduled exposure = %.4f, want about 0.40", snapshot.ScheduledExposure)
 	}
 }
