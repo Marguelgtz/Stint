@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Marguelgtz/Stint/internal/router"
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
@@ -100,20 +101,14 @@ func TestMaxAdditionalDurationUsesProfileCeiling(t *testing.T) {
 		StartedAt:  now,
 		Deadline:   now.Add(6 * time.Hour),
 	}
-	profile := mustInteractiveProfile(t)
+	profile, err := router.ResolveProfile("interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
 	got := maxAdditionalDuration(state, profile)
 	if got < 14*time.Minute+59*time.Second || got > 15*time.Minute+time.Second {
 		t.Fatalf("max additional = %s, want about 15m", got)
 	}
-}
-
-func mustInteractiveProfile(t *testing.T) (profile struct {
-	Name      string
-	Objective string
-}) {
-	// Kept out of use intentionally; compile-time shape guard below is replaced
-	// by direct profile resolution in TestMaxAdditionalDurationUsesProfileCeiling.
-	return
 }
 
 func TestFormatSessionDuration(t *testing.T) {
