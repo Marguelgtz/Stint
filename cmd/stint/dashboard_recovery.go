@@ -11,7 +11,10 @@ func dashboardSessionRecoverable(snapshot sessionSnapshot) bool {
 	if snapshot.Session.InstanceID <= 0 || snapshot.Time.Expired {
 		return false
 	}
-	return snapshot.Session.Status == sessionstate.StatusRecoverable || checkpointIsRecoverable(snapshot.Session.Checkpoint)
+	// Checkpoints describe how far lifecycle work progressed, but they are not
+	// themselves recovery authority: healthy READY sessions also carry a READY
+	// checkpoint. Only lifecycle code may persist RECOVERABLE status.
+	return snapshot.Session.Status == sessionstate.StatusRecoverable
 }
 
 func dashboardDisplayStatus(snapshot sessionSnapshot) string {
