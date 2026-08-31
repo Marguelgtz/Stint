@@ -112,22 +112,51 @@ func TestLlamaModelProgressReportsTransferAndLoadStages(t *testing.T) {
 	}
 }
 
-func TestNInferUsesPlainVastBaseForBundleDeployment(t *testing.T) {
+func TestNInferDefaultRemainsPinnedPrebuiltImage(t *testing.T) {
+	t.Setenv(ninferDeploymentEnv, "")
+	got := vastImageForRuntime(runtimeNInfer)
+	if got != ninferVastImage {
+		t.Fatalf("NInfer default image = %q, want control image %q", got, ninferVastImage)
+	}
+	if !strings.HasPrefix(got, "ghcr.io/marguelgtz/stint-ninfer:") {
+		t.Fatalf("NInfer default image = %q, want Stint GHCR control image", got)
+	}
+	command := vastOnStartForRuntime(runtimeNInfer)
+	for _, required := range []string{ninferPrebuiltBinary, ninferRuntimeBridgePath, ninferSourceCommit} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("default NInfer onstart missing %q: %s", required, command)
+		}
+	}
+	if strings.Contains(command, ninferRuntimeBundleURL) {
+		t.Fatalf("default NInfer deployment unexpectedly references experimental bundle: %s", command)
+	}
+}
+
+func TestNInferBundleDeploymentUsesPlainVastBase(t *testing.T) {
+	t.Setenv(ninferDeploymentEnv, ninferDeploymentBundle)
 	got := vastImageForRuntime(runtimeNInfer)
 	if got != vast.NInferCUDA128Image {
-		t.Fatalf("NInfer image = %q, want plain Vast CUDA base %q", got, vast.NInferCUDA128Image)
+		t.Fatalf("NInfer bundle image = %q, want plain Vast CUDA base %q", got, vast.NInferCUDA128Image)
 	}
 	if !strings.HasPrefix(got, "vastai/base-image:cuda-12.8.1-") {
-		t.Fatalf("NInfer image = %q, want pinned Vast CUDA 12.8.1 base", got)
+		t.Fatalf("NInfer bundle image = %q, want pinned Vast CUDA 12.8.1 base", got)
 	}
 	for _, forbidden := range []string{"ghcr.io/marguelgtz/stint-ninfer", ":latest", ":edge"} {
 		if strings.Contains(got, forbidden) {
-			t.Fatalf("NInfer image unexpectedly contains %q: %s", forbidden, got)
+			t.Fatalf("NInfer bundle image unexpectedly contains %q: %s", forbidden, got)
 		}
 	}
 }
 
-func TestNInferOnStartWritesLazyRuntimeBundleBridge(t *testing.T) {
+func TestNInferUnknownDeploymentFallsBackToControlImage(t *testing.T) {
+	t.Setenv(ninferDeploymentEnv, "future-mode")
+	if got := vastImageForRuntime(runtimeNInfer); got != ninferVastImage {
+		t.Fatalf("unknown deployment selected %q, want safe control image %q", got, ninferVastImage)
+	}
+}
+
+func TestNInferBundleOnStartWritesLazyRuntimeBridge(t *testing.T) {
+	t.Setenv(ninferDeploymentEnv, ninferDeploymentBundle)
 	command := vastOnStartForRuntime(runtimeNInfer)
 	for _, required := range []string{
 		ninferRuntimeBridgePath,
@@ -143,7 +172,7 @@ func TestNInferOnStartWritesLazyRuntimeBundleBridge(t *testing.T) {
 		`exec "$real" "$@"`,
 	} {
 		if !strings.Contains(command, required) {
-			t.Fatalf("NInfer onstart bridge missing %q: %s", required, command)
+			t.Fatalf("NInfer bundle onstart bridge missing %q: %s", required, command)
 		}
 	}
 	for _, forbidden := range []string{
@@ -157,7 +186,7 @@ func TestNInferOnStartWritesLazyRuntimeBundleBridge(t *testing.T) {
 		"--kv-capacity",
 	} {
 		if strings.Contains(command, forbidden) {
-			t.Fatalf("NInfer onstart unexpectedly performs runtime/model bootstrap %q: %s", forbidden, command)
+			t.Fatalf("NInfer bundle onstart unexpectedly performs runtime/model bootstrap %q: %s", forbidden, command)
 		}
 	}
 
@@ -174,7 +203,7 @@ func TestNInferOnStartWritesLazyRuntimeBundleBridge(t *testing.T) {
 		}
 	}
 	if out, err := exec.Command("bash", "-n", "-c", command).CombinedOutput(); err != nil {
-		t.Fatalf("NInfer onstart bridge has invalid shell syntax: %v\n%s\ncommand:\n%s", err, out, command)
+		t.Fatalf("NInfer bundle onstart bridge has invalid shell syntax: %v\n%s\ncommand:\n%s", err, out, command)
 	}
 }
 
