@@ -38,10 +38,18 @@ func OpenTerminal(stdin, stdout *os.File) (*Terminal, error) {
 		return nil, fmt.Errorf("read terminal mode with stty: %w", err)
 	}
 	state := strings.TrimSpace(string(stateBytes))
-	cmd := exec.Command("stty", "raw", "-echo")
+
+	// The dashboard only needs byte-at-a-time input. Do not use `stty raw`
+	// here: raw mode also disables output post-processing (OPOST/ONLCR), which
+	// makes a rendered '\n' advance to the next row without returning to
+	// column zero. The resulting horizontal drift looks like a broken resize
+	// or layout calculation. Keep output semantics intact while disabling
+	// canonical input, echo, and signal-character handling so Ctrl+C reaches
+	// the dashboard as byte 3 and can exit through the normal restore path.
+	cmd := exec.Command("stty", "-icanon", "-echo", "-isig", "min", "1", "time", "0")
 	cmd.Stdin = stdin
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("enable raw terminal mode: %w", err)
+		return nil, fmt.Errorf("enable dashboard input mode: %w", err)
 	}
 	t := &Terminal{stdin: stdin, stdout: stdout, sttyState: state, active: true}
 	fmt.Fprint(stdout, "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")
