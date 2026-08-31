@@ -21,8 +21,8 @@ When stdin or stdout is not a TTY, `dash` falls back to a static refreshed statu
 
 | Key | View | Contents |
 | --- | --- | --- |
-| `1` | Home | Session identity, countdown, cost, health, GPU and cached performance |
-| `2` | Performance | Latest explicit benchmark details |
+| `1` | Home | Session identity, countdown, cost, health, live inference strip, GPU and cached performance |
+| `2` | Performance | Latest explicit benchmark details plus a LIVE TRAFFIC section with observed engine activity |
 | `3` | Config | Authoritative model/runtime/context/session configuration |
 | `4` | Logs | Bounded tail of local `tunnel.log` and `watchdog.log` |
 | `←` / `↑` | Previous view | Moves to the previous numbered view and wraps from Home to Logs |
@@ -35,7 +35,7 @@ Arrow-key escape sequences are parsed as one logical navigation event. They do n
 
 | Key | Action |
 | --- | --- |
-| `r` | Refresh passive endpoint/runtime/GPU telemetry; when the recorded session is `RECOVERABLE`, preview Resume instead |
+| `r` | Refresh passive endpoint/runtime/GPU/live-inference telemetry; when the recorded session is `RECOVERABLE`, preview Resume instead |
 | `b` | Preview and explicitly run one 128-token performance benchmark while the session is `READY` |
 | `+` | Extend the session deadline |
 | `-` | Shorten the session deadline |
@@ -111,6 +111,8 @@ The dashboard continues rendering while the benchmark runs. Successful results u
 
 No dashboard timer automatically generates tokens.
 
+The Performance view also shows a **LIVE TRAFFIC** section: agents, resident prompt depth, decode/prefill rates, queue, cache reuse, speculative acceptance, and per-lane detail polled from the engine's `/metrics` and `/slots` endpoints. Live traffic is *observed*, never benchmarked; the benchmarked sample still comes only from an explicit `b` action, and the two sections never share values.
+
 ### Down
 
 `d` only opens the confirmation. Destruction requires uppercase `D` from the confirmation modal. This calls the existing `stint down` lifecycle path.
@@ -135,6 +137,7 @@ About every 10 seconds
   VRAM
   temperature
   power
+  /metrics + /slots live inference observation (two epochs, 1.2s gap)
 
 Explicit only
   TTFT/decode performance benchmark

@@ -81,6 +81,7 @@ Active sessions include, when available:
 - estimated spend so far and the currently scheduled cost exposure
 - checkpoint and last recoverable error
 - the exact auto-destroy deadline and suggested next action
+- with `--refresh`, an `INFERENCE LIVE` section: active agents, queued requests, resident prompt depth, decode/prefill rates, cache reuse, speculative acceptance, and per-lane detail observed from the engine's read-only `/metrics` and `/slots` endpoints (never an inference request)
 
 When the next action is `stint resume`, the paid instance is preserved and resumable.
 

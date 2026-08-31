@@ -614,6 +614,7 @@ func (c *dashboardController) applyRefresh(result dashboardLoadResult) {
 		c.model.Health = dash.Health{}
 		c.model.GPU = dash.GPU{}
 		c.model.Perf = dash.Perf{}
+		c.model.Inference = dash.Inference{}
 		c.model.Notice = "The recorded session has ended."
 		return
 	}
@@ -662,6 +663,7 @@ func (c *dashboardController) projectSnapshot() {
 	perf := dashboardPerf(s.Performance)
 	perf.Benchmarking = c.benchmarking
 	c.model.Perf = perf
+	c.model.Inference = dashboardInference(s.Inference)
 	c.model.Logs = c.logs
 	if notice := dashboardRecoveryNotice(s); notice != "" && c.model.Modal == nil {
 		c.model.Notice = notice
@@ -734,6 +736,35 @@ func dashboardPerf(value performanceSnapshot) dash.Perf {
 	result.PromptTokens = value.PromptTokens
 	result.CompletionTokens = value.CompletionTokens
 	result.Age = formatSessionDuration(value.Age)
+	return result
+}
+
+func dashboardInference(value inferenceTelemetry) dash.Inference {
+	result := dash.Inference{Refreshed: value.Refreshed, Available: value.Available, Error: value.UnavailableReason}
+	if value.Meta.Error != "" {
+		result.Error = value.Meta.Error
+	}
+	if !value.Available {
+		return result
+	}
+	result.Agents = value.Agents
+	result.Depth = value.ResidentDepth
+	if value.DecodeTokensSec != nil {
+		result.Decode = fmt.Sprintf("%.1f tok/s", *value.DecodeTokensSec)
+	}
+	if value.PrefillTokensSec != nil {
+		result.Prefill = fmt.Sprintf("%.1f tok/s", *value.PrefillTokensSec)
+	}
+	if value.Deferred > 0 {
+		result.Queue = fmt.Sprintf("%d queued", value.Deferred)
+	}
+	if value.CacheReuseRatio != nil {
+		result.CacheReuse = fmt.Sprintf("%.0f%%", *value.CacheReuseRatio*100)
+	}
+	if value.SpecAcceptRatio != nil {
+		result.Speculative = fmt.Sprintf("%.0f%% accepted", *value.SpecAcceptRatio*100)
+	}
+	result.Lanes = inferenceLaneSummary(value.Lanes)
 	return result
 }
 

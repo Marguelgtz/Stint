@@ -167,3 +167,68 @@ func fixtureModel(width int) Model {
 		},
 	}
 }
+
+func TestRenderHomeShowsLiveInferenceStrip(t *testing.T) {
+	model := fixtureModel(100)
+	model.Inference = Inference{
+		Refreshed: true, Available: true,
+		Agents: 2, Depth: 45000,
+		Decode: "63.2 tok/s", Queue: "1 queued", CacheReuse: "87%",
+	}
+	out := stripANSI(Render(model))
+	for _, want := range []string{"LIVE", "2 agents active", "depth 45000 tok", "decode 63.2 tok/s", "1 queued", "cache 87%"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("home view missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderHomeLiveStripDegradesGracefully(t *testing.T) {
+	// Zero Inference (not refreshed yet) must not break the home view.
+	out := stripANSI(Render(fixtureModel(100)))
+	if !strings.Contains(out, "LIVE") || !strings.Contains(out, "not probed yet") {
+		t.Fatalf("home view missing unrefreshed live strip:\n%s", out)
+	}
+
+	unavailable := fixtureModel(100)
+	unavailable.Inference = Inference{Refreshed: true, Error: "inference endpoint unreachable through the tunnel"}
+	out = stripANSI(Render(unavailable))
+	if !strings.Contains(out, "unavailable · inference endpoint unreachable") {
+		t.Fatalf("home view missing unavailable live strip:\n%s", out)
+	}
+}
+
+func TestRenderPerformanceShowsLiveTraffic(t *testing.T) {
+	model := fixtureModel(120)
+	model.Height = 48
+	model.View = Performance
+	model.Inference = Inference{
+		Refreshed: true, Available: true,
+		Agents: 1, Depth: 34210,
+		Decode: "63.2 tok/s", Prefill: "1204.5 tok/s",
+		CacheReuse: "87%", Speculative: "71% accepted",
+		Lanes: "0: 34210 tok",
+	}
+	out := stripANSI(Render(model))
+	for _, want := range []string{
+		"PERFORMANCE", "LIVE TRAFFIC",
+		"1 active", "34210 tokens", "63.2 tok/s", "1204.5 tok/s",
+		"87%", "71% accepted", "0: 34210 tok",
+		"Live traffic is observed, never benchmarked",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("performance view missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderPerformanceLiveTrafficUnavailable(t *testing.T) {
+	model := fixtureModel(120)
+	model.Height = 48
+	model.View = Performance
+	model.Inference = Inference{Refreshed: true, Error: "runtime serves neither /metrics nor /slots (start llama.cpp with --metrics --slots)"}
+	out := stripANSI(Render(model))
+	if !strings.Contains(out, "LIVE TRAFFIC") || !strings.Contains(out, "Unavailable · runtime serves neither /metrics nor /slots") {
+		t.Fatalf("performance view missing unavailable live traffic:\n%s", out)
+	}
+}
