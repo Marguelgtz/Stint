@@ -112,19 +112,47 @@ func TestLlamaModelProgressReportsTransferAndLoadStages(t *testing.T) {
 	}
 }
 
-func TestNInferOnStartDoesNotReceiveLlamaPrebuiltBridge(t *testing.T) {
+func TestNInferUsesPinnedPrebuiltVastImage(t *testing.T) {
+	got := vastImageForRuntime(runtimeNInfer)
+	if got != ninferVastImage {
+		t.Fatalf("NInfer image = %q, want %q", got, ninferVastImage)
+	}
+	if !strings.HasPrefix(got, "ghcr.io/marguelgtz/stint-ninfer:") {
+		t.Fatalf("NInfer image = %q, want Stint GHCR image", got)
+	}
+	for _, forbidden := range []string{vast.NInferCUDA128Image, ":latest", ":edge"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("NInfer image unexpectedly contains %q: %s", forbidden, got)
+		}
+	}
+}
+
+func TestNInferOnStartBridgesPrebuiltBinaryWithoutLaunchingRuntime(t *testing.T) {
 	command := vastOnStartForRuntime(runtimeNInfer)
+	for _, required := range []string{
+		ninferPrebuiltBinary,
+		ninferRuntimeBridgePath,
+		ninferSourceCommit,
+		"/workspace/stint/ninfer/.stint-commit",
+		"chmod 600 /root/.ssh/authorized_keys",
+		`exec /opt/ninfer/bin/ninfer-serve "$@"`,
+	} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("NInfer onstart missing %q: %s", required, command)
+		}
+	}
 	for _, forbidden := range []string{
 		llamaPrebuiltBinary,
 		llamaRuntimeBridgePath,
-		"ninfer-serve",
 		"qwen3_8_27b.ninfer",
 		"apt-get",
 		"git clone",
 		"cmake",
+		"--max-context",
+		"--kv-capacity",
 	} {
 		if strings.Contains(command, forbidden) {
-			t.Fatalf("NInfer onstart unexpectedly contains %q: %s", forbidden, command)
+			t.Fatalf("NInfer onstart unexpectedly performs runtime/model bootstrap %q: %s", forbidden, command)
 		}
 	}
 }
