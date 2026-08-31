@@ -281,7 +281,7 @@ if [ ! -f "$model" ] || ! echo "$model_sha  $model" | sha256sum -c - >/dev/null 
   echo "Model destination  $model"
   export HF_HUB_DOWNLOAD_TIMEOUT=60
   export HF_HUB_DISABLE_UPDATE_CHECK=1
-  mem_kb="$(awk "/MemTotal:/ { print \\$2 }" /proc/meminfo 2>/dev/null || echo 0)"
+  mem_kb="$(grep -m1 ^MemTotal: /proc/meminfo | tr -cd 0-9)"
   if [ "${mem_kb:-0}" -ge 67108864 ]; then
     export HF_XET_HIGH_PERFORMANCE=1
     echo "Download transport Hugging Face Xet high-performance"
