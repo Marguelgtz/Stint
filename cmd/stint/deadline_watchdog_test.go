@@ -11,15 +11,15 @@ import (
 )
 
 type fakeDeadlineWatch struct {
-	now           time.Time
-	state         sessionstate.State
-	missing       bool
-	destroyedAt   []time.Time
-	destroyErrs   []error
-	failures      int
-	waits         int
-	onWait        func(*fakeDeadlineWatch)
-	onLock        func(*fakeDeadlineWatch)
+	now         time.Time
+	state       sessionstate.State
+	missing     bool
+	destroyedAt []time.Time
+	destroyErrs []error
+	failures    int
+	waits       int
+	onWait      func(*fakeDeadlineWatch)
+	onLock      func(*fakeDeadlineWatch)
 }
 
 func (f *fakeDeadlineWatch) deps() deadlineWatchdogDeps {

@@ -55,23 +55,23 @@ type Client struct {
 }
 
 type rawOffer struct {
-	ID                int64   `json:"id"`
-	GPUName           string  `json:"gpu_name"`
-	GPURAM            int     `json:"gpu_ram"`
-	GPUMaxPower       float64 `json:"gpu_max_power"`
-	DPHTotal          float64 `json:"dph_total"`
-	Reliability       float64 `json:"reliability"`
-	DLPerf            float64 `json:"dlperf"`
-	InetDown          float64 `json:"inet_down"`
-	InetUp            float64 `json:"inet_up"`
-	InetDownCost      float64 `json:"inet_down_cost"`
-	DirectPortCount   int     `json:"direct_port_count"`
-	Geolocation       string  `json:"geolocation"`
-	MachineID         int64   `json:"machine_id"`
-	Verification      string  `json:"verification"`
-	Rentable          bool    `json:"rentable"`
-	Rented            bool    `json:"rented"`
-	NumGPUs           int     `json:"num_gpus"`
+	ID              int64   `json:"id"`
+	GPUName         string  `json:"gpu_name"`
+	GPURAM          int     `json:"gpu_ram"`
+	GPUMaxPower     float64 `json:"gpu_max_power"`
+	DPHTotal        float64 `json:"dph_total"`
+	Reliability     float64 `json:"reliability"`
+	DLPerf          float64 `json:"dlperf"`
+	InetDown        float64 `json:"inet_down"`
+	InetUp          float64 `json:"inet_up"`
+	InetDownCost    float64 `json:"inet_down_cost"`
+	DirectPortCount int     `json:"direct_port_count"`
+	Geolocation     string  `json:"geolocation"`
+	MachineID       int64   `json:"machine_id"`
+	Verification    string  `json:"verification"`
+	Rentable        bool    `json:"rentable"`
+	Rented          bool    `json:"rented"`
+	NumGPUs         int     `json:"num_gpus"`
 }
 
 type searchResponse struct {
@@ -255,12 +255,12 @@ func (c *Client) traceDiscovery(ctx context.Context, profile core.Profile, hours
 				"limit": limit, "type": vastOnDemandType,
 				"verified": map[string]any{"eq": true}, "rentable": map[string]any{"eq": true}, "rented": map[string]any{"eq": false},
 				"gpu_name": gpuFilter, "num_gpus": map[string]any{"eq": 1},
-				"duration": map[string]any{"gte": int(math.Ceil(hours * 3600))},
+				"duration":  map[string]any{"gte": int(math.Ceil(hours * 3600))},
 				"dph_total": map[string]any{"lte": discoveryPriceCeilingUSD},
 			},
 		},
 		{
-			name: "storage",
+			name:    "storage",
 			payload: c.discoveryPayload(profile, hours, limit, storageGB),
 		},
 	}
