@@ -41,7 +41,7 @@ A failed observation is represented inside its telemetry domain. It does not cha
 
 ## Performance samples
 
-`stint perf` remains an explicit active benchmark. It sends generation requests through the same local OpenAI-compatible endpoint used by coding clients and measures TTFT, total latency, and decode throughput.
+`stint perf` remains an explicit active benchmark. It sends generation requests through the same local OpenAI-compatible endpoint used by coding clients and measures TTFT, total latency, decode throughput, and the measured prompt token count from the endpoint's usage report. The benchmark prompt is built deterministically to a configurable depth (`--prompt-tokens`, default 8192, range 32-200000) so that TTFT and the post-run VRAM sample reflect real prompt encoding rather than decode-only behavior. Prompt depth plus maximum completion tokens must fit inside the active context; the configured context is a ceiling, not the measured depth.
 
 After a successful benchmark, Stint atomically writes the aggregate result to:
 
@@ -71,7 +71,7 @@ session       identity, runtime, model, context, lifecycle status
  cost          hourly rate, estimated spend, scheduled exposure
  health        tunnel, watchdog, endpoint, remote runtime
  gpu           utilization, VRAM, power, temperature
- performance   cached TTFT/decode sample and its age
+ performance   cached TTFT/decode sample, its measured prompt depth, and its age
 ```
 
 The future terminal dashboard should consume these domains rather than reading `session.json` or probing SSH directly.
@@ -112,6 +112,7 @@ Durations use explicit units rather than Go's raw `time.Duration` nanoseconds:
 - endpoint `latencyMilliseconds`
 - performance `ttftMilliseconds`
 - performance `totalMilliseconds`
+- performance `promptTokens`
 - performance `ageSeconds`
 
 Remote observation objects contain a `refreshed` indicator plus sample time/error metadata so consumers can distinguish **not sampled** from **sampled and unhealthy**.

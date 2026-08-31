@@ -26,10 +26,12 @@ func runDashboardBenchmark(paths config.Paths) (perfSample, error) {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DisableKeepAlives = true
-	client := &http.Client{Timeout: 3 * time.Minute, Transport: transport}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	prompt := buildPerfPrompt(perfDefaultPromptTokens)
+	timeout := perfBenchmarkTimeout(perfDefaultPromptTokens, 128)
+	client := &http.Client{Timeout: timeout, Transport: transport}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	sample, _, err := benchmarkCompletionWithRetry(ctx, client, 128, benchmarkCompletion)
+	sample, _, err := benchmarkCompletionWithRetry(ctx, client, prompt, 128, benchmarkCompletion)
 	if err != nil {
 		return perfSample{}, err
 	}
