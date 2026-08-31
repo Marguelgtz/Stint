@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,6 +48,59 @@ func TestDashboardNavigationAndExit(t *testing.T) {
 	quit, _, _ = controller.handleKey('q')
 	if !quit {
 		t.Fatal("q should exit dashboard")
+	}
+}
+
+func TestDashboardArrowNavigationWraps(t *testing.T) {
+	controller := dashboardController{model: dash.Model{View: dash.Home}}
+
+	_, changed, _ := controller.handleKey(dashboardKeyPrevious)
+	if !changed || controller.model.View != dash.Logs {
+		t.Fatalf("previous from Home = %v, changed=%v; want Logs", controller.model.View, changed)
+	}
+	_, changed, _ = controller.handleKey(dashboardKeyNext)
+	if !changed || controller.model.View != dash.Home {
+		t.Fatalf("next from Logs = %v, changed=%v; want Home", controller.model.View, changed)
+	}
+	_, _, _ = controller.handleKey(dashboardKeyNext)
+	_, _, _ = controller.handleKey(dashboardKeyNext)
+	if controller.model.View != dash.Config {
+		t.Fatalf("two next presses = %v; want Config", controller.model.View)
+	}
+}
+
+func TestDashboardArrowInputSequences(t *testing.T) {
+	keys := make(chan byte, 8)
+	errs := make(chan error, 1)
+	readDashboardInput(strings.NewReader("\x1b[C\x1b[D\x1b[A\x1b[B"), keys, errs)
+
+	if err := <-errs; !errors.Is(err, io.EOF) {
+		t.Fatalf("input parser error = %v, want EOF", err)
+	}
+	want := []byte{dashboardKeyNext, dashboardKeyPrevious, dashboardKeyPrevious, dashboardKeyNext}
+	if len(keys) != len(want) {
+		t.Fatalf("parsed %d keys, want %d", len(keys), len(want))
+	}
+	for i, expected := range want {
+		if got := <-keys; got != expected {
+			t.Fatalf("key %d = %#x, want %#x", i, got, expected)
+		}
+	}
+}
+
+func TestDashboardStandaloneEscapeIsPreserved(t *testing.T) {
+	keys := make(chan byte, 2)
+	errs := make(chan error, 1)
+	readDashboardInput(strings.NewReader("\x1b"), keys, errs)
+
+	if err := <-errs; !errors.Is(err, io.EOF) {
+		t.Fatalf("input parser error = %v, want EOF", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("parsed %d keys, want one Escape", len(keys))
+	}
+	if got := <-keys; got != 27 {
+		t.Fatalf("standalone Escape = %#x, want 0x1b", got)
 	}
 }
 
