@@ -43,6 +43,29 @@ case "$*" in
   *"cmake --build"*) progress_mode=1 ;;
 esac
 
+guard_pid=
+start_parent_guard() {
+  owner_pid=$$
+  child_pid=$1
+  (
+    while kill -0 "$owner_pid" 2>/dev/null; do
+      sleep 0.2
+    done
+    kill -TERM "$child_pid" 2>/dev/null || true
+    sleep 0.2
+    kill -KILL "$child_pid" 2>/dev/null || true
+  ) >/dev/null 2>&1 &
+  guard_pid=$!
+}
+
+stop_parent_guard() {
+  if [ -n "${guard_pid:-}" ]; then
+    kill "$guard_pid" 2>/dev/null || true
+    wait "$guard_pid" 2>/dev/null || true
+    guard_pid=
+  fi
+}
+
 run_ssh() {
   if [ "$progress_mode" -ne 1 ] || [ ! -t 1 ]; then
     "$ssh_bin" \
@@ -50,8 +73,13 @@ run_ssh() {
       -o ControlMaster=auto \
       -o ControlPersist=15m \
       -o "ControlPath=${TMPDIR:-/tmp}/stint-ssh-%%C" \
-      "$@"
-    return $?
+      "$@" &
+    ssh_pid=$!
+    start_parent_guard "$ssh_pid"
+    wait "$ssh_pid"
+    status=$?
+    stop_parent_guard
+    return "$status"
   fi
 
   log_file="$(mktemp "${TMPDIR:-/tmp}/stint-runtime.XXXXXX")" || return 1
@@ -62,6 +90,7 @@ run_ssh() {
     -o "ControlPath=${TMPDIR:-/tmp}/stint-ssh-%%C" \
     "$@" >"$log_file" 2>&1 &
   ssh_pid=$!
+  start_parent_guard "$ssh_pid"
 
   cols="$(tput cols 2>/dev/null || true)"
   case "$cols" in
@@ -157,6 +186,7 @@ run_ssh() {
 
   wait "$ssh_pid"
   status=$?
+  stop_parent_guard
   latest="$(tail -c 8192 "$log_file" 2>/dev/null | tr '\r' '\n' | sed '/^[[:space:]]*$/d' | tail -n 1 | sed 's/[[:cntrl:]]//g')"
 
   if [ "$status" -eq 0 ]; then

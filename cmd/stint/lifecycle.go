@@ -401,25 +401,35 @@ func retryAttachSSHKey(ctx context.Context, client *vast.Client, instanceID int6
 }
 
 func waitForSSHMetadata(ctx context.Context, client *vast.Client, id int64, timeout time.Duration) (vast.Instance, error) {
-	deadline := time.Now().Add(timeout)
+	startedAt := time.Now()
+	deadline := startedAt.Add(timeout)
 	var lastErr error
 	lastStatus := ""
+	lastHeartbeat := time.Time{}
 	for {
 		instance, err := client.ShowInstance(ctx, id)
 		if err == nil && strings.EqualFold(instance.ActualStatus, "running") && instance.SSHHost != "" && instance.SSHPort > 0 {
+			fmt.Printf("  Vast %-12s SSH ready after %s\n", "running", formatWaitDuration(time.Since(startedAt)))
 			return instance, nil
 		}
 		if err != nil {
 			lastErr = err
 		}
-		if err == nil {
-			status := strings.TrimSpace(instance.ActualStatus + " " + instance.StatusMsg)
-			if status != "" && status != lastStatus {
-				fmt.Printf("  Vast status: %s\n", status)
-				lastStatus = status
-			}
+
+		status := "checking"
+		if err != nil {
+			status = "API retry"
+		} else if strings.TrimSpace(instance.ActualStatus) != "" {
+			status = strings.TrimSpace(instance.ActualStatus)
 		}
-		if time.Now().After(deadline) {
+		now := time.Now()
+		if status != lastStatus || lastHeartbeat.IsZero() || now.Sub(lastHeartbeat) >= 10*time.Second {
+			fmt.Printf("  Vast %-12s Waiting for SSH %s / %s\n", status, formatWaitDuration(now.Sub(startedAt)), formatWaitDuration(timeout))
+			lastStatus = status
+			lastHeartbeat = now
+		}
+
+		if now.After(deadline) {
 			if lastErr != nil {
 				return vast.Instance{}, fmt.Errorf("timed out waiting for SSH metadata: %w", lastErr)
 			}
@@ -431,6 +441,14 @@ func waitForSSHMetadata(ctx context.Context, client *vast.Client, id int64, time
 		case <-time.After(3 * time.Second):
 		}
 	}
+}
+
+func formatWaitDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	totalSeconds := int(d / time.Second)
+	return fmt.Sprintf("%02d:%02d", totalSeconds/60, totalSeconds%60)
 }
 
 func waitForSSH(ctx context.Context, paths config.Paths, state sessionstate.State, timeout time.Duration) error {
