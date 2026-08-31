@@ -3,9 +3,16 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
+
+func TestProviderStartupTimeoutAllowsCandidateFailover(t *testing.T) {
+	if providerStartupTimeout > 6*time.Minute {
+		t.Fatalf("provider startup timeout = %s, want at most 6m so another paid candidate can be tried", providerStartupTimeout)
+	}
+}
 
 func TestCheckpointIsRecoverable(t *testing.T) {
 	tests := []struct {

@@ -103,7 +103,7 @@ func parseRemoteDownloadProbe(output string) (float64, error) {
 	return 0, fmt.Errorf("remote download probe did not return a speed marker: %s", strings.TrimSpace(output))
 }
 
-func destroyNetworkRejectedInstance(client *vast.Client, paths config.Paths, state sessionstate.State) error {
+func destroyRejectedInstance(client *vast.Client, paths config.Paths, state sessionstate.State) error {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	if err := client.DestroyInstance(cleanupCtx, state.InstanceID); err != nil {
