@@ -79,10 +79,14 @@ func run(args []string) error {
 		return runStartResumable(args[1:])
 	case "resume":
 		return runResume(args[1:])
+	case "extend":
+		return runExtend(args[1:])
+	case "shorten":
+		return runShorten(args[1:])
 	case "down":
 		return runDown(args[1:])
 	case "_watchdog":
-		return runWatchdog(args[1:])
+		return runDynamicWatchdog(args[1:])
 	case "auth":
 		return runAuth(args[1:])
 	case "setup":
@@ -414,28 +418,7 @@ func runStatus() error {
 	if stateErr != nil {
 		return stateErr
 	}
-	fmt.Printf("Active compute     instance %d (%s)\n", state.InstanceID, state.Status)
-	fmt.Printf("GPU                %s\n", state.GPUModel)
-	fmt.Printf("Rate               $%.3f/hr\n", state.HourlyUSD)
-	if state.Checkpoint != "" {
-		fmt.Printf("Checkpoint         %s\n", state.Checkpoint)
-	}
-	if state.LastError != "" {
-		lastError := strings.ReplaceAll(state.LastError, "\n", " ")
-		if len(lastError) > 140 {
-			lastError = lastError[:137] + "..."
-		}
-		fmt.Printf("Last error         %s\n", lastError)
-	}
-	fmt.Printf("Auto-destroy       %s\n", state.Deadline.Local().Format(time.RFC1123))
-	switch state.Status {
-	case sessionstate.StatusRecoverable:
-		fmt.Println("Next action        stint resume")
-	case sessionstate.StatusReady:
-		fmt.Println("Next action        use Cline; stint down when finished")
-	default:
-		fmt.Println("Next action        wait for stint start")
-	}
+	printActiveSessionStatus(state)
 	return nil
 }
 
