@@ -31,6 +31,7 @@ type dashboardActionKind int
 const (
 	dashboardActionNone dashboardActionKind = iota
 	dashboardActionBenchmark
+	dashboardActionResume
 	dashboardActionExtend
 	dashboardActionShorten
 	dashboardActionDown
@@ -46,6 +47,7 @@ type dashboardModalMode int
 const (
 	dashboardModalNone dashboardModalMode = iota
 	dashboardModalBenchmark
+	dashboardModalResumeConfirm
 	dashboardModalDeadlineChoice
 	dashboardModalDeadlineCustom
 	dashboardModalDeadlineConfirm
@@ -224,8 +226,6 @@ func readDashboardInput(reader io.Reader, keys chan<- byte, errs chan<- error) {
 	for {
 		n, err := reader.Read(buf)
 		if n == 0 && err == nil {
-			// VMIN=0/VTIME=1 produces a short idle read. Use that boundary to
-			// resolve a standalone Escape without delaying normal key presses.
 			flushPending()
 			continue
 		}
@@ -258,8 +258,6 @@ func readDashboardInput(reader io.Reader, keys chan<- byte, errs chan<- error) {
 				case 'B', 'C':
 					keys <- dashboardKeyNext
 				default:
-					// Preserve unknown CSI input as ordinary bytes rather than
-					// silently swallowing it.
 					keys <- 27
 					keys <- '['
 					if key == 27 {
@@ -302,6 +300,21 @@ func (c *dashboardController) handleKey(key byte) (quit, changed bool, action da
 	case dashboardKeyNext, '\t':
 		c.navigateView(1)
 	case 'r', 'R':
+		if dashboardSessionRecoverable(c.snapshot) {
+			c.modalMode = dashboardModalResumeConfirm
+			c.model.Modal = &dash.Modal{
+				Title: "RESUME SESSION?",
+				Lines: []string{
+					fmt.Sprintf("Instance       %d", c.model.Session.InstanceID),
+					fmt.Sprintf("Checkpoint     %s", valueOr(c.snapshot.Session.Checkpoint, "saved checkpoint")),
+					fmt.Sprintf("Remaining      %s", formatSessionDuration(c.model.Session.Remaining)),
+					"",
+					"This reattaches the tunnel/runtime/model without renting new compute.",
+				},
+				Hint: "Enter resume · Esc cancel",
+			}
+			break
+		}
 		if c.model.View == dash.Logs {
 			c.reloadLogs()
 		}
@@ -309,6 +322,10 @@ func (c *dashboardController) handleKey(key byte) (quit, changed bool, action da
 	case 'b', 'B':
 		if c.model.NoSession || c.benchmarking {
 			return false, false, dashboardAction{}
+		}
+		if c.model.Session.Status != sessionstate.StatusReady {
+			c.model.Notice = "Benchmark unavailable until the session is READY"
+			return false, true, dashboardAction{}
 		}
 		c.modalMode = dashboardModalBenchmark
 		c.model.Modal = &dash.Modal{Title: "RUN PERFORMANCE SAMPLE", Lines: []string{"Runs       1", "Tokens     128", "", "This sends one real generation request to the active model."}, Hint: "Enter run · Esc cancel"}
@@ -349,6 +366,11 @@ func (c *dashboardController) handleModalKey(key byte) (bool, bool, dashboardAct
 		if key == '\r' || key == '\n' {
 			c.clearModal()
 			return false, true, dashboardAction{Kind: dashboardActionBenchmark}
+		}
+	case dashboardModalResumeConfirm:
+		if key == '\r' || key == '\n' {
+			c.clearModal()
+			return false, true, dashboardAction{Kind: dashboardActionResume}
 		}
 	case dashboardModalDeadlineChoice:
 		var delta time.Duration
@@ -478,6 +500,8 @@ func (c *dashboardController) clearModal() {
 
 func (c *dashboardController) executeBlockingAction(action dashboardAction) error {
 	switch action.Kind {
+	case dashboardActionResume:
+		return runResume(nil)
 	case dashboardActionExtend:
 		return runDeadlineMutation(deadlineExtend, []string{action.Duration.String(), "--yes"})
 	case dashboardActionShorten:
@@ -491,6 +515,8 @@ func (c *dashboardController) executeBlockingAction(action dashboardAction) erro
 
 func dashboardActionSuccess(action dashboardAction) string {
 	switch action.Kind {
+	case dashboardActionResume:
+		return "Session resumed"
 	case dashboardActionExtend:
 		return "Session extended by " + formatSessionDuration(action.Duration)
 	case dashboardActionShorten:
@@ -629,10 +655,7 @@ func (c *dashboardController) projectSnapshot() {
 	if c.model.NoSession {
 		return
 	}
-	status := s.Session.Status
-	if s.Time.Expired {
-		status = "EXPIRED"
-	}
+	status := dashboardDisplayStatus(s)
 	c.model.Session = dash.Session{InstanceID: s.Session.InstanceID, Status: status, Model: s.Session.Model, GPUModel: s.Session.GPUModel, Runtime: s.Session.Runtime, Context: s.Session.ContextTokens, Profile: s.Session.Profile, Rate: s.Cost.HourlyUSD, Spent: s.Cost.EstimatedSpentUSD, Exposure: s.Cost.ScheduledUSD, Started: s.Time.StartedAt, Deadline: s.Time.Deadline, Elapsed: s.Time.Elapsed, Remaining: s.Time.Remaining, Scheduled: s.Time.ScheduledDuration}
 	c.model.Health = dash.Health{Endpoint: dashboardEndpointLabel(s.Health.Endpoint), Tunnel: dashboardRunningLabel(s.Health.Tunnel.Running), Runtime: dashboardRuntimeLabel(s.Health.Runtime), Watchdog: dashboardRunningLabel(s.Health.Watchdog.Running), SSH: dashboardSSHLabel(s.Health.Runtime), Refreshed: s.Health.Endpoint.Refreshed || s.Health.Runtime.Refreshed, Refreshing: c.refreshing}
 	c.model.GPU = dashboardGPU(s.GPU)
@@ -640,6 +663,9 @@ func (c *dashboardController) projectSnapshot() {
 	perf.Benchmarking = c.benchmarking
 	c.model.Perf = perf
 	c.model.Logs = c.logs
+	if notice := dashboardRecoveryNotice(s); notice != "" && c.model.Modal == nil {
+		c.model.Notice = notice
+	}
 }
 
 func dashboardEndpointLabel(value endpointHealth) string {
