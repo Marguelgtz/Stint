@@ -18,6 +18,14 @@ const (
 	llamaModelSHA256       = "31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34"
 	llamaModelDownloadURL  = "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-Q4_K_M.gguf"
 
+	// Stint's NInfer image is built from the same Vast CUDA 12.8.1 base used by
+	// the previous cold path, but NInfer itself is compiled into the image at the
+	// exact pinned source commit. This preserves Vast's SSH lifecycle while
+	// removing GCC/CMake/CUDA compilation from paid startup.
+	ninferVastImage         = "ghcr.io/marguelgtz/stint-ninfer:981b685e-cuda12.8"
+	ninferPrebuiltBinary    = "/opt/ninfer/bin/ninfer-serve"
+	ninferRuntimeBridgePath = "/workspace/stint/ninfer/build/apps/ninfer-serve"
+
 	// Some Vast hosts have been observed creating /root/.ssh/authorized_keys
 	// with ownership or modes that OpenSSH StrictModes rejects. Keep a tiny
 	// background repair loop alive through the provider startup window so late
@@ -29,11 +37,17 @@ const (
 	// always executable, so a missing/broken /opt binary fails validation rather
 	// than silently falling back to a source compile and hiding the experiment.
 	vastLlamaPrebuiltBridgeOnStart = `install -d -m 755 /workspace/stint/llama.cpp/build/bin; printf '%s\n' '#!/bin/sh' 'exec /opt/llama.cpp/llama-server "$@"' > /workspace/stint/llama.cpp/build/bin/llama-server; chmod 755 /workspace/stint/llama.cpp/build/bin/llama-server`
+
+	// NInfer's existing bootstrap fast path recognizes an executable server plus
+	// a matching .stint-commit marker. Bridge the image binary into those exact
+	// paths so bootstrap validates the prebuilt server and proceeds directly to
+	// the model transfer instead of cloning/building NInfer on paid compute.
+	vastNInferPrebuiltBridgeOnStart = `install -d -m 755 /workspace/stint/ninfer/build/apps; printf '%s\n' '#!/bin/sh' 'exec /opt/ninfer/bin/ninfer-serve "$@"' > /workspace/stint/ninfer/build/apps/ninfer-serve; chmod 755 /workspace/stint/ninfer/build/apps/ninfer-serve; printf '%s\n' 981b685ea2124fdaed023123d2e63fd29d529ab8 > /workspace/stint/ninfer/.stint-commit`
 )
 
 func prepareVastSearchForRuntime(profile core.Profile, options vast.SearchOptions, runtimeRequest string) (core.Profile, vast.SearchOptions) {
-	// The official llama.cpp image is CUDA 12.9. NInfer remains on its qualified
-	// CUDA 12.8 image. Reject incompatible hosts before rental.
+	// The official llama.cpp image is CUDA 12.9. The pinned NInfer image remains
+	// on its qualified CUDA 12.8.1 base. Reject incompatible hosts before rental.
 	options.MinCUDAMaxGood = llamaVastMinCUDA
 	if runtimeRequest == runtimeNInfer {
 		profile.GPU.PreferredModels = []string{"RTX 4090"}
@@ -44,17 +58,21 @@ func prepareVastSearchForRuntime(profile core.Profile, options vast.SearchOption
 
 func vastImageForRuntime(runtime string) string {
 	if runtime == runtimeNInfer {
-		return vast.NInferCUDA128Image
+		return ninferVastImage
 	}
 	return llamaVastImage
 }
 
 func vastOnStartForRuntime(runtime string) string {
 	// Runtime/model preparation still happens only after Stint has proved SSH
-	// responsiveness. The llama hook adds only a compatibility bridge to the
-	// prebuilt Vast binary; it does not launch the model or download artifacts.
-	if runtime == runtimeLlamaCpp {
+	// responsiveness. These hooks install compatibility bridges only; they do
+	// not launch a server or download model artifacts.
+	switch runtime {
+	case runtimeLlamaCpp:
 		return vastSSHPermissionsOnStart + " " + vastLlamaPrebuiltBridgeOnStart
+	case runtimeNInfer:
+		return vastSSHPermissionsOnStart + " " + vastNInferPrebuiltBridgeOnStart
+	default:
+		return vastSSHPermissionsOnStart
 	}
-	return vastSSHPermissionsOnStart
 }
