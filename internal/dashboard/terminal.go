@@ -47,6 +47,10 @@ func OpenTerminal(stdin, stdout *os.File) (*Terminal, error) {
 	// output semantics intact while disabling canonical input, echo, and
 	// signal-character handling so Ctrl+C reaches the dashboard as byte 3 and
 	// can exit through the normal restore path.
+	//
+	// VMIN=0/VTIME=1 gives the input parser a short 100ms idle boundary. That
+	// lets it distinguish a standalone Escape key from CSI cursor-key sequences
+	// such as ESC [ C / ESC [ D without blocking the dashboard input goroutine.
 	cmd := exec.Command("stty", dashboardInputModeArgs()...)
 	cmd.Stdin = stdin
 	if err := cmd.Run(); err != nil {
@@ -58,7 +62,7 @@ func OpenTerminal(stdin, stdout *os.File) (*Terminal, error) {
 }
 
 func dashboardInputModeArgs() []string {
-	return []string{"-icanon", "-echo", "-isig", "min", "1", "time", "0"}
+	return []string{"-icanon", "-echo", "-isig", "min", "0", "time", "1"}
 }
 
 func (t *Terminal) Restore() {
