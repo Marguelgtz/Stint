@@ -31,7 +31,9 @@ func OpenTerminal(stdin, stdout *os.File) (*Terminal, error) {
 	if !IsTTY(stdin) || !IsTTY(stdout) {
 		return nil, errors.New("dashboard requires a terminal")
 	}
-	stateBytes, err := exec.Command("stty", "-g").Output()
+	stateCmd := exec.Command("stty", "-g")
+	stateCmd.Stdin = stdin
+	stateBytes, err := stateCmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("read terminal mode with stty: %w", err)
 	}
@@ -67,6 +69,7 @@ func (t *Terminal) Draw(content string) error {
 
 func Size() (width, height int) {
 	cmd := exec.Command("stty", "size")
+	cmd.Stdin = os.Stdin
 	out, err := cmd.Output()
 	if err == nil {
 		fields := strings.Fields(string(out))
