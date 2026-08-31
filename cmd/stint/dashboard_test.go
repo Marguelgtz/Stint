@@ -32,29 +32,69 @@ func TestDashboardTickUpdatesOnlyDerivedValues(t *testing.T) {
 	}
 }
 
-func TestDashboardNavigationAndExitDoNotMutateLifecycle(t *testing.T) {
+func TestDashboardNavigationAndExit(t *testing.T) {
 	controller := dashboardController{model: dash.Model{View: dash.Home}}
-	if quit, changed := controller.handleKey('2'); quit || !changed || controller.model.View != dash.Performance {
-		t.Fatalf("performance navigation: quit=%v changed=%v view=%v", quit, changed, controller.model.View)
+	quit, changed, action := controller.handleKey('2')
+	if quit || !changed || action.Kind != dashboardActionNone || controller.model.View != dash.Performance {
+		t.Fatalf("performance navigation: quit=%v changed=%v action=%v view=%v", quit, changed, action.Kind, controller.model.View)
 	}
-	if quit, changed := controller.handleKey('3'); quit || !changed || controller.model.View != dash.Config {
-		t.Fatalf("config navigation: quit=%v changed=%v view=%v", quit, changed, controller.model.View)
+	quit, changed, action = controller.handleKey('3')
+	if quit || !changed || action.Kind != dashboardActionNone || controller.model.View != dash.Config {
+		t.Fatalf("config navigation: quit=%v changed=%v action=%v view=%v", quit, changed, action.Kind, controller.model.View)
 	}
-	if quit, _ := controller.handleKey('q'); !quit {
+	quit, _, _ = controller.handleKey('q')
+	if !quit {
 		t.Fatal("q should exit dashboard")
 	}
 }
 
-func TestDashboardReadOnlySliceKeepsMutationKeysInert(t *testing.T) {
+func TestDashboardBenchmarkRequiresExplicitConfirmation(t *testing.T) {
 	controller := dashboardController{model: dash.Model{View: dash.Home}}
-	for _, key := range []byte{'b', '+', '-', 'd'} {
-		quit, changed := controller.handleKey(key)
-		if quit || !changed {
-			t.Fatalf("key %q: quit=%v changed=%v", key, quit, changed)
-		}
-		if controller.model.Notice == "" {
-			t.Fatalf("key %q did not explain disabled action", key)
-		}
+	_, changed, action := controller.handleKey('b')
+	if !changed || action.Kind != dashboardActionNone || controller.modalMode != dashboardModalBenchmark || controller.model.Modal == nil {
+		t.Fatalf("benchmark key did not open confirmation: mode=%v action=%v", controller.modalMode, action.Kind)
+	}
+	_, changed, action = controller.handleKey('\r')
+	if !changed || action.Kind != dashboardActionBenchmark || controller.model.Modal != nil {
+		t.Fatalf("benchmark confirmation = changed %v action %v modal=%v", changed, action.Kind, controller.model.Modal)
+	}
+}
+
+func TestDashboardDeadlineChoiceAndCustomInput(t *testing.T) {
+	controller := dashboardController{model: dash.Model{View: dash.Home, Session: dash.Session{InstanceID: 9}}}
+	_, changed, _ := controller.handleKey('+')
+	if !changed || controller.modalMode != dashboardModalDeadlineChoice || controller.deadlineDirection != deadlineExtend {
+		t.Fatalf("extend key did not open choice: mode=%v direction=%v", controller.modalMode, controller.deadlineDirection)
+	}
+	_, changed, _ = controller.handleKey('4')
+	if !changed || controller.modalMode != dashboardModalDeadlineCustom {
+		t.Fatalf("custom choice did not open input: mode=%v", controller.modalMode)
+	}
+	for _, key := range []byte{'1', 'h', '3', '0', 'm'} {
+		_, _, _ = controller.handleKey(key)
+	}
+	if controller.customDuration != "1h30m" {
+		t.Fatalf("custom duration = %q", controller.customDuration)
+	}
+	_, changed, _ = controller.handleKey(27)
+	if !changed || controller.model.Modal != nil || controller.modalMode != dashboardModalNone {
+		t.Fatal("escape should cancel modal")
+	}
+}
+
+func TestDashboardDownRequiresUppercaseConfirmation(t *testing.T) {
+	controller := dashboardController{model: dash.Model{Session: dash.Session{InstanceID: 42, Remaining: time.Hour}}}
+	_, _, action := controller.handleKey('d')
+	if action.Kind != dashboardActionNone || controller.modalMode != dashboardModalDownConfirm {
+		t.Fatalf("down should open guarded modal: action=%v mode=%v", action.Kind, controller.modalMode)
+	}
+	_, _, action = controller.handleKey('d')
+	if action.Kind != dashboardActionNone {
+		t.Fatal("lowercase d must not confirm destruction")
+	}
+	_, changed, action := controller.handleKey('D')
+	if !changed || action.Kind != dashboardActionDown {
+		t.Fatalf("uppercase D should confirm down: changed=%v action=%v", changed, action.Kind)
 	}
 }
 
