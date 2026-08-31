@@ -1,21 +1,21 @@
 # Stint live dashboard
 
-`stint dashboard` is the interactive terminal cockpit for an active Stint session. It is a presentation and control surface over the existing session snapshot, telemetry, performance, deadline, and teardown paths; it is not a second lifecycle authority.
+`stint dash` is the interactive terminal cockpit for an active Stint session. `stint dashboard` remains a compatibility alias. The cockpit is a presentation and control surface over the existing session snapshot, telemetry, performance, deadline, and teardown paths; it is not a second lifecycle authority.
 
 ## Start
 
 ```bash
-stint dashboard
+stint dash
 ```
 
 Disable colors with either:
 
 ```bash
-stint dashboard --no-color
-NO_COLOR=1 stint dashboard
+stint dash --no-color
+NO_COLOR=1 stint dash
 ```
 
-When stdin or stdout is not a TTY, `dashboard` falls back to a static refreshed status snapshot rather than emitting ANSI terminal sequences.
+When stdin or stdout is not a TTY, `dash` falls back to a static refreshed status snapshot rather than emitting ANSI terminal sequences.
 
 ## Views
 
@@ -108,7 +108,7 @@ Only one passive remote refresh may run at a time. The existing telemetry collec
 
 The v1 dashboard intentionally has no external TUI dependency. It uses the standard library plus the host `stty` command and an alternate terminal screen.
 
-Input is non-canonical and byte-oriented (`-icanon -echo -isig`) while normal terminal output processing remains enabled. A short `VMIN=0` / `VTIME=1` idle boundary lets Stint distinguish a standalone Escape key from CSI cursor-key sequences without blocking input or putting terminal output into raw mode.
+Input is non-canonical, no-echo, and byte-oriented while normal terminal output processing remains enabled. The terminal uses blocking `VMIN=1` reads so an idle terminal cannot be mistaken for EOF and close the dashboard. Cursor-key CSI sequences are parsed as one logical navigation event.
 
 On every normal exit path it restores the saved terminal mode, cursor, and primary screen. `SIGWINCH` causes a size refresh and redraw. Rendering supports narrow terminals by switching from the wide multi-column Home identity row to a compact stacked presentation and by bounding log output to the visible height.
 
