@@ -105,7 +105,7 @@ func TestDashboardStandaloneEscapeIsPreserved(t *testing.T) {
 }
 
 func TestDashboardBenchmarkRequiresExplicitConfirmation(t *testing.T) {
-	controller := dashboardController{model: dash.Model{View: dash.Home}}
+	controller := dashboardController{model: dash.Model{View: dash.Home, Session: dash.Session{InstanceID: 42, Status: "READY"}}}
 	_, changed, action := controller.handleKey('b')
 	if !changed || action.Kind != dashboardActionNone || controller.modalMode != dashboardModalBenchmark || controller.model.Modal == nil {
 		t.Fatalf("benchmark key did not open confirmation: mode=%v action=%v", controller.modalMode, action.Kind)
