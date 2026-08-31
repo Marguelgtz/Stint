@@ -24,6 +24,19 @@ func TestDashboardDisplayStatusRecoverable(t *testing.T) {
 	}
 }
 
+func TestDashboardReadyCheckpointDoesNotInventRecoverability(t *testing.T) {
+	snapshot := sessionSnapshot{
+		Session: sessionInfo{InstanceID: 42, Status: sessionstate.StatusReady, Checkpoint: sessionstate.CheckpointReady},
+		Time:    sessionTimeSnapshot{Deadline: time.Now().Add(time.Hour)},
+	}
+	if dashboardSessionRecoverable(snapshot) {
+		t.Fatal("READY checkpoint must not be treated as RECOVERABLE status")
+	}
+	if got := dashboardDisplayStatus(snapshot); got != sessionstate.StatusReady {
+		t.Fatalf("status = %q, want READY", got)
+	}
+}
+
 func TestDashboardDisplayStatusDegradedFromPassiveTelemetry(t *testing.T) {
 	snapshot := sessionSnapshot{
 		Session: sessionInfo{InstanceID: 42, Status: sessionstate.StatusReady},
