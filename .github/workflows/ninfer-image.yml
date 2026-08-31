@@ -3,7 +3,7 @@ name: NInfer Vast image
 on:
   push:
     branches:
-      - feat/vast-prebuilt-ninfer
+      - main
     paths:
       - images/ninfer/**
       - .github/workflows/ninfer-image.yml

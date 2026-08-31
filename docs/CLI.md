@@ -75,6 +75,7 @@ Prints local Stint state (Vast provider, SSH key, Cline endpoint) and, when a se
 Active sessions include, when available:
 
 - GPU, runtime, context, and hourly rate
+ - NInfer config (derived from the persisted context) when the active runtime is NInfer
 - start time and elapsed duration
 - remaining duration, or `expired` once the deadline has passed
 - estimated spend so far and the currently scheduled cost exposure
@@ -113,6 +114,7 @@ Policy notes:
 
 - Hard interactive policy: 1× RTX 4090, ≤ $0.40/hour, ≥ 98.5% reliability, ≥ 24 GB VRAM, ≥ 1 direct port, verified + rentable + not rented, 50 GB storage, on-demand only, session ceiling $2.50.
 - Discovery is intentionally broader (capped at $0.60/hour) so rejections are explainable; a failed plan prints marketplace diagnostics, including the Vast discovery bisect when the API returns zero candidates.
+- The plan output includes `Runtime (auto)`, the runtime `stint start` would select for the chosen offer (NInfer on RTX 4090, llama.cpp elsewhere), so read-only plans stay consistent with paid starts.
 
 ## Compute (paid)
 
@@ -130,7 +132,7 @@ Rents a Vast instance for the selected offer, qualifies the host by sampling the
 | `--yes` | `false` | Confirm the selected rental without prompting |
 | `--location <text>` | — | Prefer an offer whose location contains this text |
 | `--runtime <name>` | `auto` | Inference runtime: `auto`, `ninfer`, or `llama.cpp` |
-| `--context <int>` | `16384` | llama.cpp context tokens (1024–131072) |
+| `--context <int>` | `16384` | llama.cpp context tokens (1024–131072); rejected when the selected runtime is NInfer |
 | `--ninfer-config <name>` | `coding` | NInfer config: `coding`, `precision`, or `native` |
 | `--min-network-mbps <float>` | `500` | Minimum Vast advertised download bandwidth in Mbps; `0` disables the prefilter |
 | `--min-measured-download-mbps <float>` | `40` | Minimum measured post-SSH model-transfer throughput in MB/s; `0` disables |
@@ -142,6 +144,7 @@ Operational notes:
 - NInfer is qualified for RTX 4090 hosts with CUDA ≥ 12.8 only; with `--runtime auto`, a 4090 uses NInfer and any other qualifying GPU falls back to llama.cpp (auto also falls back if the NInfer bootstrap is unavailable).
 - Provider or SSH startup failures reject the host and try the next candidate. Failures **after** SSH is ready preserve the paid instance: run `stint resume` to continue.
 - The endpoint is OpenAI-compatible: base URL `http://127.0.0.1:8409/v1`, model `qwen3.8-27b`.
+- The start summary prints `Runtime` (`(auto)` when auto-selected) and, for NInfer sessions, the active `NInfer config`. See [`docs/NINFER.md`](NINFER.md) for runtime selection, CUDA/host qualification, config presets, and the pinned Vast image.
 
 ### `stint resume`
 

@@ -171,6 +171,8 @@ Model: qwen3.8-27b
 
 Phase 3 makes whichever Vast machine Stint selects appear at that endpoint.
 
+The selected host runs the pinned NInfer build on RTX 4090 GPUs (with CUDA ≥ 12.8) and the pinned llama.cpp image on every other qualifying GPU, so the same command works across the marketplace. See [`docs/NINFER.md`](docs/NINFER.md) for runtime selection, config presets, and the pinned Vast image.
+
 ## Spark
 
 Stint dogfoods Spark. `.spark/profile.yml` marks compute provisioning, runtime and collaboration surfaces as high criticality. GitHub Actions emits stable evidence names: `spark-profile`, `go-vet`, and `unit-tests`.
