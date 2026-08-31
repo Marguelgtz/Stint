@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"errors"
-	"flag"
 	"fmt"
 	"math"
 	"os"
@@ -44,16 +43,7 @@ func runShorten(args []string) error {
 }
 
 func runDeadlineMutation(direction deadlineDirection, args []string) error {
-	fs := flag.NewFlagSet(string(direction), flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	yes := fs.Bool("yes", false, "apply the deadline change without prompting")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: stint %s <duration> [--yes]", direction)
-	}
-	delta, err := parseSessionDuration(fs.Arg(0))
+	delta, yes, err := parseDeadlineMutationArgs(direction, args)
 	if err != nil {
 		return err
 	}
@@ -80,7 +70,7 @@ func runDeadlineMutation(direction deadlineDirection, args []string) error {
 		return err
 	}
 	printDeadlineMutationPreview(previewState, preview)
-	if !*yes {
+	if !yes {
 		confirmed, err := confirmDeadlineMutation(direction)
 		if err != nil {
 			return err
@@ -114,7 +104,7 @@ func runDeadlineMutation(direction deadlineDirection, args []string) error {
 	if err != nil {
 		return err
 	}
-	if !lockedPreview.NewDeadline.Equal(preview.NewDeadline) || math.Abs(lockedPreview.ProjectedUSD-preview.ProjectedUSD) > 0.005 {
+	if !lockedPreview.NewDeadline.Equal(preview.NewDeadline) || math.Abs(lockedPreview.ProjectedUSD-preview.ProjectedUSD) > 1e-9 {
 		return errors.New("session timing changed while confirming; run the command again to review the updated values")
 	}
 
@@ -142,6 +132,36 @@ func runDeadlineMutation(direction deadlineDirection, args []string) error {
 	return nil
 }
 
+// parseDeadlineMutationArgs accepts --yes on either side of the duration. The
+// standard flag package stops parsing at the first positional argument, while
+// the documented and natural CLI form is `stint extend 30m --yes`.
+func parseDeadlineMutationArgs(direction deadlineDirection, args []string) (time.Duration, bool, error) {
+	var durationArg string
+	yes := false
+	for _, arg := range args {
+		switch arg {
+		case "--yes":
+			yes = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return 0, false, fmt.Errorf("unknown %s flag %q", direction, arg)
+			}
+			if durationArg != "" {
+				return 0, false, fmt.Errorf("usage: stint %s <duration> [--yes]", direction)
+			}
+			durationArg = arg
+		}
+	}
+	if durationArg == "" {
+		return 0, false, fmt.Errorf("usage: stint %s <duration> [--yes]", direction)
+	}
+	delta, err := parseSessionDuration(durationArg)
+	if err != nil {
+		return 0, false, err
+	}
+	return delta, yes, nil
+}
+
 func buildDeadlineMutationPreview(
 	state sessionstate.State,
 	now time.Time,
@@ -150,6 +170,9 @@ func buildDeadlineMutationPreview(
 ) (deadlineMutationPreview, error) {
 	if state.InstanceID <= 0 {
 		return deadlineMutationPreview{}, errors.New("session state has no Vast instance id")
+	}
+	if state.HourlyUSD <= 0 || math.IsNaN(state.HourlyUSD) || math.IsInf(state.HourlyUSD, 0) {
+		return deadlineMutationPreview{}, errors.New("session has an invalid hourly rate; refusing to change its cost-bounded deadline")
 	}
 	profile, err := router.ResolveProfile(state.Profile)
 	if err != nil {
@@ -161,7 +184,7 @@ func buildDeadlineMutationPreview(
 	}
 	currentUSD := scheduledCostUSD(state.HourlyUSD, change.PreviousDuration)
 	projectedUSD := scheduledCostUSD(state.HourlyUSD, change.NewDuration)
-	if direction == deadlineExtend && projectedUSD > profile.Session.MaxCostUSD+0.005 {
+	if direction == deadlineExtend && projectedUSD > profile.Session.MaxCostUSD+1e-9 {
 		maxAdditional := maxAdditionalDuration(state, profile)
 		return deadlineMutationPreview{}, fmt.Errorf(
 			"extension would raise projected session exposure to $%.2f above the $%.2f session ceiling; maximum additional duration is %s",
@@ -259,7 +282,11 @@ func printDeadlineMutationPreview(state sessionstate.State, preview deadlineMuta
 }
 
 func confirmDeadlineMutation(direction deadlineDirection) (bool, error) {
-	fmt.Printf("%s this session? [y/N] ", strings.Title(string(direction))) //nolint:staticcheck // CLI label only; stable ASCII input.
+	verb := "Extend"
+	if direction == deadlineShorten {
+		verb = "Shorten"
+	}
+	fmt.Printf("%s this session? [y/N] ", verb)
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && line == "" {
 		return false, err
