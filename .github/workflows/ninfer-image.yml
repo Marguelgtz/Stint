@@ -1,0 +1,59 @@
+name: NInfer Vast image
+
+on:
+  push:
+    branches:
+      - feat/vast-prebuilt-ninfer
+    paths:
+      - images/ninfer/**
+      - .github/workflows/ninfer-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ninfer-vast-image
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/marguelgtz/stint-ninfer
+      TAG: 981b685e-cuda12.8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push pinned image
+        uses: docker/build-push-action@v6
+        with:
+          context: images/ninfer
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ env.TAG }}
+            ${{ env.IMAGE }}:edge
+          labels: |
+            org.opencontainers.image.source=https://github.com/Marguelgtz/Stint
+            org.opencontainers.image.revision=${{ github.sha }}
+            io.stint.ninfer.commit=981b685ea2124fdaed023123d2e63fd29d529ab8
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify public anonymous pull
+        run: |
+          docker logout ghcr.io
+          docker pull "${IMAGE}:${TAG}"
+          docker image inspect "${IMAGE}:${TAG}" --format '{{json .RepoDigests}}'
