@@ -48,9 +48,10 @@ func OpenTerminal(stdin, stdout *os.File) (*Terminal, error) {
 	// signal-character handling so Ctrl+C reaches the dashboard as byte 3 and
 	// can exit through the normal restore path.
 	//
-	// VMIN=0/VTIME=1 gives the input parser a short 100ms idle boundary. That
-	// lets it distinguish a standalone Escape key from CSI cursor-key sequences
-	// such as ESC [ C / ESC [ D without blocking the dashboard input goroutine.
+	// Keep VMIN=1/VTIME=0. A VMIN=0 timeout on a terminal can surface through
+	// Go's os.File.Read as io.EOF, which makes the dashboard believe stdin was
+	// closed and immediately leave the alternate screen. Cursor-key CSI bytes
+	// are still delivered normally with blocking byte-at-a-time reads.
 	cmd := exec.Command("stty", dashboardInputModeArgs()...)
 	cmd.Stdin = stdin
 	if err := cmd.Run(); err != nil {
@@ -62,7 +63,7 @@ func OpenTerminal(stdin, stdout *os.File) (*Terminal, error) {
 }
 
 func dashboardInputModeArgs() []string {
-	return []string{"-icanon", "-echo", "-isig", "min", "0", "time", "1"}
+	return []string{"-icanon", "-echo", "-isig", "min", "1", "time", "0"}
 }
 
 func (t *Terminal) Restore() {
