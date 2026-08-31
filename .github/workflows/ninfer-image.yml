@@ -53,7 +53,11 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Verify public anonymous pull
+        shell: bash
         run: |
           docker logout ghcr.io
-          docker pull "${IMAGE}:${TAG}"
+          if ! docker pull "${IMAGE}:${TAG}"; then
+            echo "::error::The image was published, but GHCR is not allowing an anonymous pull. New personal-account packages are private by default. Open the stint-ninfer package settings, change visibility to Public, then rerun this workflow. Vast must be able to pull the image without registry credentials."
+            exit 1
+          fi
           docker image inspect "${IMAGE}:${TAG}" --format '{{json .RepoDigests}}'
