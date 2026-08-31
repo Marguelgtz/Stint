@@ -42,10 +42,11 @@ func OpenTerminal(stdin, stdout *os.File) (*Terminal, error) {
 	// The dashboard only needs byte-at-a-time input. Do not use `stty raw`
 	// here: raw mode also disables output post-processing (OPOST/ONLCR), which
 	// makes a rendered '\n' advance to the next row without returning to
-	// column zero. The resulting horizontal drift looks like a broken resize
-	// or layout calculation. Keep output semantics intact while disabling
-	// canonical input, echo, and signal-character handling so Ctrl+C reaches
-	// the dashboard as byte 3 and can exit through the normal restore path.
+	// column zero. The resulting horizontal drift looks like a broken viewport
+	// resize/reflow even when SIGWINCH supplied the correct dimensions. Keep
+	// output semantics intact while disabling canonical input, echo, and
+	// signal-character handling so Ctrl+C reaches the dashboard as byte 3 and
+	// can exit through the normal restore path.
 	cmd := exec.Command("stty", dashboardInputModeArgs()...)
 	cmd.Stdin = stdin
 	if err := cmd.Run(); err != nil {
