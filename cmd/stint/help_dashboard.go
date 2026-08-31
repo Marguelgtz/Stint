@@ -12,17 +12,21 @@ var cmdDashboard = cliCommand{
 	examples: []string{"stint dashboard", "NO_COLOR=1 stint dashboard"},
 	notes: []string{
 		"Interactive mode requires a TTY; when stdout/stdin are piped, dashboard falls back to a static refreshed status snapshot.",
-		"Keys: 1 Home, 2 Performance, 3 Config, 4 Logs, r refresh, q exit.",
+		"Keys: 1 Home, 2 Performance, 3 Config, 4 Logs, r refresh, b benchmark, + extend, - shorten, d down, q exit.",
 		"The dashboard never benchmarks automatically and never owns lifecycle authority.",
+		"q and Ctrl+C close only the dashboard; paid compute remains active until its deadline or an explicit down action.",
 	},
 }
 
-func init() {
+var dashboardHelpRegistered = registerDashboardHelp()
+
+func registerDashboardHelp() bool {
 	cliCommands = append(cliCommands, cmdDashboard)
 	for i := range helpSections {
 		if helpSections[i].title == "Diagnostics" {
 			helpSections[i].commands = append([]cliCommand{cmdDashboard}, helpSections[i].commands...)
-			return
+			break
 		}
 	}
+	return true
 }
