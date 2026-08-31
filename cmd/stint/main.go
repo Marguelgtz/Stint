@@ -71,6 +71,8 @@ func run(args []string) error {
 		return runAuth(args[1:])
 	case "setup":
 		return runSetup(args[1:])
+	case "cline":
+		return runCline(args[1:])
 	case "doctor":
 		return runDoctor()
 	case "status":
@@ -511,6 +513,7 @@ Setup:
   stint auth vast
   stint auth vast --from-env
   stint setup ssh
+  stint cline configure
   stint doctor
 
 Planning (read-only):
