@@ -310,6 +310,11 @@ func runDown(args []string) error {
 	if err != nil {
 		return err
 	}
+	releaseLifecycle, err := acquireLifecycleLock(paths)
+	if err != nil {
+		return err
+	}
+	defer releaseLifecycle()
 	state, err := sessionstate.Load(paths)
 	if errors.Is(err, os.ErrNotExist) {
 		fmt.Println("No active Stint session is recorded.")
@@ -580,13 +585,13 @@ func waitForModel(ctx context.Context, paths config.Paths, state sessionstate.St
 		}
 		if time.Since(lastLogCheck) >= 15*time.Second {
 			lastLogCheck = time.Now()
-			if tail, tailErr := runSSH(ctx, paths, state, "tail -n 1 /workspace/stint/llama.log 2>/dev/null || true"); tailErr == nil {
+			if tail, tailErr := runSSH(ctx, paths, state, remoteModelProgressCommandForState(state)); tailErr == nil {
 				tail = strings.TrimSpace(tail)
 				if tail != "" && tail != lastLog {
 					if len(tail) > 300 {
 						tail = tail[len(tail)-300:]
 					}
-					fmt.Printf("  llama: %s\n", tail)
+					fmt.Printf("  model: %s\n", tail)
 					lastLog = tail
 				}
 			}

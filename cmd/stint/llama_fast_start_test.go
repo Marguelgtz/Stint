@@ -1,12 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/Marguelgtz/Stint/internal/core"
 	"github.com/Marguelgtz/Stint/internal/provider/vast"
+	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
 func TestLlamaUsesOfficialVastPrebuiltImage(t *testing.T) {
@@ -88,6 +90,25 @@ func TestLlamaLaunchCommandHasValidBashSyntax(t *testing.T) {
 	command := llamaModelLaunchCommand(60000)
 	if out, err := exec.Command("bash", "-n", "-c", command).CombinedOutput(); err != nil {
 		t.Fatalf("llama.cpp launch command has invalid bash syntax: %v\n%s\ncommand:\n%s", err, out, command)
+	}
+}
+
+func TestLlamaModelProgressReportsTransferAndLoadStages(t *testing.T) {
+	command := remoteModelProgressCommandForState(sessionstate.State{Runtime: runtimeLlamaCpp})
+	for _, required := range []string{
+		"observed bytes sent so far",
+		"*.incomplete",
+		"model download ${pct}%",
+		"verifying checksum",
+		"pgrep -x llama-server",
+		fmt.Sprintf("expected=%d", llamaModelSizeBytes),
+	} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("llama progress command missing %q: %s", required, command)
+		}
+	}
+	if out, err := exec.Command("bash", "-n", "-c", command).CombinedOutput(); err != nil {
+		t.Fatalf("llama progress command has invalid bash syntax: %v\n%s\ncommand:\n%s", err, out, command)
 	}
 }
 

@@ -31,6 +31,11 @@ func runResume(args []string) (retErr error) {
 	if err != nil {
 		return err
 	}
+	releaseLifecycle, err := acquireLifecycleLock(paths)
+	if err != nil {
+		return err
+	}
+	defer releaseLifecycle()
 	state, err := sessionstate.Load(paths)
 	if errors.Is(err, os.ErrNotExist) {
 		return errors.New("no resumable Stint session is recorded")
