@@ -110,7 +110,15 @@ func Save(paths config.Paths, state State) error {
 	if err := os.Rename(tmpName, Path(paths)); err != nil {
 		return fmt.Errorf("install session state: %w", err)
 	}
-	return os.Chmod(Path(paths), 0o600)
+	if err := os.Chmod(Path(paths), 0o600); err != nil {
+		return fmt.Errorf("secure session state: %w", err)
+	}
+
+	// Startup history is observational and must never become a prerequisite for
+	// lifecycle persistence. Record the transition only after session.json is
+	// safely installed, and deliberately ignore telemetry-write failures.
+	_ = appendStartupEvent(paths, state)
+	return nil
 }
 
 func Clear(paths config.Paths) error {
