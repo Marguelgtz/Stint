@@ -56,3 +56,17 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go test -race ./...
+
+  build-check:
+    name: build-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check patch whitespace
+        run: git diff --check HEAD^ HEAD
+      - name: Build CLI binary
+        run: go build -o /tmp/stint ./cmd/stint
