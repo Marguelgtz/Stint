@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
-	localenv "github.com/Marguelgtz/Stint/internal/local"
 	"github.com/Marguelgtz/Stint/internal/provider/vast"
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
@@ -97,17 +96,32 @@ func runResume(args []string) (retErr error) {
 		return nil
 	}
 
-	killPID(state.TunnelPID)
-	state.TunnelPID = 0
-	if !localenv.PortAvailable(clinePort) {
-		return fmt.Errorf("local port %d is already in use; stop the process using it, then run: stint resume", clinePort)
+	if state.TunnelPID > 0 {
+		killPID(state.TunnelPID)
+		state.TunnelPID = 0
+		fmt.Printf("Stopping stale local tunnel on port %d...\n", clinePort)
+		if err := waitForPortAvailable(rootCtx, clinePort, resumePortReleaseTimeout); err != nil {
+			return fmt.Errorf("%w; stop the process using it, then run: stint resume", err)
+		}
+	} else if err := waitForPortAvailable(rootCtx, clinePort, 250*time.Millisecond); err != nil {
+		closed, closeErr := closeLegacyStintControlMasters(rootCtx)
+		if closeErr != nil {
+			return closeErr
+		}
+		if !closed {
+			return fmt.Errorf("local port %d is already in use by another process; stop it, then run: stint resume", clinePort)
+		}
+		fmt.Printf("Stopping orphaned Stint SSH tunnel on port %d...\n", clinePort)
+		if err := waitForPortAvailable(rootCtx, clinePort, resumePortReleaseTimeout); err != nil {
+			return fmt.Errorf("%w; stop the process using it, then run: stint resume", err)
+		}
 	}
 
 	if err := ensureWatchdogAlive(paths, &state); err != nil {
 		return fmt.Errorf("ensure session watchdog: %w", err)
 	}
 
-	publicKey, _, err := localenv.EnsureSSHKey(paths)
+	publicKey, _, err := ensureSSHKeyForResume(paths)
 	if err != nil {
 		return err
 	}
@@ -246,6 +260,10 @@ func runResume(args []string) (retErr error) {
 	ready = true
 	printReadySession(state)
 	return nil
+}
+
+func ensureSSHKeyForResume(paths config.Paths) (string, bool, error) {
+	return ensureLocalSSHKey(paths)
 }
 
 func remoteRuntimeReady(ctx context.Context, paths config.Paths, state sessionstate.State) (bool, error) {
