@@ -29,16 +29,16 @@ const (
 )
 
 type GPUPolicy struct {
-	PreferredModels        []string `json:"preferredModels"`
-	MaxHourlyUSD           float64  `json:"maxHourlyUsd"`
-	MinReliability         float64  `json:"minReliability"`
-	PreferredInetDownMBps  float64  `json:"preferredInetDownMBps"`
-	MinDirectPorts         int      `json:"minDirectPorts"`
-	MinGPURAMMB            int      `json:"minGpuRamMb"`
-	PreferredGPUMaxPowerW  float64  `json:"preferredGpuMaxPowerW"`
-	RequireVerified        bool     `json:"requireVerified"`
-	RequireRentable        bool     `json:"requireRentable"`
-	RequireNotRented       bool     `json:"requireNotRented"`
+	PreferredModels       []string `json:"preferredModels"`
+	MaxHourlyUSD          float64  `json:"maxHourlyUsd"`
+	MinReliability        float64  `json:"minReliability"`
+	PreferredInetDownMBps float64  `json:"preferredInetDownMBps"`
+	MinDirectPorts        int      `json:"minDirectPorts"`
+	MinGPURAMMB           int      `json:"minGpuRamMb"`
+	PreferredGPUMaxPowerW float64  `json:"preferredGpuMaxPowerW"`
+	RequireVerified       bool     `json:"requireVerified"`
+	RequireRentable       bool     `json:"requireRentable"`
+	RequireNotRented      bool     `json:"requireNotRented"`
 }
 
 type SessionPolicy struct {

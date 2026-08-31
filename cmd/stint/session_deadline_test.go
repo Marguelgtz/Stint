@@ -128,10 +128,10 @@ func TestExtendRespectsProfileCostCeiling(t *testing.T) {
 func TestMaxAdditionalDurationUsesProfileCeiling(t *testing.T) {
 	now := time.Date(2026, 8, 31, 7, 0, 0, 0, time.UTC)
 	state := sessionstate.State{
-		Profile:    "interactive",
-		HourlyUSD:  0.40,
-		StartedAt:  now,
-		Deadline:   now.Add(6 * time.Hour),
+		Profile:   "interactive",
+		HourlyUSD: 0.40,
+		StartedAt: now,
+		Deadline:  now.Add(6 * time.Hour),
 	}
 	profile, err := router.ResolveProfile("interactive")
 	if err != nil {
