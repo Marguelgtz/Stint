@@ -21,6 +21,15 @@ func TestDashboardTerminalModePreservesOutputProcessing(t *testing.T) {
 	}
 }
 
+func TestDashboardTerminalModeAllowsEscapeSequenceBoundary(t *testing.T) {
+	joined := " " + strings.Join(dashboardInputModeArgs(), " ") + " "
+	for _, required := range []string{"min 0", "time 1"} {
+		if !strings.Contains(joined, " "+required+" ") {
+			t.Fatalf("dashboard input mode missing %q: %q", required, joined)
+		}
+	}
+}
+
 func TestSizeFallbackUsesCurrentViewportEnvironment(t *testing.T) {
 	oldColumns, hadColumns := os.LookupEnv("COLUMNS")
 	oldLines, hadLines := os.LookupEnv("LINES")
