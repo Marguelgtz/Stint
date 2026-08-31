@@ -21,6 +21,11 @@ import (
 
 const dashboardRefreshInterval = 10 * time.Second
 
+const (
+	dashboardKeyPrevious byte = 0x80
+	dashboardKeyNext     byte = 0x81
+)
+
 type dashboardActionKind int
 
 const (
@@ -197,13 +202,76 @@ func runDashboard(args []string) error {
 }
 
 func readDashboardInput(reader io.Reader, keys chan<- byte, errs chan<- error) {
+	const (
+		inputPlain = iota
+		inputEscape
+		inputCSI
+	)
+
+	state := inputPlain
 	buf := make([]byte, 1)
+	flushPending := func() {
+		switch state {
+		case inputEscape:
+			keys <- 27
+		case inputCSI:
+			keys <- 27
+			keys <- '['
+		}
+		state = inputPlain
+	}
+
 	for {
 		n, err := reader.Read(buf)
+		if n == 0 && err == nil {
+			// VMIN=0/VTIME=1 produces a short idle read. Use that boundary to
+			// resolve a standalone Escape without delaying normal key presses.
+			flushPending()
+			continue
+		}
 		if n == 1 {
-			keys <- buf[0]
+			key := buf[0]
+			switch state {
+			case inputPlain:
+				if key == 27 {
+					state = inputEscape
+				} else {
+					keys <- key
+				}
+			case inputEscape:
+				if key == '[' {
+					state = inputCSI
+				} else {
+					keys <- 27
+					state = inputPlain
+					if key == 27 {
+						state = inputEscape
+					} else {
+						keys <- key
+					}
+				}
+			case inputCSI:
+				state = inputPlain
+				switch key {
+				case 'A', 'D':
+					keys <- dashboardKeyPrevious
+				case 'B', 'C':
+					keys <- dashboardKeyNext
+				default:
+					// Preserve unknown CSI input as ordinary bytes rather than
+					// silently swallowing it.
+					keys <- 27
+					keys <- '['
+					if key == 27 {
+						state = inputEscape
+					} else {
+						keys <- key
+					}
+				}
+			}
 		}
 		if err != nil {
+			flushPending()
 			errs <- err
 			return
 		}
@@ -229,11 +297,10 @@ func (c *dashboardController) handleKey(key byte) (quit, changed bool, action da
 	case '4':
 		c.model.View = dash.Logs
 		c.reloadLogs()
-	case '\t':
-		c.model.View = (c.model.View + 1) % 4
-		if c.model.View == dash.Logs {
-			c.reloadLogs()
-		}
+	case dashboardKeyPrevious:
+		c.navigateView(-1)
+	case dashboardKeyNext, '\t':
+		c.navigateView(1)
 	case 'r', 'R':
 		if c.model.View == dash.Logs {
 			c.reloadLogs()
@@ -258,6 +325,18 @@ func (c *dashboardController) handleKey(key byte) (quit, changed bool, action da
 		return false, false, dashboardAction{}
 	}
 	return false, true, dashboardAction{}
+}
+
+func (c *dashboardController) navigateView(delta int) {
+	count := int(dash.Logs) + 1
+	next := (int(c.model.View) + delta) % count
+	if next < 0 {
+		next += count
+	}
+	c.model.View = dash.View(next)
+	if c.model.View == dash.Logs {
+		c.reloadLogs()
+	}
 }
 
 func (c *dashboardController) handleModalKey(key byte) (bool, bool, dashboardAction) {
