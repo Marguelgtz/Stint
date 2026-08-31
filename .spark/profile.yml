@@ -8,12 +8,14 @@ areas:
       - "internal/local/**"
       - "internal/core/**"
       - "internal/router/**"
+      - "internal/session/**"
     criticality: high
     owners:
       - "@Marguelgtz"
     expected_evidence:
       - go-vet
       - unit-tests
+      - race-tests
 
   - id: vast-compute-provider
     paths:

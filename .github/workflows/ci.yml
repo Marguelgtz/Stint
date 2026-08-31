@@ -19,8 +19,10 @@ jobs:
         run: |
           test -f .spark/profile.yml
           grep -q 'cmd/stint/\*\*' .spark/profile.yml
+          grep -q 'internal/session/\*\*' .spark/profile.yml
           grep -q 'internal/provider/vast/\*\*' .spark/profile.yml
           grep -q 'go-vet' .spark/profile.yml
+          grep -q 'race-tests' .spark/profile.yml
 
   go-vet:
     name: go-vet
@@ -43,3 +45,30 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go test ./...
+
+  race-tests:
+    name: race-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test -race ./...
+
+  build-check:
+    name: build-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check patch whitespace
+        run: git diff --check HEAD^ HEAD
+      - name: Build CLI binary
+        run: go build -o /tmp/stint ./cmd/stint
