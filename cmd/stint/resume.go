@@ -144,7 +144,7 @@ func runResume(args []string) (retErr error) {
 	}
 
 	if !strings.EqualFold(instance.ActualStatus, "running") || instance.SSHHost == "" || instance.SSHPort <= 0 {
-		fmt.Println("Waiting for Vast SSH metadata...")
+		fmt.Println(ui.accent("Waiting for Vast SSH metadata..."))
 		instance, err = waitForSSHMetadata(rootCtx, client, state.InstanceID, providerStartupTimeout)
 		if err != nil {
 			return err
@@ -163,7 +163,7 @@ func runResume(args []string) (retErr error) {
 	if err := retryAttachSSHKey(rootCtx, client, state.InstanceID, publicKey, 90*time.Second); err != nil {
 		return err
 	}
-	fmt.Println("SSH key         attached")
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("SSH key"), 16), ui.success("attached"))
 	if err := waitForSSHResponsive(rootCtx, paths, state, 4*time.Minute); err != nil {
 		return err
 	}
@@ -192,8 +192,8 @@ func runResume(args []string) (retErr error) {
 		if actualRuntime != state.Runtime {
 			state.Runtime = actualRuntime
 			state.ContextTokens = contextForRuntime(actualRuntime)
-			fmt.Printf("Runtime        %s\n", state.Runtime)
-			fmt.Printf("Context        %d tokens\n", state.ContextTokens)
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("Runtime"), 15), state.Runtime)
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("Context"), 15), fmt.Sprintf("%d tokens", state.ContextTokens))
 		}
 	}
 	state.Status = sessionstate.StatusRuntimeReady
@@ -244,14 +244,14 @@ func runResume(args []string) (retErr error) {
 			return err
 		}
 	} else {
-		fmt.Printf("Remote %s model server is still running; continuing model load.\n", runtimeForState(state))
+		fmt.Println(ui.accent(fmt.Sprintf("Remote %s model server is still running; continuing model load.", runtimeForState(state))))
 	}
 
 	state.Status = sessionstate.StatusModelLoading
 	if err := sessionstate.Save(paths, state); err != nil {
 		return err
 	}
-	fmt.Println("Waiting for Qwen3.8-27B to become ready...")
+	fmt.Println(ui.accent("Waiting for Qwen3.8-27B to become ready..."))
 	if err := waitForModel(rootCtx, paths, state, 20*time.Minute); err != nil {
 		return err
 	}
@@ -330,14 +330,14 @@ func processAlive(pid int) bool {
 
 func printReadySession(state sessionstate.State) {
 	fmt.Println()
-	fmt.Println("READY")
-	fmt.Printf("GPU             %s\n", state.GPUModel)
-	fmt.Printf("Price           $%.3f/hr\n", state.HourlyUSD)
-	fmt.Printf("Instance        %d\n", state.InstanceID)
-	fmt.Printf("Endpoint        http://127.0.0.1:%d/v1\n", clinePort)
-	fmt.Printf("Model           %s\n", interactiveModelAlias)
-	fmt.Printf("Runtime         %s\n", runtimeForState(state))
-	fmt.Printf("Context         %d tokens\n", contextForState(state))
-	fmt.Printf("Auto-destroy    %s\n", state.Deadline.Local().Format(time.RFC1123))
-	fmt.Println("\nCline can connect now. Run `stint down` when finished.")
+	fmt.Println(ui.success("READY"))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("GPU"), 16), state.GPUModel)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Price"), 16), ui.accent(fmt.Sprintf("$%.3f/hr", state.HourlyUSD)))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Instance"), 16), fmt.Sprintf("%d", state.InstanceID))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Endpoint"), 16), ui.accent(fmt.Sprintf("http://127.0.0.1:%d/v1", clinePort)))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Model"), 16), interactiveModelAlias)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Runtime"), 16), runtimeForState(state))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Context"), 16), fmt.Sprintf("%d tokens", contextForState(state)))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Auto-destroy"), 16), state.Deadline.Local().Format(time.RFC1123))
+	fmt.Println("\n" + ui.success("Cline can connect now. Run `stint down` when finished."))
 }

@@ -87,162 +87,176 @@ func runStatusTelemetry(args []string) error {
 
 func printStatusPreamble(paths config.Paths) {
 	_, credentialsErr := config.LoadCredentials(paths)
-	fmt.Println("Stint local status")
-	fmt.Printf("Vast provider      %s\n", yesNo(credentialsErr == nil))
-	fmt.Printf("Stint SSH key      %s\n", yesNo(localenv.SSHKeyExists(paths)))
-	fmt.Printf("Cline endpoint     http://127.0.0.1:%d/v1\n", clinePort)
-	fmt.Println("Product identity   GitHub (same model as Spark; hosted login not needed for local pre-v0)")
+	fmt.Println(ui.accent("Stint local status"))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Vast provider"), 19), yesNo(credentialsErr == nil))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Stint SSH key"), 19), yesNo(localenv.SSHKeyExists(paths)))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Cline endpoint"), 19), ui.accent(fmt.Sprintf("http://127.0.0.1:%d/v1", clinePort)))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Product identity"), 19), "GitHub (same model as Spark; hosted login not needed for local pre-v0)")
 }
 
 func printSessionSnapshotHuman(snapshot sessionSnapshot, refreshed bool) {
-	fmt.Printf("Active compute     instance %d (%s)\n", snapshot.Session.InstanceID, snapshot.Session.Status)
-	fmt.Printf("GPU                %s\n", snapshot.Session.GPUModel)
-	fmt.Printf("Runtime            %s\n", snapshot.Session.Runtime)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Active compute"), 19), fmt.Sprintf("instance %d (%s)", snapshot.Session.InstanceID, sessionStatusColor(snapshot.Session.Status)))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("GPU"), 19), snapshot.Session.GPUModel)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Runtime"), 19), snapshot.Session.Runtime)
 	if snapshot.Session.Runtime == runtimeNInfer {
-		fmt.Printf("NInfer config      %s\n", ninferConfigForContext(snapshot.Session.ContextTokens).Name)
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("NInfer config"), 19), ninferConfigForContext(snapshot.Session.ContextTokens).Name)
 	}
-	fmt.Printf("Model              %s\n", snapshot.Session.Model)
-	fmt.Printf("Context            %d tokens\n", snapshot.Session.ContextTokens)
-	fmt.Printf("Rate               $%.3f/hr\n", snapshot.Cost.HourlyUSD)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Model"), 19), snapshot.Session.Model)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Context"), 19), fmt.Sprintf("%d tokens", snapshot.Session.ContextTokens))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Rate"), 19), ui.accent(fmt.Sprintf("$%.3f/hr", snapshot.Cost.HourlyUSD)))
 	if !snapshot.Time.StartedAt.IsZero() {
-		fmt.Printf("Started            %s\n", snapshot.Time.StartedAt.Local().Format(time.RFC1123))
-		fmt.Printf("Elapsed            %s\n", formatSessionDuration(snapshot.Time.Elapsed))
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Started"), 19), snapshot.Time.StartedAt.Local().Format(time.RFC1123))
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Elapsed"), 19), formatSessionDuration(snapshot.Time.Elapsed))
 	}
 	if snapshot.Time.Expired {
-		fmt.Println("Remaining          expired")
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Remaining"), 19), ui.danger("expired"))
 	} else if !snapshot.Time.Deadline.IsZero() {
-		fmt.Printf("Remaining          %s\n", formatSessionDuration(snapshot.Time.Remaining))
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Remaining"), 19), formatSessionDuration(snapshot.Time.Remaining))
 	}
-	fmt.Printf("Spent estimate     $%.2f\n", snapshot.Cost.EstimatedSpentUSD)
-	fmt.Printf("Session exposure   $%.2f scheduled\n", snapshot.Cost.ScheduledUSD)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Spent estimate"), 19), fmt.Sprintf("$%.2f", snapshot.Cost.EstimatedSpentUSD))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Session exposure"), 19), fmt.Sprintf("$%.2f scheduled", snapshot.Cost.ScheduledUSD))
 	if !snapshot.Time.Deadline.IsZero() {
-		fmt.Printf("Auto-destroy       %s\n", snapshot.Time.Deadline.Local().Format(time.RFC1123))
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Auto-destroy"), 19), snapshot.Time.Deadline.Local().Format(time.RFC1123))
 	}
 
-	fmt.Println("\nHEALTH")
-	fmt.Printf("Tunnel             %s", runningLabel(snapshot.Health.Tunnel.Running))
+	fmt.Println("\n" + ui.accent("HEALTH"))
+	fmt.Printf("%s%s", ui.pad(ui.muted("Tunnel"), 19), runningLabel(snapshot.Health.Tunnel.Running))
 	if snapshot.Health.Tunnel.PID > 0 {
 		fmt.Printf(" (pid %d)", snapshot.Health.Tunnel.PID)
 	}
 	fmt.Println()
-	fmt.Printf("Watchdog           %s", runningLabel(snapshot.Health.Watchdog.Running))
+	fmt.Printf("%s%s", ui.pad(ui.muted("Watchdog"), 19), runningLabel(snapshot.Health.Watchdog.Running))
 	if snapshot.Health.Watchdog.PID > 0 {
 		fmt.Printf(" (pid %d)", snapshot.Health.Watchdog.PID)
 	}
 	fmt.Println()
 	if refreshed {
 		if snapshot.Health.Endpoint.Healthy {
-			fmt.Printf("Endpoint           healthy · %.0fms\n", float64(snapshot.Health.Endpoint.Latency)/float64(time.Millisecond))
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("Endpoint"), 19), fmt.Sprintf("healthy · %.0fms", float64(snapshot.Health.Endpoint.Latency)/float64(time.Millisecond)))
 		} else {
-			fmt.Printf("Endpoint           unavailable%s\n", telemetryErrorSuffix(snapshot.Health.Endpoint.Meta.Error))
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("Endpoint"), 19), fmt.Sprintf("unavailable%s", telemetryErrorSuffix(snapshot.Health.Endpoint.Meta.Error)))
 		}
 		if snapshot.Health.Runtime.SSH {
-			fmt.Printf("SSH                healthy\n")
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("SSH"), 19), ui.success("healthy"))
 		} else {
-			fmt.Printf("SSH                unavailable%s\n", telemetryErrorSuffix(snapshot.Health.Runtime.Meta.Error))
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("SSH"), 19), fmt.Sprintf("unavailable%s", telemetryErrorSuffix(snapshot.Health.Runtime.Meta.Error)))
 		}
-		fmt.Printf("Runtime process    %s", runningLabel(snapshot.Health.Runtime.Running))
+		fmt.Printf("%s%s", ui.pad(ui.muted("Runtime process"), 19), runningLabel(snapshot.Health.Runtime.Running))
 		if snapshot.Health.Runtime.Meta.Error != "" && snapshot.Health.Runtime.SSH {
 			fmt.Printf(" · %s", snapshot.Health.Runtime.Meta.Error)
 		}
 		fmt.Println()
 	} else {
-		fmt.Println("Endpoint           not refreshed (use --refresh)")
-		fmt.Println("Remote runtime     not refreshed (use --refresh)")
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Endpoint"), 19), ui.muted("not refreshed (use --refresh)"))
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Remote runtime"), 19), ui.muted("not refreshed (use --refresh)"))
 	}
 
-	fmt.Println("\nGPU TELEMETRY")
+	fmt.Println("\n" + ui.accent("GPU TELEMETRY"))
 	if !refreshed {
-		fmt.Println("GPU metrics        not refreshed (use --refresh)")
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("GPU metrics"), 19), ui.muted("not refreshed (use --refresh)"))
 	} else if !snapshot.GPU.Available {
-		fmt.Printf("GPU metrics        unavailable%s\n", telemetryErrorSuffix(snapshot.GPU.Meta.Error))
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("GPU metrics"), 19), fmt.Sprintf("unavailable%s", telemetryErrorSuffix(snapshot.GPU.Meta.Error)))
 	} else {
 		if snapshot.GPU.UtilizationPercent != nil {
-			fmt.Printf("Utilization        %.0f%%\n", *snapshot.GPU.UtilizationPercent)
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("Utilization"), 19), fmt.Sprintf("%.0f%%", *snapshot.GPU.UtilizationPercent))
 		}
 		if snapshot.GPU.MemoryUsedMiB != nil && snapshot.GPU.MemoryTotalMiB != nil {
-			fmt.Printf("VRAM               %.1f / %.1f GB\n", *snapshot.GPU.MemoryUsedMiB/1024, *snapshot.GPU.MemoryTotalMiB/1024)
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("VRAM"), 19), fmt.Sprintf("%.1f / %.1f GB", *snapshot.GPU.MemoryUsedMiB/1024, *snapshot.GPU.MemoryTotalMiB/1024))
 		}
 		if snapshot.GPU.TemperatureC != nil {
-			fmt.Printf("Temperature        %.0f C\n", *snapshot.GPU.TemperatureC)
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("Temperature"), 19), fmt.Sprintf("%.0f C", *snapshot.GPU.TemperatureC))
 		}
 		if snapshot.GPU.PowerDrawW != nil {
 			if snapshot.GPU.PowerLimitW != nil {
-				fmt.Printf("Power              %.0f / %.0f W\n", *snapshot.GPU.PowerDrawW, *snapshot.GPU.PowerLimitW)
+				fmt.Printf("%s%s\n", ui.pad(ui.muted("Power"), 19), fmt.Sprintf("%.0f / %.0f W", *snapshot.GPU.PowerDrawW, *snapshot.GPU.PowerLimitW))
 			} else {
-				fmt.Printf("Power              %.0f W\n", *snapshot.GPU.PowerDrawW)
+				fmt.Printf("%s%s\n", ui.pad(ui.muted("Power"), 19), fmt.Sprintf("%.0f W", *snapshot.GPU.PowerDrawW))
 			}
 		}
 	}
 
-	fmt.Println("\nINFERENCE LIVE")
+	fmt.Println("\n" + ui.accent("INFERENCE LIVE"))
 	if !refreshed {
-		fmt.Println("Live inference     not refreshed (use --refresh)")
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Live inference"), 19), ui.muted("not refreshed (use --refresh)"))
 	} else if !snapshot.Inference.Available {
-		fmt.Printf("Live inference     unavailable%s\n", inferenceUnavailableSuffix(snapshot.Inference))
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Live inference"), 19), fmt.Sprintf("unavailable%s", inferenceUnavailableSuffix(snapshot.Inference)))
 	} else {
 		agents := snapshot.Inference.Agents
 		if agents == 0 {
-			fmt.Println("Agents             0 active (engine idle)")
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("Agents"), 19), "0 active (engine idle)")
 		} else {
-			fmt.Printf("Agents             %d active\n", agents)
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("Agents"), 19), fmt.Sprintf("%d active", agents))
 		}
-		fmt.Printf("Live prompt depth  %d tokens", snapshot.Inference.ResidentDepth)
+		fmt.Printf("%s%s", ui.pad(ui.muted("Live prompt depth"), 19), fmt.Sprintf("%d tokens", snapshot.Inference.ResidentDepth))
 		if snapshot.Inference.Deferred > 0 {
 			fmt.Printf(" · %d queued", snapshot.Inference.Deferred)
 		}
 		fmt.Println()
 		if snapshot.Inference.DecodeTokensSec != nil {
-			fmt.Printf("Decode             %.1f tok/s\n", *snapshot.Inference.DecodeTokensSec)
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("Decode"), 19), fmt.Sprintf("%.1f tok/s", *snapshot.Inference.DecodeTokensSec))
 		}
 		if snapshot.Inference.PrefillTokensSec != nil {
-			fmt.Printf("Prefill            %.1f tok/s\n", *snapshot.Inference.PrefillTokensSec)
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("Prefill"), 19), fmt.Sprintf("%.1f tok/s", *snapshot.Inference.PrefillTokensSec))
 		}
 		if snapshot.Inference.CacheReuseRatio != nil {
-			fmt.Printf("Cache reuse        %.0f%% of prompt\n", *snapshot.Inference.CacheReuseRatio*100)
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("Cache reuse"), 19), fmt.Sprintf("%.0f%% of prompt", *snapshot.Inference.CacheReuseRatio*100))
 		}
 		if snapshot.Inference.SpecAcceptRatio != nil {
-			fmt.Printf("Speculative        %.0f%% accepted\n", *snapshot.Inference.SpecAcceptRatio*100)
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("Speculative"), 19), fmt.Sprintf("%.0f%% accepted", *snapshot.Inference.SpecAcceptRatio*100))
 		}
-		fmt.Printf("Lanes              %s\n", inferenceLaneSummary(snapshot.Inference.Lanes))
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Lanes"), 19), inferenceLaneSummary(snapshot.Inference.Lanes))
 	}
 
-	fmt.Println("\nPERFORMANCE")
+	fmt.Println("\n" + ui.accent("PERFORMANCE"))
 	if snapshot.Performance.Available {
-		fmt.Printf("TTFT               %.2fs\n", snapshot.Performance.TTFT.Seconds())
-		fmt.Printf("Decode             %.1f tok/s\n", snapshot.Performance.DecodeTokensSec)
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("TTFT"), 19), fmt.Sprintf("%.2fs", snapshot.Performance.TTFT.Seconds()))
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Decode"), 19), fmt.Sprintf("%.1f tok/s", snapshot.Performance.DecodeTokensSec))
 		if snapshot.Performance.PromptTokens > 0 {
-			fmt.Printf("Sample prompt    %d tokens\n", snapshot.Performance.PromptTokens)
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("Sample prompt"), 17), fmt.Sprintf("%d tokens", snapshot.Performance.PromptTokens))
 		}
-		fmt.Printf("Sample             %s ago\n", formatSessionDuration(snapshot.Performance.Age))
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Sample"), 19), formatSessionDuration(snapshot.Performance.Age)+" ago")
 	} else {
-		fmt.Printf("Sample             unavailable · %s\n", snapshot.Performance.UnavailableReason)
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Sample"), 19), "unavailable · "+snapshot.Performance.UnavailableReason)
 	}
 	if snapshot.Session.Checkpoint != "" {
-		fmt.Printf("Checkpoint         %s\n", snapshot.Session.Checkpoint)
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Checkpoint"), 19), snapshot.Session.Checkpoint)
 	}
 	if snapshot.Session.LastError != "" {
 		lastError := strings.ReplaceAll(snapshot.Session.LastError, "\n", " ")
 		if len(lastError) > 140 {
 			lastError = lastError[:137] + "..."
 		}
-		fmt.Printf("Last error         %s\n", lastError)
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Last error"), 19), ui.danger(lastError))
 	}
 	switch snapshot.Session.Status {
 	case sessionstate.StatusRecoverable:
-		fmt.Println("Next action        stint resume")
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Next action"), 19), ui.accent("stint resume"))
 	case sessionstate.StatusReady:
-		fmt.Println("Next action        use Cline; stint down when finished")
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Next action"), 19), "use Cline; "+ui.accent("stint down")+" when finished")
 	default:
-		fmt.Println("Next action        wait for stint start")
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Next action"), 19), ui.muted("wait for stint start"))
 	}
 }
 
 func runningLabel(running bool) string {
 	if running {
-		return "running"
+		return ui.success("running")
 	}
-	return "not running"
+	return ui.muted("not running")
+}
+
+// sessionStatusColor maps a session status to a colored label mirroring the
+// dashboard's status styling (READY green, RECOVERABLE amber, anything else
+// muted). It is a no-op when color is disabled so status output stays stable.
+func sessionStatusColor(status string) string {
+	switch status {
+	case string(sessionstate.StatusReady):
+		return ui.success(status)
+	case string(sessionstate.StatusRecoverable):
+		return ui.warn(status)
+	default:
+		return ui.muted(status)
+	}
 }
 
 func inferenceUnavailableSuffix(inf inferenceTelemetry) string {

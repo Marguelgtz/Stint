@@ -81,7 +81,7 @@ func runStart(args []string) error {
 	}
 	client := vast.NewClient(credentials.Vast.APIKey)
 
-	fmt.Println("Searching Vast for interactive compute...")
+	fmt.Println(ui.accent("Searching Vast for interactive compute..."))
 	searchCtx, searchCancel := context.WithTimeout(context.Background(), 35*time.Second)
 	offers, err := client.SearchOffers(searchCtx, profile, vast.SearchOptions{
 		Hours: hours, Limit: 250, StorageGB: profile.Session.StorageGB,
@@ -103,15 +103,15 @@ func runStart(args []string) error {
 	selected := plan.Workers[0].Offer
 
 	fmt.Println()
-	fmt.Println("READY TO RENT")
-	fmt.Printf("GPU            %s\n", selected.GPUModel)
-	fmt.Printf("Location       %s\n", valueOr(selected.Geolocation, "unknown"))
-	fmt.Printf("Price          $%.3f/hr\n", selected.HourlyUSD)
-	fmt.Printf("Duration cap   %.2fh\n", hours)
-	fmt.Printf("Compute cap    $%.2f\n", plan.EstimatedTotalUSD)
-	fmt.Printf("Model          %s\n", interactiveModelAlias)
-	fmt.Printf("Context        %d tokens\n", interactiveContext)
-	fmt.Printf("Cline endpoint http://127.0.0.1:%d/v1\n", clinePort)
+	fmt.Println(ui.accent("READY TO RENT"))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("GPU"), 15), selected.GPUModel)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Location"), 15), valueOr(selected.Geolocation, "unknown"))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Price"), 15), ui.accent(fmt.Sprintf("$%.3f/hr", selected.HourlyUSD)))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Duration cap"), 15), fmt.Sprintf("%.2fh", hours))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Compute cap"), 15), ui.accent(fmt.Sprintf("$%.2f", plan.EstimatedTotalUSD)))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Model"), 15), interactiveModelAlias)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Context"), 15), fmt.Sprintf("%d tokens", interactiveContext))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Cline endpoint"), 15), ui.accent(fmt.Sprintf("http://127.0.0.1:%d/v1", clinePort)))
 	fmt.Println()
 	if !*yes {
 		confirmed, err := confirmRental()
@@ -145,7 +145,7 @@ func runStart(args []string) error {
 		}
 	}()
 
-	fmt.Println("Renting selected offer...")
+	fmt.Println(ui.accent("Renting selected offer..."))
 	instanceID, err := client.CreateInstance(rootCtx, selected.ID, vast.CreateInstanceOptions{
 		Image:  interactiveImage,
 		DiskGB: profile.Session.StorageGB,
@@ -160,7 +160,7 @@ func runStart(args []string) error {
 	if err := sessionstate.Save(paths, state); err != nil {
 		return fmt.Errorf("instance %d was created but state persistence failed: %w", instanceID, err)
 	}
-	fmt.Printf("Instance       %d\n", instanceID)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Instance"), 15), fmt.Sprintf("%d", instanceID))
 
 	// Start the deadline watchdog immediately after persisting the paid resource.
 	// If the foreground CLI or terminal dies later, the instance still has a local
@@ -181,7 +181,7 @@ func runStart(args []string) error {
 	// session so a later host reuse cannot collide with a stale host key.
 	_ = os.Remove(filepath.Join(paths.StateDir, "known_hosts"))
 
-	fmt.Println("Waiting for Vast SSH...")
+	fmt.Println(ui.accent("Waiting for Vast SSH..."))
 	instance, err := waitForSSHMetadata(rootCtx, client, instanceID, 6*time.Minute)
 	if err != nil {
 		return err
@@ -222,7 +222,7 @@ func runStart(args []string) error {
 		return err
 	}
 
-	fmt.Println("Downloading/loading ~19 GB model; waiting for the local OpenAI endpoint...")
+	fmt.Println(ui.accent("Downloading/loading ~19 GB model; waiting for the local OpenAI endpoint..."))
 	if err := waitForModel(rootCtx, paths, state, 20*time.Minute); err != nil {
 		return err
 	}
@@ -233,14 +233,14 @@ func runStart(args []string) error {
 	ready = true
 
 	fmt.Println()
-	fmt.Println("READY")
-	fmt.Printf("GPU             %s\n", state.GPUModel)
-	fmt.Printf("Price           $%.3f/hr\n", state.HourlyUSD)
-	fmt.Printf("Instance        %d\n", state.InstanceID)
-	fmt.Printf("Endpoint        http://127.0.0.1:%d/v1\n", clinePort)
-	fmt.Printf("Model           %s\n", interactiveModelAlias)
-	fmt.Printf("Auto-destroy    %s\n", state.Deadline.Local().Format(time.RFC1123))
-	fmt.Println("\nCline can connect now. Run `stint down` when finished.")
+	fmt.Println(ui.success("READY"))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("GPU"), 16), state.GPUModel)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Price"), 16), ui.accent(fmt.Sprintf("$%.3f/hr", state.HourlyUSD)))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Instance"), 16), fmt.Sprintf("%d", state.InstanceID))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Endpoint"), 16), ui.accent(fmt.Sprintf("http://127.0.0.1:%d/v1", clinePort)))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Model"), 16), interactiveModelAlias)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Auto-destroy"), 16), state.Deadline.Local().Format(time.RFC1123))
+	fmt.Println("\n" + ui.success("Cline can connect now. Run `stint down` when finished."))
 	return nil
 }
 
@@ -259,8 +259,8 @@ func preferLocation(profile core.Profile, offers []core.Offer, needle string) ([
 }
 
 func bootstrapRemoteRuntime(ctx context.Context, paths config.Paths, state sessionstate.State) error {
-	fmt.Printf("Preparing llama.cpp %s CUDA runtime on the Vast base image...\n", llamaCppRef)
-	fmt.Println("The first bootstrap compiles llama-server once on this disposable instance; build output follows.")
+	fmt.Println(ui.accent(fmt.Sprintf("Preparing llama.cpp %s CUDA runtime on the Vast base image...", llamaCppRef)))
+	fmt.Println(ui.muted("The first bootstrap compiles llama-server once on this disposable instance; build output follows."))
 	command := fmt.Sprintf(`set -eu
 mkdir -p /workspace/stint
 if [ ! -x /workspace/stint/llama.cpp/build/bin/llama-server ]; then
@@ -284,12 +284,12 @@ fi
 	if err := runSSHStreaming(ctx, paths, state, command); err != nil {
 		return fmt.Errorf("bootstrap remote llama.cpp runtime: %w", err)
 	}
-	fmt.Println("llama.cpp runtime ready.")
+	fmt.Println(ui.success("llama.cpp runtime ready."))
 	return nil
 }
 
 func startRemoteModel(ctx context.Context, paths config.Paths, state sessionstate.State) error {
-	fmt.Println("Starting Qwen3.8-27B Q4_K_M on the remote GPU...")
+	fmt.Println(ui.accent("Starting Qwen3.8-27B Q4_K_M on the remote GPU..."))
 	remoteCommand := fmt.Sprintf(
 		"mkdir -p /workspace/stint; pkill -f '/workspace/stint/llama.cpp/build/bin/llama-server.*--port %d' >/dev/null 2>&1 || true; nohup /workspace/stint/llama.cpp/build/bin/llama-server -hf %s --no-mmproj --alias %s --host 127.0.0.1 --port %d -ngl all -c %d -ctk q8_0 -ctv q8_0 --flash-attn on > /workspace/stint/llama.log 2>&1 < /dev/null &",
 		clineRemotePort, interactiveModelRef, interactiveModelAlias, clineRemotePort, interactiveContext,
@@ -317,7 +317,7 @@ func runDown(args []string) error {
 	defer releaseLifecycle()
 	state, err := sessionstate.Load(paths)
 	if errors.Is(err, os.ErrNotExist) {
-		fmt.Println("No active Stint session is recorded.")
+		fmt.Println(ui.muted("No active Stint session is recorded."))
 		return nil
 	}
 	if err != nil {
@@ -332,14 +332,14 @@ func runDown(args []string) error {
 	killPID(state.WatchdogPID)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	fmt.Printf("Destroying Vast instance %d...\n", state.InstanceID)
+	fmt.Printf("%s\n", ui.warn(fmt.Sprintf("Destroying Vast instance %d...", state.InstanceID)))
 	if err := client.DestroyInstance(ctx, state.InstanceID); err != nil {
 		return err
 	}
 	if err := sessionstate.Clear(paths); err != nil {
 		return err
 	}
-	fmt.Println("Compute destroyed. Cline endpoint is offline.")
+	fmt.Println(ui.muted("Compute destroyed. Cline endpoint is offline."))
 	return nil
 }
 
@@ -372,7 +372,7 @@ func runWatchdog(args []string) error {
 }
 
 func confirmRental() (bool, error) {
-	fmt.Print("Rent this compute now? [y/N] ")
+	fmt.Print(ui.accent("Rent this compute now? [y/N] "))
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && line == "" {
 		return false, err
@@ -460,7 +460,7 @@ func waitForSSH(ctx context.Context, paths config.Paths, state sessionstate.Stat
 	deadline := time.Now().Add(timeout)
 	for {
 		if _, err := runSSH(ctx, paths, state, "echo stint-ssh-ready"); err == nil {
-			fmt.Println("SSH             ready")
+			fmt.Printf("%s%s\n", ui.pad(ui.muted("SSH"), 16), ui.success("ready"))
 			return nil
 		}
 		if time.Now().After(deadline) {
