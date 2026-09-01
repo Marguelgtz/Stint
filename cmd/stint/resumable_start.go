@@ -50,7 +50,7 @@ func runStartResumable(args []string) (retErr error) {
 	clients := fs.Int("clients", defaultNInferClients, "NInfer client lanes (1 or 2; shared dynamic KV pool)")
 	minNetworkMbps := fs.Float64("min-network-mbps", defaultMinAdvertisedNetworkMbps, "minimum Vast advertised download bandwidth in Mbps; 0 disables")
 	minMeasuredDownloadMBps := fs.Float64("min-measured-download-mbps", defaultMinMeasuredDownloadMBps, "minimum measured post-SSH download throughput in MB/s; 0 disables")
-	networkCandidateAttempts := fs.Int("network-candidate-attempts", defaultNetworkCandidateAttempts, "maximum distinct Vast machines to try during provider startup and measured-network qualification")
+	networkCandidateAttempts := fs.Int("network-candidate-attempts", defaultNetworkCandidateAttempts, "maximum rented Vast machines to test during provider startup and measured-network qualification; stale offers are replaced without consuming an attempt")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -131,15 +131,15 @@ func runStartResumable(args []string) (retErr error) {
 	if len(offers) == 0 {
 		return fmt.Errorf("no qualifying interactive offers meet the minimum advertised network %.0f Mbps; lower --min-network-mbps or retry the marketplace", *minNetworkMbps)
 	}
-	candidates := selectNetworkCandidates(profile, offers, *networkCandidateAttempts)
-	if len(candidates) == 0 {
+	candidatePool := newStartupCandidatePool(profile, offers, *networkCandidateAttempts)
+	selected, ok := candidatePool.peek()
+	if !ok {
 		return errors.New("no qualifying interactive offers remain after policy ranking")
 	}
 	plan, err := core.CreateSessionPlan(profile, hours, offers)
 	if err != nil {
 		return err
 	}
-	selected := candidates[0]
 	selectedRuntime, err := selectInteractiveRuntime(runtimeRequest, selected.GPUModel)
 	if err != nil {
 		return err
@@ -169,7 +169,7 @@ func runStartResumable(args []string) (retErr error) {
 	fmt.Printf("Network        %.0f Mbps advertised (min %.0f)\n", selected.InetDownMBps, *minNetworkMbps)
 	if *minMeasuredDownloadMBps > 0 {
 		fmt.Printf("Probe minimum  %.1f MB/s measured\n", *minMeasuredDownloadMBps)
-		fmt.Printf("Host attempts  up to %d distinct machine(s)\n", len(candidates))
+		fmt.Printf("Host attempts  up to %d rented machine(s); stale offers are replaced\n", candidatePool.attemptLimit())
 	}
 	fmt.Printf("Duration cap   %.2fh\n", hours)
 	fmt.Printf("Compute cap    $%.2f\n", plan.EstimatedTotalUSD)
@@ -229,8 +229,75 @@ func runStartResumable(args []string) (retErr error) {
 		_ = sessionstate.Clear(paths)
 	}()
 
+	refillCandidatePool := func() error {
+		if candidatePool.missingSlots() <= 0 {
+			return nil
+		}
+
+		fmt.Println("Refreshing Vast marketplace for replacement candidates...")
+		refreshCtx, refreshCancel := context.WithTimeout(rootCtx, 35*time.Second)
+		refreshedOffers, refreshErr := client.SearchOffers(refreshCtx, profile, searchOptions)
+		refreshCancel()
+		if refreshErr != nil {
+			if candidatePool.queued() > 0 {
+				fmt.Printf("Replacement     refresh unavailable (%v); continuing with %d queued candidate(s)\n", refreshErr, candidatePool.queued())
+				return nil
+			}
+			return fmt.Errorf("refresh Vast replacement candidates: %w", refreshErr)
+		}
+		if strings.TrimSpace(*location) != "" {
+			matched, locationErr := preferLocation(profile, refreshedOffers, *location)
+			if locationErr != nil {
+				refreshedOffers = nil
+			} else {
+				refreshedOffers = matched
+			}
+		}
+		refreshedOffers = filterOffersByMinimumNetwork(refreshedOffers, *minNetworkMbps)
+		added := candidatePool.add(refreshedOffers)
+		for _, replacement := range added {
+			fmt.Printf("Replacement     %s, %s, %.0f Mbps advertised\n", replacement.GPUModel, valueOr(replacement.Geolocation, "unknown"), replacement.InetDownMBps)
+		}
+		if len(added) == 0 {
+			if candidatePool.queued() > 0 {
+				fmt.Printf("Replacement     no new unseen candidate found; %d candidate(s) remain queued\n", candidatePool.queued())
+				return nil
+			}
+			return errors.New("no unseen qualifying Vast replacement candidates are currently available")
+		}
+		return nil
+	}
+
+	prepareNextCandidate := func() (bool, error) {
+		if !candidatePool.canTryPaid() {
+			return false, nil
+		}
+		if candidatePool.missingSlots() > 0 {
+			if err := refillCandidatePool(); err != nil {
+				return false, err
+			}
+		}
+		return candidatePool.queued() > 0, nil
+	}
+
 	qualified := false
-	for attempt, candidate := range candidates {
+	for candidatePool.canTryPaid() {
+		candidate, ok := candidatePool.next()
+		if !ok {
+			hasNext, nextErr := prepareNextCandidate()
+			if nextErr != nil {
+				return nextErr
+			}
+			if !hasNext {
+				break
+			}
+			candidate, ok = candidatePool.next()
+			if !ok {
+				break
+			}
+		}
+
+		attemptNumber := candidatePool.nextAttemptNumber()
 		candidateRuntime, candidateErr := selectInteractiveRuntime(runtimeRequest, candidate.GPUModel)
 		if candidateErr != nil {
 			return candidateErr
@@ -264,8 +331,8 @@ func runStartResumable(args []string) (retErr error) {
 			Status: sessionstate.StatusRenting,
 		}
 
-		if len(candidates) > 1 {
-			fmt.Printf("Renting candidate %d/%d (%s, %s, %.0f Mbps advertised)...\n", attempt+1, len(candidates), selected.GPUModel, valueOr(selected.Geolocation, "unknown"), selected.InetDownMBps)
+		if candidatePool.attemptLimit() > 1 {
+			fmt.Printf("Renting candidate %d/%d (%s, %s, %.0f Mbps advertised)...\n", attemptNumber, candidatePool.attemptLimit(), selected.GPUModel, valueOr(selected.Geolocation, "unknown"), selected.InetDownMBps)
 		} else {
 			fmt.Println("Renting selected offer...")
 		}
@@ -279,13 +346,18 @@ func runStartResumable(args []string) (retErr error) {
 			if rootCtx.Err() != nil || !vast.IsOfferUnavailableError(createErr) {
 				return createErr
 			}
-			fmt.Printf("Rejected        candidate %d/%d (offer %s is no longer available)\n", attempt+1, len(candidates), selected.ID)
-			if attempt+1 < len(candidates) {
+			fmt.Printf("Rejected        offer %s is no longer available (paid attempt %d/%d not consumed)\n", selected.ID, attemptNumber, candidatePool.attemptLimit())
+			hasNext, refillErr := prepareNextCandidate()
+			if refillErr != nil {
+				return fmt.Errorf("offer %s disappeared before rental and replacement selection failed: %w", selected.ID, refillErr)
+			}
+			if hasNext {
 				fmt.Println("Trying next network candidate...")
 				continue
 			}
-			return fmt.Errorf("startup exhausted %d distinct candidate(s); final offer disappeared before rental: %w", len(candidates), createErr)
+			return fmt.Errorf("offer %s disappeared before rental and no unseen replacement candidate is available: %w", selected.ID, createErr)
 		}
+		candidatePool.recordPaidAttempt()
 		created = true
 		state.InstanceID = instanceID
 		state.Status = sessionstate.StatusBooting
@@ -321,11 +393,18 @@ func runStartResumable(args []string) (retErr error) {
 			}
 			created = false
 			fmt.Printf("Rejected        instance %d (provider startup failed: %v)\n", rejectedInstanceID, metadataErr)
-			if attempt+1 < len(candidates) {
-				fmt.Println("Trying next network candidate...")
-				continue
+			fmt.Printf("Attempts        %d/%d paid machine(s)\n", candidatePool.attemptsUsed(), candidatePool.attemptLimit())
+			if candidatePool.canTryPaid() {
+				hasNext, refillErr := prepareNextCandidate()
+				if refillErr != nil {
+					return fmt.Errorf("provider startup failed on instance %d and no replacement candidate could be selected: %w", rejectedInstanceID, refillErr)
+				}
+				if hasNext {
+					fmt.Println("Trying next network candidate...")
+					continue
+				}
 			}
-			return fmt.Errorf("startup exhausted %d distinct candidate(s); instance %d never became SSH-ready: %w", len(candidates), rejectedInstanceID, metadataErr)
+			return fmt.Errorf("startup exhausted %d paid candidate attempt(s); instance %d never became SSH-ready: %w", candidatePool.attemptsUsed(), rejectedInstanceID, metadataErr)
 		}
 		state.SSHHost = instance.SSHHost
 		state.SSHPort = instance.SSHPort
@@ -343,11 +422,18 @@ func runStartResumable(args []string) (retErr error) {
 			}
 			created = false
 			fmt.Printf("Rejected        instance %d (SSH startup failed: %v)\n", rejectedInstanceID, sshErr)
-			if attempt+1 < len(candidates) {
-				fmt.Println("Trying next network candidate...")
-				continue
+			fmt.Printf("Attempts        %d/%d paid machine(s)\n", candidatePool.attemptsUsed(), candidatePool.attemptLimit())
+			if candidatePool.canTryPaid() {
+				hasNext, refillErr := prepareNextCandidate()
+				if refillErr != nil {
+					return fmt.Errorf("SSH startup failed on instance %d and no replacement candidate could be selected: %w", rejectedInstanceID, refillErr)
+				}
+				if hasNext {
+					fmt.Println("Trying next network candidate...")
+					continue
+				}
 			}
-			return fmt.Errorf("startup exhausted %d distinct candidate(s); instance %d never accepted SSH: %w", len(candidates), rejectedInstanceID, sshErr)
+			return fmt.Errorf("startup exhausted %d paid candidate attempt(s); instance %d never accepted SSH: %w", candidatePool.attemptsUsed(), rejectedInstanceID, sshErr)
 		}
 		state.Status = sessionstate.StatusSSHReady
 		state.Checkpoint = sessionstate.CheckpointSSHReady
@@ -370,11 +456,18 @@ func runStartResumable(args []string) (retErr error) {
 			}
 			created = false
 			fmt.Printf("Rejected        instance %d (network probe failed: %v)\n", rejectedInstanceID, probeErr)
-			if attempt+1 < len(candidates) {
-				fmt.Println("Trying next network candidate...")
-				continue
+			fmt.Printf("Attempts        %d/%d paid machine(s)\n", candidatePool.attemptsUsed(), candidatePool.attemptLimit())
+			if candidatePool.canTryPaid() {
+				hasNext, refillErr := prepareNextCandidate()
+				if refillErr != nil {
+					return fmt.Errorf("network qualification failed on instance %d and no replacement candidate could be selected: %w", rejectedInstanceID, refillErr)
+				}
+				if hasNext {
+					fmt.Println("Trying next network candidate...")
+					continue
+				}
 			}
-			return fmt.Errorf("network qualification exhausted %d distinct candidate(s); last probe failed on instance %d: %w", len(candidates), rejectedInstanceID, probeErr)
+			return fmt.Errorf("network qualification exhausted %d paid candidate attempt(s); last probe failed on instance %d: %w", candidatePool.attemptsUsed(), rejectedInstanceID, probeErr)
 		}
 
 		fmt.Printf("Network probe   %.1f MB/s measured (min %.1f)\n", measured, *minMeasuredDownloadMBps)
@@ -385,18 +478,25 @@ func runStartResumable(args []string) (retErr error) {
 			}
 			created = false
 			fmt.Printf("Rejected        instance %d (%.1f MB/s below %.1f MB/s)\n", rejectedInstanceID, measured, *minMeasuredDownloadMBps)
-			if attempt+1 < len(candidates) {
-				fmt.Println("Trying next network candidate...")
-				continue
+			fmt.Printf("Attempts        %d/%d paid machine(s)\n", candidatePool.attemptsUsed(), candidatePool.attemptLimit())
+			if candidatePool.canTryPaid() {
+				hasNext, refillErr := prepareNextCandidate()
+				if refillErr != nil {
+					return fmt.Errorf("instance %d missed the measured network floor and no replacement candidate could be selected: %w", rejectedInstanceID, refillErr)
+				}
+				if hasNext {
+					fmt.Println("Trying next network candidate...")
+					continue
+				}
 			}
-			return fmt.Errorf("network qualification exhausted %d distinct candidate(s); instance %d measured %.1f MB/s below the %.1f MB/s minimum", len(candidates), rejectedInstanceID, measured, *minMeasuredDownloadMBps)
+			return fmt.Errorf("network qualification exhausted %d paid candidate attempt(s); instance %d measured %.1f MB/s below the %.1f MB/s minimum", candidatePool.attemptsUsed(), rejectedInstanceID, measured, *minMeasuredDownloadMBps)
 		}
 
 		qualified = true
 		break
 	}
 	if !qualified {
-		return errors.New("network qualification did not select a candidate")
+		return fmt.Errorf("startup did not select a candidate after %d/%d paid attempt(s)", candidatePool.attemptsUsed(), candidatePool.attemptLimit())
 	}
 
 	state.Status = sessionstate.StatusRuntimeBootstrap
