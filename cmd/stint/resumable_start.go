@@ -27,6 +27,7 @@ const providerStartupTimeout = 12 * time.Minute
 // continue the same session rather than silently discarding already-provisioned
 // work or forcing another rental.
 func runStartResumable(args []string) (retErr error) {
+	startupStartedAt := time.Now().UTC()
 	if len(args) == 0 {
 		return errors.New("start requires a profile: interactive")
 	}
@@ -298,6 +299,7 @@ func runStartResumable(args []string) (retErr error) {
 	if err := waitForModel(rootCtx, paths, state, 20*time.Minute); err != nil {
 		return err
 	}
+	modelServingAt := time.Now().UTC()
 	state.Status = sessionstate.StatusReady
 	state.Checkpoint = sessionstate.CheckpointReady
 	state.LastError = ""
@@ -306,6 +308,7 @@ func runStartResumable(args []string) (retErr error) {
 	}
 	ready = true
 	printReadySession(state)
+	fmt.Printf("Startup         %s (stint start -> model serving)\n", formatStartupDuration(startupStartedAt, modelServingAt))
 	return nil
 }
 
