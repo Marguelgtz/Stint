@@ -298,6 +298,7 @@ func TestLandingDeadline(t *testing.T) {
 		t.Errorf("20m window lands %s before deadline, want 5m (quarter)", got)
 	}
 }
+
 // A silent passing verification command (test/grep -q) must be reported as
 // passed in the handoff, not as "did not run" (live-run finding, F-DW-010).
 func TestDeepLandingSilentVerifyReported(t *testing.T) {
