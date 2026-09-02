@@ -109,12 +109,22 @@ func runStartResumable(args []string) (retErr error) {
 		return errors.New("Vast credentials are not configured; run: stint auth vast")
 	}
 	client := vast.NewClient(credentials.Vast.APIKey)
+	client.OnSearchRetry = func(event vast.SearchRetryEvent) {
+		delay := event.Delay.Round(100 * time.Millisecond)
+		if event.RateLimited {
+			fmt.Printf("Vast rate limited; retrying marketplace request in %s (request %d/%d)...\n", delay, event.Attempt+1, event.MaxAttempts)
+			return
+		}
+		fmt.Printf("Vast marketplace temporarily unavailable; retrying request in %s (request %d/%d)...\n", delay, event.Attempt+1, event.MaxAttempts)
+	}
 
 	fmt.Println("Searching Vast for interactive compute...")
 	searchProfile, searchOptions := prepareVastSearchForRuntime(profile, vast.SearchOptions{
 		Hours: hours, Limit: 250, StorageGB: profile.Session.StorageGB,
 	}, runtimeRequest)
 	profile = searchProfile
+	replacementSearchOptions := searchOptions
+	replacementSearchOptions.SkipDiscoveryTrace = true
 	searchCtx, searchCancel := context.WithTimeout(context.Background(), 35*time.Second)
 	offers, err := client.SearchOffers(searchCtx, profile, searchOptions)
 	searchCancel()
@@ -230,19 +240,15 @@ func runStartResumable(args []string) (retErr error) {
 	}()
 
 	refillCandidatePool := func() error {
-		if candidatePool.missingSlots() <= 0 {
+		if !candidatePool.needsRefill() {
 			return nil
 		}
 
 		fmt.Println("Refreshing Vast marketplace for replacement candidates...")
 		refreshCtx, refreshCancel := context.WithTimeout(rootCtx, 35*time.Second)
-		refreshedOffers, refreshErr := client.SearchOffers(refreshCtx, profile, searchOptions)
+		refreshedOffers, refreshErr := client.SearchOffers(refreshCtx, profile, replacementSearchOptions)
 		refreshCancel()
 		if refreshErr != nil {
-			if candidatePool.queued() > 0 {
-				fmt.Printf("Replacement     refresh unavailable (%v); continuing with %d queued candidate(s)\n", refreshErr, candidatePool.queued())
-				return nil
-			}
 			return fmt.Errorf("refresh Vast replacement candidates: %w", refreshErr)
 		}
 		if strings.TrimSpace(*location) != "" {
@@ -259,11 +265,7 @@ func runStartResumable(args []string) (retErr error) {
 			fmt.Printf("Replacement     %s, %s, %.0f Mbps advertised\n", replacement.GPUModel, valueOr(replacement.Geolocation, "unknown"), replacement.InetDownMBps)
 		}
 		if len(added) == 0 {
-			if candidatePool.queued() > 0 {
-				fmt.Printf("Replacement     no new unseen candidate found; %d candidate(s) remain queued\n", candidatePool.queued())
-				return nil
-			}
-			return errors.New("no unseen qualifying Vast replacement candidates are currently available")
+			return errors.New("latest Vast marketplace results contain no unseen qualifying replacement candidates")
 		}
 		return nil
 	}
@@ -272,10 +274,11 @@ func runStartResumable(args []string) (retErr error) {
 		if !candidatePool.canTryPaid() {
 			return false, nil
 		}
-		if candidatePool.missingSlots() > 0 {
-			if err := refillCandidatePool(); err != nil {
-				return false, err
-			}
+		if candidatePool.queued() > 0 {
+			return true, nil
+		}
+		if err := refillCandidatePool(); err != nil {
+			return false, err
 		}
 		return candidatePool.queued() > 0, nil
 	}
