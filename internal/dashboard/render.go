@@ -47,9 +47,16 @@ type Modal struct {
 	Hint  string
 }
 
+type ClientContext struct {
+	Key, Label string
+	Tokens     int
+}
+
 type Inference struct {
 	Available, Refreshed bool
 	Agents, Depth        int
+	ContextUsed          int
+	Clients              []ClientContext
 	Decode, Prefill      string
 	Queue, CacheReuse    string
 	Speculative          string
@@ -175,35 +182,7 @@ func homeView(m Model, p palette) string {
 			or(m.Health.Endpoint, "not refreshed"), or(m.Health.Runtime, "not refreshed"))
 	}
 
-	b.WriteString("\n\n" + p.bold("SESSION") + "\n")
-	progress := 0.0
-	if m.Session.Scheduled > 0 {
-		progress = float64(m.Session.Elapsed) / float64(m.Session.Scheduled)
-	}
-	dur := formatDuration(m.Session.Elapsed) + " / " + formatDuration(m.Session.Scheduled)
-	barWidth := clamp(m.Width-visibleLen(dur)-3, 16, 52)
-	fmt.Fprintf(&b, "%s  %s\n", progressBar(barWidth, progress), dur)
-	started, deadline := "", ""
-	if !m.Session.Started.IsZero() {
-		started = "Started       " + m.Session.Started.Local().Format("15:04:05")
-	}
-	if !m.Session.Deadline.IsZero() {
-		deadline = "Auto-destroy  " + m.Session.Deadline.Local().Format("15:04:05")
-	}
-	if started != "" && deadline != "" && m.Width >= 70 {
-		b.WriteString(started + strings.Repeat(" ", max(3, m.Width-visibleLen(started)-visibleLen(deadline))) + deadline)
-	} else {
-		if started != "" {
-			b.WriteString(started)
-		}
-		if started != "" && deadline != "" {
-			b.WriteByte('\n')
-		}
-		if deadline != "" {
-			b.WriteString(deadline)
-		}
-	}
-
+	b.WriteString(sessionProgressView(m, p))
 	b.WriteString("\n\n" + p.bold("LIVE") + "  " + homeLiveLine(m, p))
 
 	gpu := []string{p.bold("GPU")}
