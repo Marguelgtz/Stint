@@ -238,6 +238,48 @@ var (
 		examples: []string{"stint version"},
 	}
 
+	cmdDeep = cliCommand{
+		name:    "deep",
+		section: "deepwork",
+		summary: "run a bounded, unattended engineering mission (Deep Work)",
+		detail: `Deep Work hands Stint an engineering mission and a bounded amount of time, then Stint supervises execution continuity: the coding agent (Cline CLI, pointed at the Stint endpoint) works in an isolated git worktree, and when an invocation ends Stint inspects repository evidence — not the worker's word — before continuing, parking, or landing.
+
+Slice-1 sessions ride an existing READY compute session (run ` + "`stint start interactive`" + ` first); Deep Work never rents, destroys, or extends compute. The coordinator lands before the session deadline and writes a truthful handoff. The machine must stay awake; the existing watchdog remains the hard-deadline authority.
+
+Subcommands:
+  start   run a mission to landing (foreground)
+  status  show session phase, deadline, and task table
+  stop    land the latest session now (works from durable state)`,
+		usage: "stint deep <start|status|stop> [flags]",
+		args:  []cliArg{{name: "<subcommand>", purpose: "start, status, or stop"}},
+		flags: []cliFlag{
+			{name: "--mission", argument: "<file>", purpose: "mission Markdown file (start, required)"},
+			{name: "--repo", argument: "<path>", purpose: "target git repository (start, required)"},
+			{name: "--hours", argument: "<float>", defaultVal: "compute session deadline", purpose: "optional Deep Work duration cap; may only tighten the session deadline"},
+			{name: "--task-timeout", argument: "<dur>", defaultVal: "10m", purpose: "maximum wall time per coding-agent invocation"},
+			{name: "--max-attempts", argument: "<int>", defaultVal: "3", purpose: "executor attempts per task before parking"},
+			{name: "--auto-approve", defaultVal: "true", purpose: "auto-approve Cline tool calls inside the isolated worktree"},
+			{name: "--provider", argument: "<id>", defaultVal: "openai-compatible", purpose: "Cline provider id"},
+			{name: "--model", argument: "<id>", defaultVal: "first model served by the Stint endpoint", purpose: "model id"},
+			{name: "--api-key", argument: "<key>", purpose: "Cline API key override"},
+			{name: "--cline-config", argument: "<dir>", defaultVal: "~/.cline", purpose: "Cline config directory"},
+			{name: "--json", defaultVal: "false", purpose: "status: print machine-readable state"},
+			{name: "--session", argument: "<id>", defaultVal: "latest", purpose: "status: session to inspect"},
+		},
+		examples: []string{
+			"stint start interactive --hours 2",
+			"stint deep start --mission mission.md --repo /path/to/repo",
+			"stint deep status --json",
+			"stint deep stop",
+		},
+		notes: []string{
+			"Work happens in a Stint-owned worktree (<repo>/.stint-deep/<session>) on branch stint/deep-<session>; your active checkout is never touched and nothing is pushed.",
+			"State and the handoff live under ~/.local/state/stint/deep/<session>/; the handoff is also written to the worktree root.",
+			"The mission file must have an Objective and at least one task ('- [ ] ID: objective'); see docs/DEEP_WORK.md (DWX-011) for the full skeleton.",
+			"Host sleep matters: if the machine sleeps, wall-clock deadlines keep advancing.",
+		},
+	}
+
 	cmdHelp = cliCommand{
 		name:     "help",
 		aliases:  []string{"--help", "-h"},
@@ -249,13 +291,14 @@ var (
 	}
 )
 
-var cliCommands = []cliCommand{cmdAuth, cmdSetup, cmdDoctor, cmdStatus, cmdOnboard, cmdPlan, cmdStart, cmdResume, cmdDown, cmdPerf, cmdVersion, cmdHelp}
+var cliCommands = []cliCommand{cmdAuth, cmdSetup, cmdDoctor, cmdStatus, cmdOnboard, cmdPlan, cmdStart, cmdResume, cmdDown, cmdPerf, cmdDeep, cmdVersion, cmdHelp}
 
 var helpSections = []helpSection{
 	{title: "Setup & checks", commands: []cliCommand{cmdAuth, cmdSetup, cmdDoctor, cmdStatus, cmdOnboard}},
 	{title: "Planning (read-only)", commands: []cliCommand{cmdPlan}},
 	{title: "Compute (paid)", commands: []cliCommand{cmdStart, cmdResume, cmdDown}},
 	{title: "Diagnostics", commands: []cliCommand{cmdPerf}},
+	{title: "Deep Work", commands: []cliCommand{cmdDeep}},
 	{title: "Reference", commands: []cliCommand{cmdVersion, cmdHelp}},
 }
 
