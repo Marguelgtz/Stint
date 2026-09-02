@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-var clientContextColors = []string{"31;1", "36;1", "35;1", "33;1", "32;1", "34;1"}
+var residentContextColors = []string{"31;1", "36;1", "35;1", "33;1", "32;1", "34;1"}
 
 func sessionProgressView(m Model, p palette) string {
 	var b strings.Builder
@@ -64,13 +64,13 @@ func contextUsageSummary(m Model) string {
 		return "context unavailable"
 	}
 	if m.Session.Context <= 0 {
-		return formatTokenCount(m.Inference.ContextUsed) + " ctx used"
+		return formatTokenCount(m.Inference.ContextUsed) + " resident ctx"
 	}
 	percent := int(math.Round(100 * float64(m.Inference.ContextUsed) / float64(m.Session.Context)))
 	if percent < 0 {
 		percent = 0
 	}
-	return fmt.Sprintf("%s / %s ctx · %d%%", formatTokenCount(m.Inference.ContextUsed), formatTokenCount(m.Session.Context), percent)
+	return fmt.Sprintf("%s / %s ctx · %d%% resident", formatTokenCount(m.Inference.ContextUsed), formatTokenCount(m.Session.Context), percent)
 }
 
 func contextBar(width int, m Model, p palette) string {
@@ -85,18 +85,18 @@ func contextBar(width int, m Model, p palette) string {
 	consumedTokens := 0
 	consumedCells := 0
 	var b strings.Builder
-	for _, client := range m.Inference.Clients {
-		if client.Tokens <= 0 || consumedTokens >= capacity {
+	for _, resident := range m.Inference.Clients {
+		if resident.Tokens <= 0 || consumedTokens >= capacity {
 			continue
 		}
-		nextTokens := consumedTokens + client.Tokens
+		nextTokens := consumedTokens + resident.Tokens
 		if nextTokens > capacity {
 			nextTokens = capacity
 		}
 		nextCells := int(math.Round(float64(width) * float64(nextTokens) / float64(capacity)))
 		cells := max(0, nextCells-consumedCells)
 		if cells > 0 {
-			b.WriteString(p.wrap(clientContextColor(client.Key), strings.Repeat("█", cells)))
+			b.WriteString(p.wrap(residentContextColor(resident.Key), strings.Repeat("█", cells)))
 		}
 		consumedTokens = nextTokens
 		consumedCells = nextCells
@@ -109,22 +109,22 @@ func contextBar(width int, m Model, p palette) string {
 
 func contextLegend(m Model, p palette) string {
 	items := make([]string, 0, len(m.Inference.Clients))
-	for _, client := range m.Inference.Clients {
-		if client.Tokens <= 0 {
+	for _, resident := range m.Inference.Clients {
+		if resident.Tokens <= 0 {
 			continue
 		}
 		share := ""
 		if m.Session.Context > 0 {
-			share = fmt.Sprintf(" · %.0f%%", 100*float64(client.Tokens)/float64(m.Session.Context))
+			share = fmt.Sprintf(" · %.0f%%", 100*float64(resident.Tokens)/float64(m.Session.Context))
 		}
-		item := fmt.Sprintf("● %s %s%s", client.Label, formatTokenCount(client.Tokens), share)
-		items = append(items, p.wrap(clientContextColor(client.Key), item))
+		item := fmt.Sprintf("● %s  %s%s", resident.Label, formatTokenCount(resident.Tokens), share)
+		items = append(items, p.wrap(residentContextColor(resident.Key), item))
 	}
 	return strings.Join(wrap(items, m.Width), "\n")
 }
 
-func clientContextColor(key string) string {
-	if len(clientContextColors) == 0 {
+func residentContextColor(key string) string {
+	if len(residentContextColors) == 0 {
 		return ""
 	}
 	var hash uint32 = 2166136261
@@ -132,7 +132,7 @@ func clientContextColor(key string) string {
 		hash ^= uint32(key[i])
 		hash *= 16777619
 	}
-	return clientContextColors[int(hash%uint32(len(clientContextColors)))]
+	return residentContextColors[int(hash%uint32(len(residentContextColors)))]
 }
 
 func formatTokenCount(tokens int) string {
