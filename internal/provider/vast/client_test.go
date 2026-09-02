@@ -9,6 +9,7 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/Marguelgtz/Stint/internal/core"
 )
@@ -142,8 +143,118 @@ func TestSearchOffersBisectsZeroInventory(t *testing.T) {
 	}
 }
 
-func TestSearchOffersPermissionError(t *testing.T) {
+func TestSearchOffersCanSkipZeroInventoryBisect(t *testing.T) {
+	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"offers":[]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.BaseURL = server.URL
+	client.HTTPClient = server.Client()
+	offers, err := client.SearchOffers(context.Background(), core.BuiltinProfiles["interactive"], SearchOptions{Hours: 1, SkipDiscoveryTrace: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offers) != 0 {
+		t.Fatalf("offers = %#v, want none", offers)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want one replacement-pool query without discovery bisect", requests)
+	}
+}
+
+func TestSearchOffersRetriesRateLimitAndHonorsRetryAfter(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests <= 2 {
+			if requests == 1 {
+				w.Header().Set("Retry-After", "5")
+			}
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"rate_limited","msg":"slow down"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"offers":[{"id":123,"gpu_name":"RTX 4090"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.BaseURL = server.URL
+	client.HTTPClient = server.Client()
+	client.jitterFn = func(time.Duration) time.Duration { return 0 }
+	var sleeps []time.Duration
+	client.sleepFn = func(_ context.Context, delay time.Duration) error {
+		sleeps = append(sleeps, delay)
+		return nil
+	}
+	var retries []SearchRetryEvent
+	client.OnSearchRetry = func(event SearchRetryEvent) {
+		retries = append(retries, event)
+	}
+
+	offers, err := client.SearchOffers(context.Background(), core.BuiltinProfiles["interactive"], SearchOptions{Hours: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offers) != 1 || offers[0].ID != "123" {
+		t.Fatalf("offers = %#v", offers)
+	}
+	if requests != 3 {
+		t.Fatalf("requests = %d, want 3", requests)
+	}
+	wantSleeps := []time.Duration{5 * time.Second, 2 * time.Second}
+	if !reflect.DeepEqual(sleeps, wantSleeps) {
+		t.Fatalf("retry sleeps = %#v, want %#v", sleeps, wantSleeps)
+	}
+	if len(retries) != 2 || !retries[0].RateLimited || !retries[1].RateLimited {
+		t.Fatalf("retry events = %#v", retries)
+	}
+}
+
+func TestSearchOffersRetriesTemporaryServerFailure(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"offers":[{"id":123,"gpu_name":"RTX 4090"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.BaseURL = server.URL
+	client.HTTPClient = server.Client()
+	client.jitterFn = func(time.Duration) time.Duration { return 0 }
+	var sleeps []time.Duration
+	client.sleepFn = func(_ context.Context, delay time.Duration) error {
+		sleeps = append(sleeps, delay)
+		return nil
+	}
+
+	if _, err := client.SearchOffers(context.Background(), core.BuiltinProfiles["interactive"], SearchOptions{Hours: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+	if !reflect.DeepEqual(sleeps, []time.Duration{time.Second}) {
+		t.Fatalf("retry sleeps = %#v, want 1s", sleeps)
+	}
+}
+
+func TestSearchOffersPermissionError(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error":"forbidden","msg":"permission denied"}`))
 	}))
@@ -155,6 +266,39 @@ func TestSearchOffersPermissionError(t *testing.T) {
 	_, err := client.SearchOffers(context.Background(), core.BuiltinProfiles["interactive"], SearchOptions{Hours: 1})
 	if err == nil || err.Error() != "Vast API key lacks misc/search permission" {
 		t.Fatalf("err = %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("permission failure requests = %d, want 1", requests)
+	}
+}
+
+func TestSearchOffersRateLimitRetryBudgetIsBounded(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.BaseURL = server.URL
+	client.HTTPClient = server.Client()
+	client.jitterFn = func(time.Duration) time.Duration { return 0 }
+	client.sleepFn = func(context.Context, time.Duration) error { return nil }
+	_, err := client.SearchOffers(context.Background(), core.BuiltinProfiles["interactive"], SearchOptions{Hours: 1})
+	if err == nil || err.Error() != "Vast API rate limit remained active after retries; retry later" {
+		t.Fatalf("err = %v", err)
+	}
+	if requests != defaultSearchRequestAttempts {
+		t.Fatalf("requests = %d, want bounded %d", requests, defaultSearchRequestAttempts)
+	}
+}
+
+func TestParseRetryAfterHTTPDate(t *testing.T) {
+	now := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+	got, ok := parseRetryAfter(now.Add(7*time.Second).Format(http.TimeFormat), now)
+	if !ok || got != 7*time.Second {
+		t.Fatalf("retry after = %s, ok=%v, want 7s", got, ok)
 	}
 }
 
