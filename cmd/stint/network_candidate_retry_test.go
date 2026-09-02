@@ -78,6 +78,38 @@ func TestStartupCandidatePoolReplacesStaleOfferWithoutSpendingAttempt(t *testing
 	}
 }
 
+func TestStartupCandidatePoolDefersRefreshWhileQueuedCandidatesRemain(t *testing.T) {
+	profile := core.BuiltinProfiles["interactive"]
+	pool := newStartupCandidatePool(profile, []core.Offer{
+		testNetworkCandidateOffer("a", 101, 120),
+		testNetworkCandidateOffer("b", 202, 110),
+		testNetworkCandidateOffer("c", 303, 100),
+	}, 3)
+
+	if _, ok := pool.next(); !ok {
+		t.Fatal("missing first candidate")
+	}
+	if pool.missingSlots() != 1 {
+		t.Fatalf("missing slots = %d, want 1", pool.missingSlots())
+	}
+	if pool.needsRefill() {
+		t.Fatal("pool requested a marketplace refresh while unseen candidates were still queued")
+	}
+
+	if _, ok := pool.next(); !ok {
+		t.Fatal("missing second candidate")
+	}
+	if pool.needsRefill() {
+		t.Fatal("pool requested a marketplace refresh with one queued candidate remaining")
+	}
+	if _, ok := pool.next(); !ok {
+		t.Fatal("missing third candidate")
+	}
+	if !pool.needsRefill() {
+		t.Fatal("pool did not request a refresh after exhausting the current marketplace snapshot")
+	}
+}
+
 func TestStartupCandidatePoolPaidFailureConsumesAttempt(t *testing.T) {
 	profile := core.BuiltinProfiles["interactive"]
 	pool := newStartupCandidatePool(profile, []core.Offer{
