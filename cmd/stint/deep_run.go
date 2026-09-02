@@ -61,6 +61,11 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 	if err := coord.run(context.Background()); err != nil {
 		return err
 	}
+	fmt.Println("Deep Work session landed.")
+	if state.HandoffPath != "" {
+		fmt.Printf("  handoff:  %s\n", state.HandoffPath)
+	}
+	fmt.Println("  inspect:  stint deep status")
 	return nil
 }
 
