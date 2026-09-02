@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,12 +20,23 @@ import (
 const DefaultBaseURL = "https://console.vast.ai"
 const discoveryPriceCeilingUSD = 0.60
 const vastOnDemandType = "on-demand"
+const defaultSearchRequestAttempts = 4
+const defaultSearchRetryBaseDelay = time.Second
+const maxSearchRetryDelay = 8 * time.Second
 
 type SearchOptions struct {
-	Hours          float64
-	Limit          int
-	StorageGB      float64
-	MinCUDAMaxGood float64
+	Hours              float64
+	Limit              int
+	StorageGB          float64
+	MinCUDAMaxGood     float64
+	SkipDiscoveryTrace bool
+}
+
+type SearchRetryEvent struct {
+	Attempt     int
+	MaxAttempts int
+	Delay       time.Duration
+	RateLimited bool
 }
 
 type DiscoveryStage struct {
@@ -49,9 +61,12 @@ type Provider interface {
 }
 
 type Client struct {
-	APIKey     string
-	BaseURL    string
-	HTTPClient *http.Client
+	APIKey        string
+	BaseURL       string
+	HTTPClient    *http.Client
+	OnSearchRetry func(SearchRetryEvent)
+	sleepFn       func(context.Context, time.Duration) error
+	jitterFn      func(time.Duration) time.Duration
 }
 
 type rawOffer struct {
@@ -82,6 +97,7 @@ type APIError struct {
 	StatusCode int
 	Status     string
 	Detail     string
+	RetryAfter string
 }
 
 func (e *APIError) Error() string {
@@ -89,6 +105,18 @@ func (e *APIError) Error() string {
 		return fmt.Sprintf("Vast API %s: %s", e.Status, e.Detail)
 	}
 	return "Vast API " + e.Status
+}
+
+type searchTransportError struct {
+	err error
+}
+
+func (e *searchTransportError) Error() string {
+	return "search Vast offers: " + e.err.Error()
+}
+
+func (e *searchTransportError) Unwrap() error {
+	return e.err
 }
 
 func NewClient(apiKey string) *Client {
@@ -149,6 +177,9 @@ func (c *Client) SearchOffers(ctx context.Context, profile core.Profile, options
 		return nil, classifySearchError(err)
 	}
 	if len(raw) == 0 {
+		if options.SkipDiscoveryTrace {
+			return []core.Offer{}, nil
+		}
 		stages, traceErr := c.traceDiscovery(ctx, profile, options.Hours, limit, storageGB)
 		if traceErr != nil {
 			return nil, traceErr
@@ -284,7 +315,7 @@ func classifySearchError(err error) error {
 		case http.StatusForbidden:
 			return errors.New("Vast API key lacks misc/search permission")
 		case http.StatusTooManyRequests:
-			return errors.New("Vast API rate limit reached; retry later")
+			return errors.New("Vast API rate limit remained active after retries; retry later")
 		}
 	}
 	return err
@@ -295,6 +326,36 @@ func (c *Client) search(ctx context.Context, payload map[string]any) ([]rawOffer
 	if err != nil {
 		return nil, fmt.Errorf("encode Vast offer search: %w", err)
 	}
+
+	for attempt := 1; attempt <= defaultSearchRequestAttempts; attempt++ {
+		raw, searchErr := c.searchOnce(ctx, body)
+		if searchErr == nil {
+			return raw, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if attempt == defaultSearchRequestAttempts || !isTransientSearchError(searchErr) {
+			return nil, searchErr
+		}
+
+		delay := c.searchRetryDelay(attempt, searchErr)
+		if c.OnSearchRetry != nil {
+			c.OnSearchRetry(SearchRetryEvent{
+				Attempt:     attempt,
+				MaxAttempts: defaultSearchRequestAttempts,
+				Delay:       delay,
+				RateLimited: isRateLimitError(searchErr),
+			})
+		}
+		if sleepErr := c.sleep(ctx, delay); sleepErr != nil {
+			return nil, sleepErr
+		}
+	}
+	return nil, errors.New("Vast marketplace search retry loop exited unexpectedly")
+}
+
+func (c *Client) searchOnce(ctx context.Context, body []byte) ([]rawOffer, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/api/v0/bundles"), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build Vast offer search request: %w", err)
@@ -303,7 +364,7 @@ func (c *Client) search(ctx context.Context, payload map[string]any) ([]rawOffer
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("search Vast offers: %w", err)
+		return nil, &searchTransportError{err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -315,6 +376,94 @@ func (c *Client) search(ctx context.Context, payload map[string]any) ([]rawOffer
 		return nil, fmt.Errorf("decode Vast offer search response: %w", err)
 	}
 	return result.Offers, nil
+}
+
+func isTransientSearchError(err error) bool {
+	var transportErr *searchTransportError
+	if errors.As(err, &transportErr) {
+		return true
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.StatusCode {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func isRateLimitError(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusTooManyRequests
+}
+
+func (c *Client) searchRetryDelay(attempt int, err error) time.Duration {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if retryAfter, ok := parseRetryAfter(apiErr.RetryAfter, time.Now()); ok {
+			return retryAfter
+		}
+	}
+
+	delay := defaultSearchRetryBaseDelay << (attempt - 1)
+	if delay > maxSearchRetryDelay {
+		delay = maxSearchRetryDelay
+	}
+	return delay + c.retryJitter(delay)
+}
+
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second, true
+	}
+	when, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	delay := when.Sub(now)
+	if delay < 0 {
+		delay = 0
+	}
+	return delay, true
+}
+
+func (c *Client) retryJitter(delay time.Duration) time.Duration {
+	if c.jitterFn != nil {
+		return c.jitterFn(delay)
+	}
+	maxJitter := delay / 4
+	if maxJitter <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(maxJitter) + 1))
+}
+
+func (c *Client) sleep(ctx context.Context, delay time.Duration) error {
+	if c.sleepFn != nil {
+		return c.sleepFn(ctx, delay)
+	}
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func normalizeOffer(item rawOffer) core.Offer {
@@ -374,7 +523,12 @@ func decodeAPIError(resp *http.Response) error {
 			detail = parsed.Error
 		}
 	}
-	return &APIError{StatusCode: resp.StatusCode, Status: resp.Status, Detail: detail}
+	return &APIError{
+		StatusCode: resp.StatusCode,
+		Status:     resp.Status,
+		Detail:     detail,
+		RetryAfter: resp.Header.Get("Retry-After"),
+	}
 }
 
 func FixtureOffers(profile string) []core.Offer {
