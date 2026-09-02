@@ -51,8 +51,8 @@ func buildHandoff(s deep.DeepState, reason string, now time.Time, finalVerify st
 	switch {
 	case s.Verify == "":
 		b.WriteString("The mission defines no verification command; task results above reflect worker reports (unverified by the coordinator).\n")
-	case finalVerify == "":
-		b.WriteString("Final verification did not run.\n")
+	case strings.TrimSpace(finalVerify) == "":
+		b.WriteString("Final verification produced no pass/fail signal; treat results as unverified.\n")
 	default:
 		trimmed := strings.TrimSpace(finalVerify)
 		if len(trimmed) > 2000 {

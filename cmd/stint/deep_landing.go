@@ -141,7 +141,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	if c.state.Phase == deep.PhaseLanded || c.state.Phase == deep.PhaseStopped {
 		return nil
 	}
-	c.state.Phase = deep.PhaseLanding
+	c.state.Phase = deep.PhaseLanded
 	c.save()
 	c.logf("landing: %s", reason)
 
@@ -155,8 +155,22 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 
 	finalVerify := ""
 	if c.state.Verify != "" {
-		out, _, _ := runVerifyCmd(ctx, c.state.Verify, c.state.WorktreePath)
-		finalVerify = out
+		out, ok, _ := runVerifyCmd(ctx, c.state.Verify, c.state.WorktreePath)
+		// A silent command (test/grep -q) can pass without printing anything,
+		// so pass/fail is reported separately from the captured output.
+		if ok {
+			finalVerify = "passed"
+		} else {
+			finalVerify = "FAILED"
+		}
+		if strings.TrimSpace(out) != "" {
+			finalVerify = out
+			if ok {
+				finalVerify = "passed\n" + out
+			} else {
+				finalVerify = "FAILED\n" + out
+			}
+		}
 	}
 
 	handoff := buildHandoff(*c.state, reason, now, finalVerify, c.repoSummary())

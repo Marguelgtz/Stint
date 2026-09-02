@@ -168,7 +168,7 @@ Explicit record of what the historical baseline assumed and this run rejects:
 | DWX-007 | `stint deep status` (+ `--json`) | DWX-005 | COMPLETED (run 3) |
 | DWX-008 | `stint deep resume` (coordinator recovery from state; compute via existing machinery) | DWX-006 | queued |
 | DWX-009 | Offline E2E: fake cline + fake clock (continuation, park, landing, handoff), race-clean | DWX-006 | COMPLETED (run 3) |
-| DWX-010 | Live bounded mission run + findings + constant calibration | DWX-009 | ACTIVE |
+| DWX-010 | Live bounded mission run + findings + constant calibration | DWX-009 | COMPLETED (run 3, session 20260902-180013) |
 | DWX-011 | Docs: `docs/DEEP_WORK.md`, CLI.md/README deep sections, mission skeleton | DWX-010 | queued |
 | DWX-012 | Open `deep` profile in rental pipeline (`stint deep start` self-rents) | DWX-010 | DEFERRED |
 | DWX-013 | Live `stint deep plan` | — | DEFERRED |
@@ -240,6 +240,11 @@ Explicit record of what the historical baseline assumed and this run rejects:
   stream truncation); progress-only streams count as NOT completed. The adapter also
   enforces `execInput.timeout` as its own context bound so any direct caller (tests,
   future executors) gets hard bounding even if the coordinator forgets its wrapper.
+* **F-DW-010 — Silent verification commands (live run)**: `test … && grep -q …` passes
+  with empty output, which the first landing reported as "Final verification did not
+  run". Fixed: landing reports pass/fail as its own signal (output is supplementary),
+  and the handoff phase renders as `landed`. Regression test
+  `TestDeepLandingSilentVerifyReported`.
 
 ## 9. Validation evidence
 
@@ -288,6 +293,43 @@ executor/clock:
 Full suite: `go build ./...` OK; `go test -race -count=1 ./...` green
 (`internal/deep` + `cmd/stint` + all pre-existing packages). gofmt clean.
 
+**DWX-010 (live bounded mission, run 3, session `20260902-180013`)** —
+`/tmp/stint-deep deep start --mission /tmp/dw-live-1/mission.md --repo /tmp/dw-live-1
+--task-timeout 3m --max-attempts 2 --model qwen3.8-27b`, riding the live READY
+session (instance 49668730, deadline 18:28:47Z). The coordinator started its own
+worktree (`/tmp/dw-live-1/.stint-deep/20260902-180013`, branch
+`stint/deep-20260902-180013`) and ran four real Cline→NInfer invocations, landing
+itself in **1m18s** (deadline untouched):
+
+* T-001 (create `a.txt`): attempt 1 — Cline reported `completed` (22 s, 6
+  iterations); the coordinator ran the mission verify command, it failed
+  (`done.txt` absent), so the task transitioned **INCOMPLETE → continuation**:
+  a fresh invocation with reconstructed context (task ID/objective, previous
+  attempt result, branch/HEAD/log/dirty state).
+* T-001 attempt 2 — Cline correctly recognized attempt 1's file already satisfied
+  T-001's acceptance (24 s); mission verify still failed (T-001's scope cannot
+  produce `done.txt`), attempt cap reached → **BLOCKED** ("verification did not
+  pass") and parked.
+* T-002 (create `done.txt`): one Cline invocation (33 s) → mission verify
+  **passed** → **VERIFIED** + checkpoint commit.
+* Landing: "no safe useful work remaining"; truthful handoff written to state dir
+  and worktree (`T-001 blocked/2 attempts`, `T-002 verified/1`), final state
+  persisted atomically; `deep.json` phase `landed`.
+* Independent re-check after landing: `test -f a.txt && test -f done.txt && grep -q
+  ok done.txt` → pass (`alpha` / `ok` present); worktree log:
+  `baseline → add mission → T-002 verified → handoff`.
+* Calibration signals for DWX-010 follow-up: 3 m task timeout was never close to
+  binding (largest invocation 33 s); attempt cap 2 parked a correctly-scoped task
+  that was unsatisfiable under the mission-level verify command — per-task
+  acceptance commands (vs one mission-level command) is the next precision step;
+  landing window (10 m) unused.
+
+**Gate C/D verdict (MVP):** the offline unit proofs (above) plus the live session
+prove the core loop end-to-end: fresh invocations continue from durable state +
+git alone, workers' self-reports are never trusted without coordinator
+verification, unsatisfiable tasks park without stalling the mission, and the
+session lands before the deadline with an honest handoff.
+
 ## 10. Blockers
 
 None. (Deadline pressure is managed: the live run must land before the session deadline;
@@ -306,7 +348,8 @@ already-active rental.
    `/home/marguel/Documents/projects/stint-deepwork` (branch `feat/deep-work-mvp`,
    cut from `bbf3037`). Do NOT write Deep Work files into the shared checkout
    `~/Documents/projects/Stint` (F-DW-007).
-2. Active task DWX-010 (live bounded mission run), in order:
+2. DWX-010 is COMPLETED (run 3, evidence in §9). The procedure below is retained
+   as the recipe for future calibration runs:
    a. Pre-flight (before spending): `date -u`; `cat ~/.local/state/stint/session.json`
       (READY + deadline in future?); `curl -s -m 3 http://127.0.0.1:8409/v1/models`.
       If the session is gone, `stint start interactive` (or `stint resume`) first —
@@ -330,6 +373,7 @@ already-active rental.
 3. Conventions (unchanged): zero third-party deps, atomic 0600 JSON state under
    `~/.local/state/stint/deep/<id>/`, executor behind an interface, orchestration in
    `cmd/stint` (F-019), fake cline binary + fake clock for tests, `go test -race ./...`.
-4. After DWX-010: DWX-008 (`stint deep resume` — coordinator restart from durable
-   state; compute re-establishment is the existing `stint resume` machinery) and
-   DWX-011 (docs package: mission-file skeleton, operator guide, `docs/DEEP_WORK.md`).
+4. Next tasks: DWX-008 (`stint deep resume` — coordinator restart from durable
+   state; compute re-establishment is the existing `stint resume` machinery),
+   DWX-011 (docs package: mission-file skeleton, operator guide, `docs/DEEP_WORK.md`),
+   then the calibration follow-ups recorded in §9 (per-task acceptance commands).

@@ -298,3 +298,26 @@ func TestLandingDeadline(t *testing.T) {
 		t.Errorf("20m window lands %s before deadline, want 5m (quarter)", got)
 	}
 }
+// A silent passing verification command (test/grep -q) must be reported as
+// passed in the handoff, not as "did not run" (live-run finding, F-DW-010).
+func TestDeepLandingSilentVerifyReported(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Verify = "true" // silent passing command
+	if err := env.coord.land(context.Background(), "test landing"); err != nil {
+		t.Fatalf("land: %v", err)
+	}
+	if env.state.Phase != deep.PhaseLanded {
+		t.Errorf("phase = %s, want landed", env.state.Phase)
+	}
+	data, err := os.ReadFile(env.state.HandoffPath)
+	if err != nil {
+		t.Fatalf("handoff missing: %v", err)
+	}
+	handoff := string(data)
+	if strings.Contains(handoff, "did not run") {
+		t.Errorf("silent passing verify misreported as not run:\n%s", handoff)
+	}
+	if !strings.Contains(handoff, "passed") {
+		t.Errorf("handoff does not report the passing verify:\n%s", handoff)
+	}
+}
