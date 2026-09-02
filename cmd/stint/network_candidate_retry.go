@@ -119,6 +119,14 @@ func (p *startupCandidatePool) queued() int {
 	return len(p.queue)
 }
 
+// needsRefill deliberately waits until the current marketplace snapshot has
+// been exhausted. A missing slot alone is not a reason to query Vast again;
+// queued unseen candidates should be tried first to avoid request amplification
+// and unnecessary rate-limit pressure.
+func (p *startupCandidatePool) needsRefill() bool {
+	return p.canTryPaid() && len(p.queue) == 0
+}
+
 func (p *startupCandidatePool) missingSlots() int {
 	remainingAttempts := p.limit - p.paidAttempts
 	if remainingAttempts <= len(p.queue) {
