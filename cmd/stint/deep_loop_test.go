@@ -124,7 +124,7 @@ func newTestEnv(t *testing.T, script map[int]execResult, maxAttempts int) *testE
 		executor:    fake,
 		now:         func() time.Time { return clk.now },
 		taskTimeout: time.Minute,
-		verify:      func(_ context.Context, _ string) (string, bool, error) { return "", false, nil },
+		verify:      func(_ context.Context, _, _ string) (string, bool, error) { return "", false, nil },
 		logf:        func(string, ...any) {},
 		out:         io.Discard,
 		git:         g,
@@ -367,5 +367,79 @@ func TestDeepLoopExternalStopBeatsInFlightTask(t *testing.T) {
 	}
 	if fresh.Tasks[0].Status == deep.StatusVerified {
 		t.Errorf("in-flight outcome was persisted after the stop: %s", fresh.Tasks[0].Status)
+	}
+}
+
+// The live-run calibration gap: a mission-level verify command that is
+// broader than any one task's scope parks correctly scoped tasks. A per-task
+// verify command closes it: the task is checked by its own command while the
+// over-broad mission command still applies to tasks without one.
+func TestDeepLoopPerTaskVerifyOverridesMissionVerify(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Verify = "over-broad mission command"
+	env.state.Tasks[0].Verify = "scoped task command"
+	if err := env.state.SaveDir(env.coord.stateDir); err != nil {
+		t.Fatal(err)
+	}
+	env.coord.verify = func(_ context.Context, command, _ string) (string, bool, error) {
+		if strings.Contains(command, "scoped") {
+			return "task check ok", true, nil
+		}
+		return "", false, nil
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	a, b := env.state.Tasks[0], env.state.Tasks[1]
+	if a.Status != deep.StatusVerified || a.Attempts != 1 {
+		t.Errorf("task A = %+v, want verified on attempt 1 by its own command", a)
+	}
+	// Task B has no per-task command: the over-broad mission command fails
+	// every attempt until the cap, then parks — and that no longer blocks A.
+	if b.Status != deep.StatusBlocked || b.Attempts != 3 || !strings.Contains(b.Blocker, "verification") {
+		t.Errorf("task B = %+v, want blocked after the cap under the mission command", b)
+	}
+	if env.state.Phase != deep.PhaseLanded {
+		t.Errorf("phase = %s, want landed", env.state.Phase)
+	}
+	if env.fake.calls != 4 {
+		t.Errorf("executor called %d times, want 4 (A x1, B x3)", env.fake.calls)
+	}
+}
+
+// With no mission-level command, a per-task command verifies its task and
+// command-less tasks fall back to completed-invocation acceptance; the
+// handoff must keep the two truths apart.
+func TestDeepLoopPerTaskVerifyWithoutMissionVerify(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks[0].Verify = "scoped task command"
+	if err := env.state.SaveDir(env.coord.stateDir); err != nil {
+		t.Fatal(err)
+	}
+	env.coord.verify = func(_ context.Context, command, _ string) (string, bool, error) {
+		if strings.Contains(command, "scoped") {
+			return "task check ok", true, nil
+		}
+		return "", false, nil
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if env.state.Tasks[0].Status != deep.StatusVerified {
+		t.Errorf("task A = %s, want verified by its own command", env.state.Tasks[0].Status)
+	}
+	if env.state.Tasks[1].Status != deep.StatusVerified {
+		t.Errorf("task B = %s, want verified (clean completion, no command)", env.state.Tasks[1].Status)
+	}
+	data, err := os.ReadFile(env.state.HandoffPath)
+	if err != nil {
+		t.Fatalf("handoff missing: %v", err)
+	}
+	handoff := string(data)
+	if !strings.Contains(handoff, "task verify passed (`scoped task command`)") {
+		t.Errorf("handoff missing the task-verify evidence label:\n%s", handoff)
+	}
+	if !strings.Contains(handoff, "worker reported completion (no verify command defined)") {
+		t.Errorf("handoff missing the worker-report label for the command-less task:\n%s", handoff)
 	}
 }

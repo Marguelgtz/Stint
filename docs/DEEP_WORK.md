@@ -111,8 +111,10 @@ go test ./internal/session/ -count=1
 ## Tasks
 - [ ] T-001: reproduce the resume flake with a failing test
   - acceptance: a test that fails on the current code exists and is committed
+  - verify: go test ./internal/session/ -run TestResume -count=1
 - [ ] T-002: fix the root cause in the resume path
   - acceptance: the reproduction test passes and the package suite is green
+  - verify: go test ./internal/session/ -count=1
 - [ ] T-003: document the resume contract in docs/
   - acceptance: a short section exists and matches the implemented behavior
 ```
@@ -128,6 +130,7 @@ go test ./internal/session/ -count=1
 | Verification | `## Verification` + first line | a shell command Stint runs **in the worktree** after every task attempt and at landing; 3-minute cap |
 | Tasks | `- [ ] ID: objective` | **required, ≥ 1**; `*` or plain `-` also work; `[x]` marks pre-done |
 | Per-task acceptance | indented `- acceptance: …` | human-readable evidence description; included in the prompt |
+| Per-task verify command | indented `- verify: <shell command>` | run by the coordinator in the worktree after each attempt of **this task**; takes precedence over the mission-level `## Verification` for that task; the prompt tells the worker the exact command |
 
 Task IDs are 1–32 chars of letters, digits, `_`, `-`, and must be unique.
 
@@ -139,9 +142,13 @@ Task IDs are 1–32 chars of letters, digits, `_`, `-`, and must be unique.
 2. **Acceptance you can check.** The coordinator runs your `Verification` command after
    each attempt. If the command can't tell success from failure, neither can Stint — it
    will honestly report *unverified* and eventually park the task.
-3. **Scope one verification command per mission** (MVP behavior). If different tasks need
-   different checks, write a small script the worker can run and make `Verification`
-   invoke it. (Per-task acceptance commands are the next precision step, not yet done.)
+3. **Scope verification per task when the mission command is broader.** A mission
+   `## Verification` command applies to *every* task — if it only passes once all the
+   work is done, early correctly-scoped tasks fail it and park. Give such tasks a
+   per-task `- verify:` command that checks their own scope (it overrides the mission
+   command for that task, and appears in the worker's prompt); keep the mission command
+   as the final landing check. If every task is independently checkable, per-task
+   commands alone are fine — the mission-level final check simply doesn't run.
 4. **Keep the list short** (3–8 tasks), ordered by dependency: earlier tasks' work is
    committed before later tasks start, and later invocations see it in the repository state.
 5. **Constraints are guidance; policy is the rail.** The worktree, local-only commits, and
@@ -181,8 +188,9 @@ Each iteration the coordinator:
 ### Acceptance (the part that makes it Deep *Work*)
 
 When the invocation ends, Stint does **not** ask the worker "did you finish?". It runs
-your `Verification` command in the worktree (if the mission defines one) and reads the
-result. Only then does it transition the task:
+the verification command in the worktree and reads the result — the task's own
+`- verify:` command when the task defines one, else the mission's `## Verification`
+command. Only then does it transition the task:
 
 | Outcome | Transition |
 | --- | --- |
@@ -191,13 +199,18 @@ result. Only then does it transition the task:
 | attempts exhausted (default cap 3) | `blocked` with a blocker string → park, continue with the next task |
 | worker invocation itself failed (nonzero exit / no completion event) | same as above — the failure is recorded as the task's blocker evidence |
 
-Without a `## Verification` command, a cleanly completed invocation is accepted but the
-handoff marks the result **unverified (worker report)** — truthfulness over optimism.
+Without any verification command (per-task or mission-level), a cleanly completed
+invocation is accepted but the handoff marks the result **unverified (worker report)**
+— truthfulness over optimism. A per-task command verifies only its task; the final
+mission-level check at landing is a separate, cumulative statement about the whole
+branch.
 
 ### Landing
 
 When no safe useful work remains (or the window is reached), the coordinator: parks any
-`active` task as `incomplete`, runs the final verification, checkpoints the worktree,
+`active` task as `incomplete`, runs the final verification (the mission-level command,
+when the mission defines one — per-task commands are per-task and do not run at
+landing), checkpoints the worktree,
 writes `handoff.md` (state dir **and** worktree root as `DEEP_WORK_HANDOFF.md`), and
 persists the final state atomically. The handoff distinguishes *verified* evidence,
 *worker claims*, and *unresolved uncertainty*, and ends with the exact next action:
@@ -323,7 +336,7 @@ verification can pass on its own, or use a verify command that checks cumulative
 | `the cline CLI was not found on PATH` | `npm i -g cline` |
 | `resolve model from the Stint endpoint` | endpoint down or no models: check `curl http://127.0.0.1:8409/v1/models`, `stint status` |
 | `has uncommitted tracked changes` | commit or stash in the repo before starting |
-| every task lands `blocked: verification did not pass` | the verify command is stricter than any single task's scope — split it, or make tasks cumulative (see §8) |
+| every task lands `blocked: verification did not pass` | the mission verify command is stricter than any single task's scope — give tasks a per-task `- verify:` command (§3), or make tasks cumulative (see §8) |
 | task `blocked: invocation did not complete` | read the blocker's stderr tail in `deep.json`/handoff: auth, model, or Cline CLI failure — fix the endpoint/Cline config and re-launch |
 | session landed early with tasks `queued` | the landing window closed first; extend your session and re-launch the same mission |
 | Cline invocations seem slow | that's the model, not the coordinator: `run_result` durations are in `coordinator.log`; a bigger model or more context = slower |

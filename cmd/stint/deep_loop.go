@@ -22,10 +22,12 @@ type deepCoordinator struct {
 	executor    executor
 	now         func() time.Time
 	taskTimeout time.Duration
-	verify      func(ctx context.Context, workdir string) (string, bool, error)
-	logf        func(format string, args ...any)
-	out         io.Writer
-	git         *gitRunner
+	// verify runs one verification command in the worktree; the coordinator
+	// decides which command (the task's own, else the mission's) to hand it.
+	verify func(ctx context.Context, command, workdir string) (string, bool, error)
+	logf   func(format string, args ...any)
+	out    io.Writer
+	git    *gitRunner
 }
 
 // execInputFor builds the per-task invocation from the session-wide config.
@@ -137,14 +139,21 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) {
 	}
 }
 
-// accept checks the mission's verification command (when the mission defines
-// one). Without a verify command the worker's completion is recorded but the
-// handoff marks the result unverified.
+// accept checks repository evidence for the attempt: the task's own
+// verification command when it defines one, else the mission-level command
+// (a per-task command is the precision step for missions whose single
+// command is broader than any one task's scope). With no command at all,
+// the worker's completion is recorded but the handoff marks the result
+// unverified.
 func (c *deepCoordinator) accept(t *deep.Task, res execResult) (bool, string) {
-	if c.state.Verify == "" {
+	command := t.Verify
+	if command == "" {
+		command = c.state.Verify
+	}
+	if command == "" {
 		return res.completed && res.exitCode == 0, ""
 	}
-	out, ok, _ := c.verify(context.Background(), c.state.WorktreePath)
+	out, ok, _ := c.verify(context.Background(), command, c.state.WorktreePath)
 	return ok, out
 }
 

@@ -90,6 +90,26 @@ func TestParseMissionFencedVerification(t *testing.T) {
 	}
 }
 
+func TestParseMissionPerTaskVerify(t *testing.T) {
+	mission := "# x\n\n## Objective\no\n\n## Verification\ngo test ./...\n\n## Tasks\n- [ ] T1: a\n  - acceptance: a is done\n  - verify: test -f a.txt\n- [ ] T2: b\n  - acceptance: b is done\n"
+	m, err := ParseMission(mission)
+	if err != nil {
+		t.Fatalf("ParseMission: %v", err)
+	}
+	if m.Verify != "go test ./..." {
+		t.Errorf("mission verify = %q", m.Verify)
+	}
+	if m.Tasks[0].Verify != "test -f a.txt" {
+		t.Errorf("T1 verify = %q, want the per-task command", m.Tasks[0].Verify)
+	}
+	if m.Tasks[0].Acceptance != "a is done" {
+		t.Errorf("T1 acceptance = %q", m.Tasks[0].Acceptance)
+	}
+	if m.Tasks[1].Verify != "" {
+		t.Errorf("T2 verify = %q, want empty (no per-task command)", m.Tasks[1].Verify)
+	}
+}
+
 func TestStateRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 9, 2, 15, 0, 0, 0, time.UTC)
@@ -194,6 +214,44 @@ func TestBuildTaskPromptReconstruction(t *testing.T) {
 		}
 	}
 }
+func TestTaskVerifyInPromptAndRoundTrip(t *testing.T) {
+	mission := "# x\n\n## Objective\no\n\n## Tasks\n- [ ] T1: a\n  - acceptance: a is done\n  - verify: test -f a.txt\n- [ ] T2: b\n"
+	m, err := ParseMission(mission)
+	if err != nil {
+		t.Fatalf("ParseMission: %v", err)
+	}
+	prompt := BuildTaskPrompt(m, m.Tasks[0], 1, RepoSummary{Branch: "stint/deep-x"})
+	for _, want := range []string{"VERIFY COMMAND", "test -f a.txt"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q (the worker must know the exact command it will be checked by)\nprompt:\n%s", want, prompt)
+		}
+	}
+	// A task without a per-task command must not get one in the prompt.
+	plain := BuildTaskPrompt(m, m.Tasks[1], 1, RepoSummary{Branch: "stint/deep-x"})
+	if strings.Contains(plain, "VERIFY COMMAND") {
+		t.Errorf("task without a per-task verify got a verify line:\n%s", plain)
+	}
+
+	// The per-task command is durable state: it survives the deep.json round
+	// trip, which is what `stint deep resume` reconstructs.
+	dir := t.TempDir()
+	now := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	state := NewState(NewSessionID(now), m, "/repo", "/worktree", now.Add(time.Hour), now.Add(50*time.Minute), 3, now)
+	if err := state.SaveDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadState(dir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Tasks[0].Verify != "test -f a.txt" {
+		t.Errorf("T1 verify after round trip = %q", loaded.Tasks[0].Verify)
+	}
+	if loaded.Tasks[1].Verify != "" {
+		t.Errorf("T2 verify after round trip = %q, want empty", loaded.Tasks[1].Verify)
+	}
+}
+
 func TestExecSettingsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC)

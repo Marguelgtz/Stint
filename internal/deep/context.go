@@ -46,6 +46,9 @@ func BuildTaskPrompt(m Mission, t Task, attempt int, repo RepoSummary) string {
 	if t.Acceptance != "" {
 		fmt.Fprintf(&b, "ACCEPTANCE: %s\n", t.Acceptance)
 	}
+	if t.Verify != "" {
+		fmt.Fprintf(&b, "VERIFY COMMAND (the coordinator runs this in the worktree to check your work; make it pass): %s\n", t.Verify)
+	}
 	if t.LastResult != "" {
 		fmt.Fprintf(&b, "PREVIOUS ATTEMPT RESULT (attempt %d):\n%s\n", attempt-1, t.LastResult)
 	}

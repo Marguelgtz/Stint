@@ -45,8 +45,8 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 		executor:    newClineExecutor("cline"),
 		now:         func() time.Time { return time.Now().UTC() },
 		taskTimeout: cfg.taskTimeout,
-		verify: func(ctx context.Context, workdir string) (string, bool, error) {
-			return runVerifyCmd(ctx, state.Verify, workdir)
+		verify: func(ctx context.Context, command, workdir string) (string, bool, error) {
+			return runVerifyCmd(ctx, command, workdir)
 		},
 		logf: func(format string, args ...any) { deep.AppendLog(stateDir, *state, format, args...) },
 		out:  os.Stdout,
