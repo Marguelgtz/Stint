@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -92,15 +93,44 @@ func runDeepResume(args []string) error {
 		return fmt.Errorf("compute session deadline has passed; run `stint resume` or `stint start interactive` first")
 	}
 
-	// 4. Executor: the Cline CLI must be reachable.
-	if _, err := lookPath("cline"); err != nil {
-		return errors.New("the cline CLI was not found on PATH (install with: npm i -g cline)")
+	// 4. Executor: Cline on PATH (local worker) or Hermes on the box
+	//    (remote worker) must be reachable. The worker is session-level
+	//    policy, reconstructed from the persisted settings.
+	exec := resolveExecSettings(&state, execOverrides{
+		autoApprove: f.autoApproveValue(),
+		provider:    f.provider,
+		clineConfig: f.clineConfig,
+		taskTimeout: f.taskTimeout,
+	})
+	workerID := exec.Worker
+	if workerID == "" {
+		workerID = workerCline
+	}
+	remote := workerID == workerHermes
+	var remoteFn remoteCmd
+	if remote {
+		remoteFn = newRemoteCmd(paths, session)
+	}
+	if remote {
+		if _, err := remoteFn(context.Background(), "true"); err != nil {
+			return fmt.Errorf("cannot reach the compute box over SSH (%v); check the session (`stint status`)", err)
+		}
+	} else {
+		if _, err := lookPath("cline"); err != nil {
+			return errors.New("the cline CLI was not found on PATH (install with: npm i -g cline)")
+		}
 	}
 
 	// 5. Repository: it must still be a git repository. The clean-tree check
 	//    is skipped on purpose: the session's worktree already holds the
 	//    session's state; the developer's checkout is untouched either way.
-	git := newGitRunner()
+	//    For the remote worker the repo lives on the box.
+	var git gitOps
+	if remote {
+		git = &remoteGit{remote: remoteFn}
+	} else {
+		git = newGitRunner()
+	}
 	if _, err := git.repoHead(state.RepoPath); err != nil {
 		return fmt.Errorf("%s is no longer a git repository: %v", state.RepoPath, err)
 	}
@@ -112,17 +142,12 @@ func runDeepResume(args []string) error {
 	}
 
 	// 7. Workspace: restore the worktree if a crash or cleanup lost it.
-	if err := ensureDeepWorktree(git, &state); err != nil {
+	if err := ensureDeepWorktree(git, remote, &state); err != nil {
 		return err
 	}
 
-	// 8. Executor settings: persisted from start, with flag overrides.
-	exec := resolveExecSettings(&state, execOverrides{
-		autoApprove: f.autoApproveValue(),
-		provider:    f.provider,
-		clineConfig: f.clineConfig,
-		taskTimeout: f.taskTimeout,
-	})
+	// 8. Executor settings: `exec` was resolved in step 4; apply the model
+	//    override (persisted value, else the first model the endpoint serves).
 	modelID := f.model
 	if modelID == "" {
 		modelID = exec.Model
@@ -156,6 +181,7 @@ func runDeepResume(args []string) error {
 	deep.AppendIncident(paths.StateDir, state, deep.IncidentResumed, "", stateNote)
 
 	return deepRunSession(paths.StateDir, &state, &deepRunConfig{
+		worker:          workerID,
 		autoApprove:     exec.AutoApprove,
 		allowedCommands: exec.AllowedCommands,
 		provider:        exec.Provider,
@@ -165,6 +191,8 @@ func runDeepResume(args []string) error {
 		taskTimeout:     time.Duration(exec.TaskTimeoutSec) * time.Second,
 		missionName:     state.MissionName,
 		taskCount:       len(state.Tasks),
+		remote:          remoteFn,
+		paths:           paths,
 	}, git, true)
 }
 
@@ -258,13 +286,22 @@ func resolveExecSettings(st *deep.DeepState, o execOverrides) *deep.ExecSettings
 // `git worktree remove` may have lost the directory; the branch still holds
 // every checkpoint commit, so re-attaching recovers the work. A missing
 // branch is unrecoverable: that is a fresh `stint deep start`, not a resume.
-func ensureDeepWorktree(g *gitRunner, state *deep.DeepState) error {
-	if info, err := os.Stat(state.WorktreePath); err == nil && info.IsDir() {
+// When remote is true the worktree lives on the compute box, so its
+// presence is probed through the (remote) git seam rather than the local
+// filesystem.
+func ensureDeepWorktree(g gitOps, remote bool, state *deep.DeepState) error {
+	if remote {
 		if g.worktreeUsable(state.WorktreePath) {
 			return nil
 		}
-		return fmt.Errorf("worktree %s is not a usable git worktree (the repository may have moved); run `git -C %s worktree repair` and retry",
-			state.WorktreePath, state.RepoPath)
+	} else {
+		if info, err := os.Stat(state.WorktreePath); err == nil && info.IsDir() {
+			if g.worktreeUsable(state.WorktreePath) {
+				return nil
+			}
+			return fmt.Errorf("worktree %s is not a usable git worktree (the repository may have moved); run `git -C %s worktree repair` and retry",
+				state.WorktreePath, state.RepoPath)
+		}
 	}
 	if !g.branchExists(state.RepoPath, state.Branch) {
 		return fmt.Errorf("the worktree (%s) and its branch (%s) are gone; start a fresh session with `stint deep start`",

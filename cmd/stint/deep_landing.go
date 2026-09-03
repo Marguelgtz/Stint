@@ -195,7 +195,16 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 
 	finalVerify := ""
 	if c.state.Verify != "" {
-		out, ok, _ := runVerifyCmd(ctx, c.state.Verify, c.state.WorktreePath)
+		// The landing check runs the mission-level command in the session's
+		// worktree, local or on the compute box. Sessions without a wired
+		// finalVerify seam (tests, the local stop path) use the local runner.
+		run := c.finalVerify
+		if run == nil {
+			run = func(ctx context.Context, command string) (string, bool, error) {
+				return runVerifyCmd(ctx, command, c.state.WorktreePath)
+			}
+		}
+		out, ok, _ := run(ctx, c.state.Verify)
 		// A silent command (test/grep -q) can pass without printing anything,
 		// so pass/fail is reported separately from the captured output.
 		if ok {
@@ -218,7 +227,15 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	if err := writeAtomicFile(handoffPath, []byte(handoff)); err != nil {
 		c.logf("WARNING: write handoff: %v", err)
 	}
-	_ = os.WriteFile(filepath.Join(c.state.WorktreePath, "DEEP_WORK_HANDOFF.md"), []byte(handoff), 0o644)
+	worktreeWrite := c.worktreeWrite
+	if worktreeWrite == nil {
+		worktreeWrite = func(path string, data []byte) error {
+			return os.WriteFile(path, data, 0o644)
+		}
+	}
+	if err := worktreeWrite(filepath.Join(c.state.WorktreePath, "DEEP_WORK_HANDOFF.md"), []byte(handoff)); err != nil {
+		c.logf("WARNING: write worktree handoff: %v", err)
+	}
 
 	if _, err := c.git.commitAll(c.state.WorktreePath, fmt.Sprintf("deep: %s handoff", c.state.SessionID)); err != nil {
 		c.logf("handoff commit: %v", err)

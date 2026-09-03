@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,6 +35,7 @@ func runDeep(args []string) error {
 }
 
 type deepStartFlags struct {
+	worker        string
 	missionPath   string
 	repoPath      string
 	hours         float64
@@ -68,6 +70,9 @@ func runDeepStart(args []string) error {
 	fs := flag.NewFlagSet("deep start", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	f := &deepStartFlags{}
+	fs.StringVar(&f.worker, "worker", workerCline, "worker: cline (runs on this machine, the default) or "+
+		"hermes (Hermes agent plus all file/shell work on the compute box, model via the box's local endpoint; "+
+		"--repo is then the repo path ON THE BOX)")
 	fs.StringVar(&f.missionPath, "mission", "", "mission Markdown file (required)")
 	fs.StringVar(&f.repoPath, "repo", "", "target git repository path (required)")
 	fs.Float64Var(&f.hours, "hours", 0, "optional Deep Work duration cap in hours (default: the compute session deadline)")
@@ -91,6 +96,9 @@ func runDeepStart(args []string) error {
 	}
 	if f.maxAttempts < 1 {
 		return errors.New("--max-attempts must be at least 1")
+	}
+	if f.worker != workerCline && f.worker != workerHermes {
+		return fmt.Errorf("--worker must be %s or %s", workerCline, workerHermes)
 	}
 
 	paths, err := config.DefaultPaths()
@@ -121,9 +129,29 @@ func runDeepStart(args []string) error {
 		return fmt.Errorf("compute session deadline has passed; run `stint resume` or `stint start interactive` first")
 	}
 
-	// 3. Executor: the Cline CLI must be reachable.
-	if _, err := lookPath("cline"); err != nil {
-		return errors.New("the cline CLI was not found on PATH (install with: npm i -g cline)")
+	remote := f.worker == workerHermes
+	var remoteFn remoteCmd
+	if remote {
+		remoteFn = newRemoteCmd(paths, session)
+	}
+
+	// 3. Executor preflight: Cline on PATH (local worker), or SSH + Hermes
+	//    + the model endpoint reachable on the box (remote worker).
+	if remote {
+		if _, err := remoteFn(context.Background(), "true"); err != nil {
+			return fmt.Errorf("cannot reach the compute box over SSH (%v); the hermes worker runs on the box — "+
+				"check the session (`stint status`) or use --worker cline", err)
+		}
+		if out, err := remoteFn(context.Background(), "command -v hermes"); err != nil || strings.TrimSpace(out) == "" {
+			return errors.New("hermes was not found on the compute box (install it there first, or use --worker cline)")
+		}
+		if out, err := remoteFn(context.Background(), "curl -s -m 5 http://127.0.0.1:8080/v1/models"); err != nil || strings.TrimSpace(out) == "" {
+			return fmt.Errorf("the model endpoint is not answering on the box: %v", err)
+		}
+	} else {
+		if _, err := lookPath("cline"); err != nil {
+			return errors.New("the cline CLI was not found on PATH (install with: npm i -g cline)")
+		}
 	}
 
 	// 4. Model: from the flags, or the first model the endpoint serves.
@@ -135,8 +163,14 @@ func runDeepStart(args []string) error {
 		}
 	}
 
-	// 5. Repository: must be a git repo with no tracked modifications.
-	git := newGitRunner()
+	// 5. Repository: must be a git repo with no tracked modifications. For
+	//    the remote worker the repo (and its clean tree) is checked on the box.
+	var git gitOps
+	if remote {
+		git = &remoteGit{remote: remoteFn}
+	} else {
+		git = newGitRunner()
+	}
 	if _, err := git.repoHead(f.repoPath); err != nil {
 		return fmt.Errorf("%s is not a git repository: %v", f.repoPath, err)
 	}
@@ -168,6 +202,7 @@ func runDeepStart(args []string) error {
 	// can reconstruct identical invocations without a live endpoint or
 	// operator memory.
 	state.Exec = &deep.ExecSettings{
+		Worker:          f.worker,
 		AutoApprove:     f.autoApprove,
 		Provider:        f.provider,
 		Model:           modelID,
@@ -183,6 +218,7 @@ func runDeepStart(args []string) error {
 	}
 
 	return deepRunSession(paths.StateDir, &state, &deepRunConfig{
+		worker:          f.worker,
 		autoApprove:     f.autoApprove,
 		allowedCommands: f.allowCommands,
 		provider:        f.provider,
@@ -192,5 +228,7 @@ func runDeepStart(args []string) error {
 		taskTimeout:     f.taskTimeout,
 		missionName:     mission.Name,
 		taskCount:       len(mission.Tasks),
+		remote:          remoteFn,
+		paths:           paths,
 	}, git, false)
 }

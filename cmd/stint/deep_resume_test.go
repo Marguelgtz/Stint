@@ -189,7 +189,7 @@ func TestDeepResumeReattachesLostWorktree(t *testing.T) {
 	if err := os.RemoveAll(env.wt); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureDeepWorktree(env.coord.git, env.state); err != nil {
+	if err := ensureDeepWorktree(env.coord.git, false, env.state); err != nil {
 		t.Fatalf("ensureDeepWorktree: %v", err)
 	}
 	head, err := env.coord.git.headCommit(env.wt)
@@ -219,7 +219,7 @@ func TestDeepResumeRefusesWhenBranchIsGone(t *testing.T) {
 	if out, err := exec.Command("git", "-C", env.repo, "branch", "-D", env.state.Branch).CombinedOutput(); err != nil {
 		t.Fatalf("delete branch: %v (%s)", err, out)
 	}
-	err := ensureDeepWorktree(env.coord.git, env.state)
+	err := ensureDeepWorktree(env.coord.git, false, env.state)
 	if err == nil || !strings.Contains(err.Error(), "fresh session") {
 		t.Fatalf("err = %v, want the fresh-session guidance (a resume cannot invent a branch)", err)
 	}
