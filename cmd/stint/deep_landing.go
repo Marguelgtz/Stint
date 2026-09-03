@@ -98,6 +98,33 @@ func (g *gitRunner) worktreeAdd(repo, worktree, branch string) error {
 	return err
 }
 
+// branchExists reports whether the repository has the local branch (the
+// branch holds every Deep Work checkpoint commit, even if the worktree
+// directory is lost).
+func (g *gitRunner) branchExists(repo, branch string) bool {
+	_, err := g.run(repo, "rev-parse", "--verify", "refs/heads/"+branch)
+	return err == nil
+}
+
+// worktreeUsable reports whether the directory is a functioning worktree of
+// its repository (a moved repository leaves a directory whose links are
+// stale; `git worktree repair` fixes that).
+func (g *gitRunner) worktreeUsable(worktree string) bool {
+	_, err := g.run(worktree, "rev-parse", "--git-dir")
+	return err == nil
+}
+
+// worktreeReattach recreates a lost worktree directory over the existing
+// branch: prune drops the stale metadata entry (its directory is missing),
+// then a plain add re-checks the branch out with all its commits.
+func (g *gitRunner) worktreeReattach(repo, worktree, branch string) error {
+	if _, err := g.run(repo, "worktree", "prune"); err != nil {
+		return err
+	}
+	_, err := g.run(repo, "worktree", "add", worktree, branch)
+	return err
+}
+
 // commitAll checkpoints the worktree. "Nothing to commit" is not an error
 // for Deep Work: evidence may already be committed by the worker.
 func (g *gitRunner) commitAll(dir, message string) (string, error) {
@@ -140,6 +167,18 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	now := c.now()
 	if c.state.Phase == deep.PhaseLanded || c.state.Phase == deep.PhaseStopped {
 		return nil
+	}
+	// Durable state wins: another process (an external `stint deep stop`, a
+	// resumed coordinator) may have landed this session first.
+	if fresh, err := deep.LoadState(c.stateDir, c.state.SessionID); err == nil {
+		if fresh.Phase != deep.PhaseExecuting {
+			return nil
+		}
+		// Land on the freshest durable state: a stop process holds a
+		// snapshot from before the running coordinator's latest transitions,
+		// and persisting it would clobber that task progress. Copying into
+		// the existing object keeps pointer identity stable for callers.
+		*c.state = fresh
 	}
 	c.state.Phase = deep.PhaseLanded
 	c.save()

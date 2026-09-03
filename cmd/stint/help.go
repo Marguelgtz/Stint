@@ -246,12 +246,15 @@ var (
 
 Slice-1 sessions ride an existing READY compute session (run ` + "`stint start interactive`" + ` first); Deep Work never rents, destroys, or extends compute. The coordinator lands before the session deadline and writes a truthful handoff. The machine must stay awake; the existing watchdog remains the hard-deadline authority.
 
+After a crash, a lapsed machine, or a deadline landing: restore compute with ` + "`stint resume`" + ` or ` + "`stint start interactive`" + `, then ` + "`stint deep resume`" + ` continues the session in the same worktree and branch from durable state — verified work is never redone, and the deadline re-anchors to the current compute session.
+
 Subcommands:
   start   run a mission to landing (foreground)
   status  show session phase, deadline, and task table
-  stop    land the latest session now (works from durable state)`,
-		usage: "stint deep <start|status|stop> [flags]",
-		args:  []cliArg{{name: "<subcommand>", purpose: "start, status, or stop"}},
+  stop    land the latest session now (works from durable state)
+  resume  continue the latest (or given) session after a crash, sleep, or compute loss`,
+		usage: "stint deep <start|status|stop|resume> [flags]",
+		args:  []cliArg{{name: "<subcommand>", purpose: "start, status, stop, or resume"}},
 		flags: []cliFlag{
 			{name: "--mission", argument: "<file>", purpose: "mission Markdown file (start, required)"},
 			{name: "--repo", argument: "<path>", purpose: "target git repository (start, required)"},

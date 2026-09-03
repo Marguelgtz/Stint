@@ -99,12 +99,15 @@ func newTestEnv(t *testing.T, script map[int]execResult, maxAttempts int) *testE
 	stateDir := t.TempDir()
 	landBefore := time.Date(2026, 2, 9, 17, 0, 0, 0, time.UTC)
 	now := time.Date(2026, 2, 9, 16, 0, 0, 0, time.UTC)
+	sessionID := "20260209T160000-testsess"
 	wt := filepath.Join(repo, ".stint-deep", "testsession")
 	g := newGitRunner()
-	if err := g.worktreeAdd(repo, wt, "stint/deep-testsession"); err != nil {
+	// The branch must match the one recorded in the state: resume's
+	// worktree re-attach relies on that pair.
+	if err := g.worktreeAdd(repo, wt, deep.BranchName(sessionID)); err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
-	state := deep.NewState("20260209T160000-testsess", mission, repo, wt,
+	state := deep.NewState(sessionID, mission, repo, wt,
 		landBefore.Add(time.Hour), landBefore, maxAttempts, now)
 	state.BaseCommit = base
 	state.Verify = "" // acceptance is driven by the fake executor's result
@@ -304,6 +307,9 @@ func TestLandingDeadline(t *testing.T) {
 func TestDeepLandingSilentVerifyReported(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
 	env.state.Verify = "true" // silent passing command
+	if err := env.state.SaveDir(env.coord.stateDir); err != nil {
+		t.Fatal(err) // landing works from durable state only
+	}
 	if err := env.coord.land(context.Background(), "test landing"); err != nil {
 		t.Fatalf("land: %v", err)
 	}
@@ -320,5 +326,46 @@ func TestDeepLandingSilentVerifyReported(t *testing.T) {
 	}
 	if !strings.Contains(handoff, "passed") {
 		t.Errorf("handoff does not report the passing verify:\n%s", handoff)
+	}
+}
+
+// An external stop that lands the session while a task's invocation is in
+// flight must win: the in-flight task's saves may not resurrect the stopped
+// session from stale in-memory state (the zombie-proof invariant behind
+// `stint deep resume`).
+func TestDeepLoopExternalStopBeatsInFlightTask(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	stopperState, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopper := &deepCoordinator{
+		stateDir:    env.coord.stateDir,
+		state:       &stopperState,
+		taskTimeout: time.Minute,
+		verify:      env.coord.verify,
+		now:         func() time.Time { return env.clock.now },
+		logf:        func(string, ...any) {},
+		out:         io.Discard,
+		git:         env.coord.git,
+	}
+	env.fake.after = func() {
+		_ = stopper.land(context.Background(), "stopped by user")
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	fresh, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Phase != deep.PhaseLanded {
+		t.Errorf("phase = %s, want landed (an in-flight save must not resurrect the session)", fresh.Phase)
+	}
+	if env.fake.calls != 1 {
+		t.Errorf("executor called %d times, want 1 (nothing runs after the stop)", env.fake.calls)
+	}
+	if fresh.Tasks[0].Status == deep.StatusVerified {
+		t.Errorf("in-flight outcome was persisted after the stop: %s", fresh.Tasks[0].Status)
 	}
 }

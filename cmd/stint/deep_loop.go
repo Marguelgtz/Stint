@@ -53,6 +53,18 @@ func (c *deepCoordinator) save() {
 	}
 }
 
+// stillExecuting re-reads the durable phase. An external `stint deep stop`
+// (or a recovered coordinator) may have landed the session while this
+// process was mid-task; persisting the in-memory state would resurrect it,
+// so every save is gated on this check.
+func (c *deepCoordinator) stillExecuting() bool {
+	fresh, err := deep.LoadState(c.stateDir, c.state.SessionID)
+	if err != nil {
+		return true // unreadable state: don't fail the run on a bookkeeping read
+	}
+	return fresh.Phase == deep.PhaseExecuting
+}
+
 // repoSummary is the durable git truth folded into reconstructed task
 // context so a fresh invocation can continue without conversational memory.
 func (c *deepCoordinator) repoSummary() deep.RepoSummary {
@@ -75,7 +87,9 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) {
 	t := &c.state.Tasks[idx]
 	t.Status = deep.StatusActive
 	t.Attempts++
-	c.save()
+	if c.stillExecuting() {
+		c.save()
+	}
 	c.logf("task %s attempt %d: invoking executor (timeout %s)", t.ID, t.Attempts, c.taskTimeout)
 
 	tc, cancel := context.WithTimeout(ctx, c.taskTimeout)
@@ -113,7 +127,14 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) {
 		}
 		c.logf("task %s BLOCKED: %s", t.ID, t.Blocker)
 	}
-	c.save()
+	// The invocation and verify span the longest gap of the session: an
+	// external stop or landing must win, or this process's save would
+	// resurrect a stopped session from stale in-memory state.
+	if c.stillExecuting() {
+		c.save()
+	} else {
+		c.logf("task %s: session stopped during the invocation; outcome not persisted", t.ID)
+	}
 }
 
 // accept checks the mission's verification command (when the mission defines

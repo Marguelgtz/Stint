@@ -13,10 +13,10 @@ import (
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
-// runDeep dispatches the Deep Work command group: start | status | stop.
+// runDeep dispatches the Deep Work command group: start | status | stop | resume.
 func runDeep(args []string) error {
 	if len(args) == 0 {
-		return errors.New("deep requires a subcommand: start, status, or stop")
+		return errors.New("deep requires a subcommand: start, status, stop, or resume")
 	}
 	switch args[0] {
 	case "start":
@@ -25,8 +25,10 @@ func runDeep(args []string) error {
 		return runDeepStatus(args[1:])
 	case "stop":
 		return runDeepStop(args[1:])
+	case "resume":
+		return runDeepResume(args[1:])
 	default:
-		return fmt.Errorf("unknown deep subcommand %q (stint deep <start|status|stop>)", args[0])
+		return fmt.Errorf("unknown deep subcommand %q (stint deep <start|status|stop|resume>)", args[0])
 	}
 }
 
@@ -145,6 +147,15 @@ func runDeepStart(args []string) error {
 
 	state := deep.NewState(sessionID, mission, f.repoPath, worktree, deadline, landBefore, f.maxAttempts, now)
 	state.BaseCommit = baseCommit
+	// Persist the executor settings so `stint deep resume` can reconstruct
+	// identical invocations without a live endpoint or operator memory.
+	state.Exec = &deep.ExecSettings{
+		AutoApprove:    f.autoApprove,
+		Provider:       f.provider,
+		Model:          modelID,
+		ClineConfig:    f.clineConfig,
+		TaskTimeoutSec: int(f.taskTimeout.Seconds()),
+	}
 	if err := state.SaveDir(paths.StateDir); err != nil {
 		return err
 	}
@@ -161,5 +172,5 @@ func runDeepStart(args []string) error {
 		taskTimeout: f.taskTimeout,
 		missionName: mission.Name,
 		taskCount:   len(mission.Tasks),
-	}, git)
+	}, git, false)
 }

@@ -53,6 +53,11 @@ func runDeepStatus(args []string) error {
 	fmt.Printf("Deep Work %s — %s (%s)\n", state.SessionID, state.MissionName, state.Phase)
 	fmt.Printf("  deadline: %s (%s remaining)\n", state.Deadline.Format(time.RFC3339), remaining.Round(time.Minute))
 	fmt.Printf("  worktree: %s (branch %s)\n", state.WorktreePath, state.Branch)
+	if alive, pid := deep.CoordinatorAlive(paths.StateDir, state.SessionID); alive {
+		fmt.Printf("  coordinator: running (pid %d)\n", pid)
+	} else {
+		fmt.Printf("  coordinator: not running (continue with `stint deep resume`)\n")
+	}
 	if state.HandoffPath != "" {
 		fmt.Printf("  handoff:  %s\n", state.HandoffPath)
 	}
