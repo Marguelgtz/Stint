@@ -90,6 +90,84 @@ func TestParseMissionFencedVerification(t *testing.T) {
 	}
 }
 
+func TestCommandPolicySection(t *testing.T) {
+	if CommandPolicySection(nil, false) != "" {
+		t.Error("no allow-list: no policy section (legacy missions unchanged)")
+	}
+	off := CommandPolicySection([]string{"go test", "git status"}, false)
+	for _, want := range []string{"COMMAND POLICY", "- go test", "- git status", "auto-approval is OFF"} {
+		if !strings.Contains(off, want) {
+			t.Errorf("policy section (auto-approve off) missing %q:\n%s", want, off)
+		}
+	}
+	on := CommandPolicySection([]string{"go test"}, true)
+	if !strings.Contains(on, "advisory") {
+		t.Errorf("policy section (auto-approve on) must say the list is advisory:\n%s", on)
+	}
+}
+
+func TestAppendAndReadIncident(t *testing.T) {
+	dir := t.TempDir()
+	// The state dir exists before the first append in every real flow
+	// (SaveDir creates it at start); mirror that here.
+	if err := os.MkdirAll(filepath.Join(dir, "deep", "s1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := DeepState{SessionID: "s1"}
+	AppendIncident(dir, state, IncidentExecutorInvoke, "T-001", "attempt 1 autoApprove=false allow=[go test]")
+	AppendIncident(dir, state, IncidentVerifyRun, "T-001", "command=`go test` result=pass")
+	AppendIncident(dir, state, IncidentLanded, "", "no safe useful work remaining")
+
+	got, err := ReadIncidents(dir, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("incidents = %d, want 3", len(got))
+	}
+	if got[0].Kind != IncidentExecutorInvoke || got[0].Task != "T-001" || got[0].Time.IsZero() {
+		t.Errorf("incident 0 = %+v", got[0])
+	}
+	if got[2].Kind != IncidentLanded || !strings.Contains(got[2].Detail, "safe useful work") {
+		t.Errorf("incident 2 = %+v", got[2])
+	}
+
+	// A missing log reads as empty, not an error (a session with no
+	// incidents is normal).
+	if incs, err := ReadIncidents(dir, "other"); err != nil || len(incs) != 0 {
+		t.Errorf("missing log: incs=%v err=%v, want empty", incs, err)
+	}
+
+	// Unparseable lines (a crash mid-write) are skipped, not fatal.
+	if err := os.WriteFile(IncidentFile(dir, "s1"), []byte("{broken\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if incs, err := ReadIncidents(dir, "s1"); err != nil || len(incs) != 0 {
+		t.Errorf("broken log: incs=%v err=%v, want empty", incs, err)
+	}
+}
+
+func TestExecSettingsAllowedCommandsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 9, 3, 11, 0, 0, 0, time.UTC)
+	m, err := ParseMission(sampleMission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := NewState(NewSessionID(now), m, "/repo", "/worktree", now.Add(time.Hour), now.Add(50*time.Minute), 3, now)
+	state.Exec = &ExecSettings{AutoApprove: false, AllowedCommands: []string{"go test ./...", "git status"}}
+	if err := state.SaveDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadState(dir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Exec == nil || len(loaded.Exec.AllowedCommands) != 2 || loaded.Exec.AllowedCommands[0] != "go test ./..." {
+		t.Errorf("allowed commands after round trip = %+v", loaded.Exec)
+	}
+}
+
 func TestParseMissionPerTaskVerify(t *testing.T) {
 	mission := "# x\n\n## Objective\no\n\n## Verification\ngo test ./...\n\n## Tasks\n- [ ] T1: a\n  - acceptance: a is done\n  - verify: test -f a.txt\n- [ ] T2: b\n  - acceptance: b is done\n"
 	m, err := ParseMission(mission)

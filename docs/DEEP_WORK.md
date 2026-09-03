@@ -238,9 +238,11 @@ reconstructs everything else from durable state:
    sets it back to `executing` and the loop continues with the remaining tasks.
    `verified` tasks are never redone.
 
-Executor settings (auto-approve, provider, model, timeouts) are persisted at start and
-come back on resume; `--auto-approve`, `--provider`, `--model`, `--api-key`,
-`--task-timeout`, and `--cline-config` override them per resume.
+Executor settings (auto-approve, command policy, provider, model, timeouts) are
+persisted at start and come back on resume; `--auto-approve`, `--provider`,
+`--model`, `--api-key`, `--task-timeout`, and `--cline-config` override them per
+resume. The command allow-list is session-level policy: resume always runs the
+persisted list, never a new one.
 
 ---
 
@@ -253,6 +255,7 @@ come back on resume; `--auto-approve`, `--provider`, `--model`, `--api-key`,
 | `…/<session-id>/coordinator.pid` | live coordinator pid (signal-0 probed by `start`/`resume`; cleared on exit, tolerated when stale) |
 | `…/<session-id>/mission.md` | copy of the mission as parsed |
 | `…/<session-id>/coordinator.log` | append-only coordinator decisions (invocations, transitions, landing reason) |
+| `…/<session-id>/incidents.jsonl` | machine-readable safety log: the command policy, every executor invocation, every verification run (command + result), checkpoint/state failures, stops, landing (`stint deep status` shows the recent tail) |
 | `…/<session-id>/handoff.md` | the landing report |
 | `<repo>/.stint-deep/<session-id>/` | the Stint-owned worktree (left in place for your review) |
 | branch `stint/deep-<session-id>` | local commits: task checkpoints + handoff commit. Never pushed |
@@ -298,9 +301,19 @@ loop simply keeps working the tasks that were not yet verified.
   kill); the session is capped by the compute deadline, and the coordinator lands before
   it. Deep Work never extends or rents compute — that stays with `stint start/extend`,
   where you see the price.
-- **Approval policy**: `--auto-approve` (default on) lets the worker use tools inside the
-  worktree. Because the workspace is isolated and git-rollbackable, this is the
-  productive default; pass `--auto-approve=false` for review-everything runs.
+- **Approval policy (deny-by-default)**: `--auto-approve` defaults to **off** — the
+  worker cannot run shell commands it is not allowed to. Grant the commands a mission
+  genuinely needs with repeatable `--allow-command <prefix>` flags (e.g.
+  `--allow-command "go test" --allow-command "git status"`): the allow-list is named in
+  every worker prompt, persisted in `deep.json`, and — while auto-approval is off —
+  commands outside it are denied by the Cline CLI. `--auto-approve` (on) lets the
+  worker use all tools; with it on, the allow-list is advisory and says so in the
+  prompt.
+- **Audit trail**: `incidents.jsonl` in the state dir records the policy the
+  coordinator ran with, every executor invocation, every verification command it ran
+  and its result, and every state/checkpoint/stop/landing event. `stint deep status`
+  prints the recent tail. A verification command is bounded (3 m default): a hung
+  verify cannot stall the session.
 - **One coordinator per session**: `start` and `resume` write/probe a pid file and
   refuse to run a second coordinator for a session that has one alive. Durable state
   always wins over in-memory state: an external `stop` that lands a session cannot be
@@ -316,7 +329,8 @@ loop simply keeps working the tasks that were not yet verified.
 | `--hours <n>` | session deadline | give Deep Work a shorter budget than your session |
 | `--task-timeout <dur>` | 10m | live runs of small tasks took 20–35 s; for large repo work 10–15 m is a sane bound. Never let it approach the landing window. |
 | `--max-attempts <n>` | 3 | lower (2) if your verify command is expensive; raise if tasks legitimately need more fresh starts |
-| `--auto-approve` | true | false for full review |
+| `--auto-approve` | false | true to let the worker run any tool call unattended (the allow-list becomes advisory) |
+| `--allow-command <prefix>` | none | repeatable; command prefixes the worker may run — named in the prompt, denied by the CLI otherwise while auto-approve is off |
 | `--provider` / `--model` | `openai-compatible` / first model the endpoint serves | pin a specific model |
 | `--api-key` | from Cline config | per-run override |
 | `--cline-config` | `~/.cline` | isolated Cline profile per machine/project |
@@ -338,6 +352,7 @@ verification can pass on its own, or use a verify command that checks cumulative
 | `has uncommitted tracked changes` | commit or stash in the repo before starting |
 | every task lands `blocked: verification did not pass` | the mission verify command is stricter than any single task's scope — give tasks a per-task `- verify:` command (§3), or make tasks cumulative (see §8) |
 | task `blocked: invocation did not complete` | read the blocker's stderr tail in `deep.json`/handoff: auth, model, or Cline CLI failure — fix the endpoint/Cline config and re-launch |
+| worker needs a command that gets denied | with auto-approve off (the default), only `--allow-command` prefixes may run — re-launch with the prefix the mission needs (`stint deep resume` keeps the persisted policy; adjust the mission's task list or start fresh to change it) |
 | session landed early with tasks `queued` | the landing window closed first; extend your session and re-launch the same mission |
 | Cline invocations seem slow | that's the model, not the coordinator: `run_result` durations are in `coordinator.log`; a bigger model or more context = slower |
 | state looks stale | `stint deep status --json` reads `deep.json` directly; the on-disk file is the truth the coordinator itself trusts |

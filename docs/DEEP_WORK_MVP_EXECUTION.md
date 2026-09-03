@@ -1,7 +1,7 @@
 # Stint Deep Work — MVP Execution (Living Document)
 
 **Status:** ACTIVE execution run (supersedes the PROPOSED gate model of `STINT_DEEP_WORK_INVESTIGATION.md`).
-**Date started:** 2026-09-02 (run 1); continued run 2 (probe + `internal/deep`); continued run 3 (coordinator, CLI, tests, worktree recovery); continued run 4 (DWX-008 `stint deep resume`); continued run 5 (DWX-015 per-task verify commands).
+**Date started:** 2026-09-02 (run 1); continued run 2 (probe + `internal/deep`); continued run 3 (coordinator, CLI, tests, worktree recovery); continued run 4 (DWX-008 `stint deep resume`); continued run 5 (DWX-015 per-task verify commands); continued run 6 (DWX-014 safety hardening).
 **Repository baseline (run 2):** branch `fix/vast-marketplace-resilience`, HEAD `bbf3037` (pushed, clean tree, `go build ./...` OK, go1.27.0).
 **Implementation workspace (run 3):** separate git worktree `/home/marguel/Documents/projects/stint-deepwork` on branch `feat/deep-work-mvp` (cut from `bbf3037`). The user's active checkout (`~/Documents/projects/Stint`) is shared and was mid-dashboard-work during run 3 — see F-DW-007; all Deep Work implementation, tests, and commits happen in the worktree.
 Run 1 declared baseline `feat/cli-ansi-styling` @ `f6d0263`; run 2 rebases the effort onto the current checkout because it carries the newest compute-recovery work (queued Vast candidates, deferred marketplace refresh) that Deep Work sessions ride on. `origin/main` (5a2a866) is older than both.
@@ -172,7 +172,7 @@ Explicit record of what the historical baseline assumed and this run rejects:
 | DWX-011 | Docs: `docs/DEEP_WORK.md`, CLI.md/README deep sections, mission skeleton | DWX-010 | queued |
 | DWX-012 | Open `deep` profile in rental pipeline (`stint deep start` self-rents) | DWX-010 | DEFERRED |
 | DWX-013 | Live `stint deep plan` | — | DEFERRED |
-| DWX-014 | Safety hardening (command allow-list policy, incident log) | DWX-010 | DEFERRED |
+| DWX-014 | Safety hardening (command allow-list policy, incident log) | DWX-010 | COMPLETED (run 6) |
 | DWX-015 | Per-task acceptance (verify) commands — the §9 precision step | DWX-006 | COMPLETED (run 5) |
 
 ## 7. Active task
@@ -270,6 +270,18 @@ Explicit record of what the historical baseline assumed and this run rejects:
   precedence over the mission-level command for that task; the mission command remains
   the final cumulative check at landing. Handoff evidence labels keep the three truths
   apart: task verify passed, mission verify passed, worker report.
+* **F-DW-014 — The worker's command surface was open by default (run 6, resolved /
+  DWX-014)**: `deep start` passed `--auto-approve true` to Cline by default, so a
+  headless worker could run any shell command without operator consent — the exact
+  behavior the isolated worktree is supposed to prevent. Run 6 makes auto-approval
+  deny-by-default (start and the legacy resume fallback), adds a repeatable
+  `--allow-command <prefix>` policy (persisted in `deep.json`, named in every worker
+  prompt, denied by the CLI while auto-approval is off, advisory — and labeled as
+  such — when it is on), and bounds the coordinator's per-attempt verification run
+  (previously an unbounded context: a hung verify command could stall the loop past
+  every deadline logic). The `incidents.jsonl` audit log (policy, invocations,
+  verification runs, checkpoint/state failures, stops, landing, resume) is recorded
+  from the coordinator and surfaced as a recent tail in `stint deep status`.
 
 ## 9. Validation evidence
 
@@ -399,8 +411,9 @@ already-active rental.
 3. Conventions (unchanged): zero third-party deps, atomic 0600 JSON state under
    `~/.local/state/stint/deep/<id>/`, executor behind an interface, orchestration in
    `cmd/stint` (F-019), fake cline binary + fake clock for tests, `go test -race ./...`.
-4. Next tasks: DWX-008 (run 4) and DWX-015 (run 5 — per-task `- verify:` commands;
-   see §8 F-DW-013) are COMPLETED. Next up: DWX-012 (`deep` profile self-rental)
-   and DWX-014 (safety hardening) when prioritized; the live-calibration loop
-   (bigger real missions, then per-task verify in a real mission) remains available
-   whenever compute is provisioned.
+4. Next tasks: DWX-008 (run 4), DWX-015 (run 5 — per-task `- verify:` commands;
+   see §8 F-DW-013), and DWX-014 (run 6 — safety hardening: deny-by-default
+   auto-approval, `--allow-command` policy, `incidents.jsonl` audit log; see
+   §8 F-DW-014) are COMPLETED. Next up: DWX-012 (`deep` profile self-rental);
+   the live-calibration loop (bigger real missions, per-task verify + command
+   policy in a real mission) remains available whenever compute is provisioned.

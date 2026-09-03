@@ -443,3 +443,103 @@ func TestDeepLoopPerTaskVerifyWithoutMissionVerify(t *testing.T) {
 		t.Errorf("handoff missing the worker-report label for the command-less task:\n%s", handoff)
 	}
 }
+
+// The incident log is the audit trail: a full run must record the
+// invocations, each verification run (naming the command it ran), and the
+// session end — all machine-readable.
+func TestDeepLoopRecordsIncidents(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Verify = "true" // a silently-passing command
+	if err := env.state.SaveDir(env.coord.stateDir); err != nil {
+		t.Fatal(err)
+	}
+	env.coord.verify = func(_ context.Context, command, _ string) (string, bool, error) {
+		return "", true, nil
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	incs, err := deep.ReadIncidents(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	var verifyDetails []string
+	for _, in := range incs {
+		seen[in.Kind]++
+		if in.Kind == deep.IncidentVerifyRun {
+			verifyDetails = append(verifyDetails, in.Detail)
+		}
+	}
+	if seen[deep.IncidentExecutorInvoke] == 0 {
+		t.Error("no executor-invoke incidents: every bounded invocation must be recorded")
+	}
+	if seen[deep.IncidentVerifyRun] == 0 {
+		t.Error("no verify-run incidents: the verification command is the acceptance surface")
+	}
+	if seen[deep.IncidentLanded] == 0 {
+		t.Error("no landed incident: the session end must be recorded")
+	}
+	for _, d := range verifyDetails {
+		if !strings.Contains(d, "command=`true`") || !strings.Contains(d, "result=pass") {
+			t.Errorf("verify incident does not name the command and result: %q", d)
+		}
+	}
+}
+
+// A verification command that hangs must be bounded: the coordinator kills
+// it at the bound and continues (recorded as a failed run) instead of
+// stalling the whole session.
+func TestDeepLoopVerifyBounded(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	// "true" is instant in the REAL final verification at landing; the
+	// coordinator's own verify seam is faked to hang, which is what is
+	// under test (a hung per-attempt verify must not stall the session).
+	env.state.Verify = "true"
+	if err := env.state.SaveDir(env.coord.stateDir); err != nil {
+		t.Fatal(err)
+	}
+	env.coord.verifyTimeout = 30 * time.Millisecond
+	env.coord.verify = func(ctx context.Context, command, _ string) (string, bool, error) {
+		<-ctx.Done() // emulate a hung command killed by the bound
+		return "", false, nil
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if env.state.Tasks[0].Status != deep.StatusBlocked {
+		t.Errorf("task A = %s, want blocked (a hung verify can never pass)", env.state.Tasks[0].Status)
+	}
+	incs, err := deep.ReadIncidents(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fails := 0
+	for _, in := range incs {
+		if in.Kind == deep.IncidentVerifyRun && strings.Contains(in.Detail, "result=fail") {
+			fails++
+		}
+	}
+	if fails == 0 {
+		t.Error("no failed verify-run incidents: the bound kill must be recorded")
+	}
+}
+
+// The session's command policy must reach the worker: the reconstructed
+// prompt names the allow-list and its enforcement mode.
+func TestDeepLoopPolicyInPrompt(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.coord.execCfg.allowedCommands = []string{"go test", "git status"}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if env.fake.calls < 1 {
+		t.Fatal("no executor invocations")
+	}
+	prompt := env.fake.prompts[0]
+	for _, want := range []string{"COMMAND POLICY", "- go test", "- git status", "auto-approval is OFF"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

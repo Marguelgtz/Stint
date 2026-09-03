@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
@@ -58,8 +59,39 @@ func runDeepStatus(args []string) error {
 	} else {
 		fmt.Printf("  coordinator: not running (continue with `stint deep resume`)\n")
 	}
+	if state.Exec != nil {
+		line := fmt.Sprintf("  policy:     auto-approve=%t", state.Exec.AutoApprove)
+		if len(state.Exec.AllowedCommands) > 0 {
+			line += fmt.Sprintf("  allowed=[%s]", strings.Join(state.Exec.AllowedCommands, ", "))
+		} else {
+			line += "  allowed=<none>"
+		}
+		fmt.Println(line)
+	}
 	if state.HandoffPath != "" {
 		fmt.Printf("  handoff:  %s\n", state.HandoffPath)
+	}
+	if incs, err := deep.ReadIncidents(paths.StateDir, state.SessionID); err == nil && len(incs) > 0 {
+		recent := incs
+		if len(recent) > 5 {
+			recent = recent[len(recent)-5:]
+		}
+		fmt.Println("  recent incidents (full log: incidents.jsonl in the state dir):")
+		for _, in := range recent {
+			what := in.Kind
+			if in.Task != "" {
+				what += " " + in.Task
+			}
+			fmt.Printf("    %s %s", in.Time.Format("15:04:05"), what)
+			if in.Detail != "" {
+				detail := in.Detail
+				if len(detail) > 100 {
+					detail = detail[:97] + "..."
+				}
+				fmt.Printf(" %s", detail)
+			}
+			fmt.Println()
+		}
 	}
 	fmt.Println()
 	fmt.Printf("  %-10s %-10s %-4s %s\n", "TASK", "STATUS", "ATT", "OBJECTIVE")

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/deep"
@@ -15,14 +16,15 @@ import (
 
 // deepRunConfig carries the per-session invocation settings from the CLI.
 type deepRunConfig struct {
-	autoApprove bool
-	provider    string
-	model       string
-	apiKey      string
-	clineConfig string
-	taskTimeout time.Duration
-	missionName string
-	taskCount   int
+	autoApprove     bool
+	allowedCommands []string
+	provider        string
+	model           string
+	apiKey          string
+	clineConfig     string
+	taskTimeout     time.Duration
+	missionName     string
+	taskCount       int
 }
 
 // lookPath is a seam over exec.LookPath so preflight checks are testable.
@@ -36,11 +38,12 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 		stateDir: stateDir,
 		state:    state,
 		execCfg: execInput{
-			autoApprove: cfg.autoApprove,
-			provider:    cfg.provider,
-			model:       cfg.model,
-			apiKey:      cfg.apiKey,
-			clineConfig: cfg.clineConfig,
+			autoApprove:     cfg.autoApprove,
+			allowedCommands: cfg.allowedCommands,
+			provider:        cfg.provider,
+			model:           cfg.model,
+			apiKey:          cfg.apiKey,
+			clineConfig:     cfg.clineConfig,
 		},
 		executor:    newClineExecutor("cline"),
 		now:         func() time.Time { return time.Now().UTC() },
@@ -71,6 +74,17 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 	fmt.Printf("  worktree:  %s (branch %s)\n", state.WorktreePath, state.Branch)
 	fmt.Printf("  deadline:  %s  (lands from %s)\n", state.Deadline.Format(time.RFC3339), state.LandBefore.Format(time.RFC3339))
 	fmt.Println("  the coordinator runs in this process; keep this machine awake.")
+
+	// Record the command policy this coordinator runs under: the incident
+	// log starts with what the operator permitted, so the audit trail is
+	// complete even if the process dies before any invocation.
+	policy := fmt.Sprintf("autoApprove=%t", cfg.autoApprove)
+	if len(cfg.allowedCommands) > 0 {
+		policy += " allow=[" + strings.Join(cfg.allowedCommands, ", ") + "]"
+	} else {
+		policy += " allow=<none>"
+	}
+	deep.AppendIncident(stateDir, *state, deep.IncidentPolicy, "", policy)
 
 	if err := coord.run(context.Background()); err != nil {
 		return err

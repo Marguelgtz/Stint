@@ -153,16 +153,18 @@ func runDeepResume(args []string) error {
 	}
 	deep.AppendLog(paths.StateDir, state, "resumed: %s (deadline %s, lands from %s)",
 		stateNote, state.Deadline.Format(time.RFC3339), state.LandBefore.Format(time.RFC3339))
+	deep.AppendIncident(paths.StateDir, state, deep.IncidentResumed, "", stateNote)
 
 	return deepRunSession(paths.StateDir, &state, &deepRunConfig{
-		autoApprove: exec.AutoApprove,
-		provider:    exec.Provider,
-		model:       modelID,
-		apiKey:      f.apiKey,
-		clineConfig: exec.ClineConfig,
-		taskTimeout: time.Duration(exec.TaskTimeoutSec) * time.Second,
-		missionName: state.MissionName,
-		taskCount:   len(state.Tasks),
+		autoApprove:     exec.AutoApprove,
+		allowedCommands: exec.AllowedCommands,
+		provider:        exec.Provider,
+		model:           modelID,
+		apiKey:          f.apiKey,
+		clineConfig:     exec.ClineConfig,
+		taskTimeout:     time.Duration(exec.TaskTimeoutSec) * time.Second,
+		missionName:     state.MissionName,
+		taskCount:       len(state.Tasks),
 	}, git, true)
 }
 
@@ -221,11 +223,13 @@ type execOverrides struct {
 
 // resolveExecSettings merges the session's persisted executor settings with
 // resume-time overrides. Sessions started before settings were persisted
-// (Exec == nil) fall back to the start-time defaults.
+// (Exec == nil) fall back to the start-time defaults, which are
+// deny-by-default (auto-approval off). The command allow-list always comes
+// from the persisted policy: it is session-level state, not an override.
 func resolveExecSettings(st *deep.DeepState, o execOverrides) *deep.ExecSettings {
 	const defaultProvider = "openai-compatible"
 	const defaultTaskTimeout = 10 * time.Minute
-	es := &deep.ExecSettings{AutoApprove: true, Provider: defaultProvider, TaskTimeoutSec: int(defaultTaskTimeout.Seconds())}
+	es := &deep.ExecSettings{AutoApprove: false, Provider: defaultProvider, TaskTimeoutSec: int(defaultTaskTimeout.Seconds())}
 	if st.Exec != nil {
 		*es = *st.Exec
 	}

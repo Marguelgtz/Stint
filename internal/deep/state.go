@@ -46,14 +46,19 @@ type DeepState struct {
 // persisted at start so `stint deep resume` can reconstruct the same
 // invocations without a live endpoint or operator memory. Nil on sessions
 // started before the field existed; resume falls back to the start-time
-// defaults. The API key is deliberately not persisted: it is re-passed with
-// --api-key or comes from the Cline config directory.
+// defaults (deny-by-default: auto-approval off). The API key is deliberately
+// not persisted: it is re-passed with --api-key or comes from the Cline
+// config directory. AllowedCommands is the session's command allow-list
+// policy (command prefixes the worker may run); it is named in every worker
+// prompt and, with auto-approval off, commands outside it are denied by the
+// CLI.
 type ExecSettings struct {
-	AutoApprove    bool   `json:"autoApprove"`
-	Provider       string `json:"provider,omitempty"`
-	Model          string `json:"model,omitempty"`
-	ClineConfig    string `json:"clineConfig,omitempty"`
-	TaskTimeoutSec int    `json:"taskTimeoutSec,omitempty"`
+	AutoApprove     bool     `json:"autoApprove"`
+	Provider        string   `json:"provider,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	ClineConfig     string   `json:"clineConfig,omitempty"`
+	TaskTimeoutSec  int      `json:"taskTimeoutSec,omitempty"`
+	AllowedCommands []string `json:"allowedCommands,omitempty"`
 }
 
 // DeepDir is the state directory for one session.

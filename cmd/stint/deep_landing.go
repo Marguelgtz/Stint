@@ -183,6 +183,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	c.state.Phase = deep.PhaseLanded
 	c.save()
 	c.logf("landing: %s", reason)
+	c.incident(deep.IncidentLanded, "", reason)
 
 	for i := range c.state.Tasks {
 		if c.state.Tasks[i].Status == deep.StatusActive {
