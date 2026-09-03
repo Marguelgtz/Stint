@@ -20,25 +20,40 @@ const (
 // on every transition, following the session.json convention. All essential
 // state is local: compute may die, this file and the git worktree do not.
 type DeepState struct {
-	SessionID      string     `json:"sessionId"`
-	MissionName    string     `json:"missionName"`
-	Objective      string     `json:"objective"`
-	Success        []string   `json:"success,omitempty"`
-	Constraints    []string   `json:"constraints,omitempty"`
-	Verify         string     `json:"verify,omitempty"`
-	RepoPath       string     `json:"repoPath"`
-	WorktreePath   string     `json:"worktreePath"`
-	Branch         string     `json:"branch"`
-	BaseCommit     string     `json:"baseCommit,omitempty"`
-	Tasks          []Task     `json:"tasks"`
-	Phase          Phase      `json:"phase"`
-	Deadline       time.Time  `json:"deadline"`
-	LandBefore     time.Time  `json:"landBefore"`
-	LandedAt       *time.Time `json:"landedAt,omitempty"`
-	HandoffPath    string     `json:"handoffPath,omitempty"`
-	TaskAttemptCap int        `json:"taskAttemptCap"`
-	StartedAt      time.Time  `json:"startedAt"`
-	UpdatedAt      time.Time  `json:"updatedAt,omitempty"`
+	SessionID      string        `json:"sessionId"`
+	MissionName    string        `json:"missionName"`
+	Objective      string        `json:"objective"`
+	Success        []string      `json:"success,omitempty"`
+	Constraints    []string      `json:"constraints,omitempty"`
+	Verify         string        `json:"verify,omitempty"`
+	RepoPath       string        `json:"repoPath"`
+	WorktreePath   string        `json:"worktreePath"`
+	Branch         string        `json:"branch"`
+	BaseCommit     string        `json:"baseCommit,omitempty"`
+	Tasks          []Task        `json:"tasks"`
+	Phase          Phase         `json:"phase"`
+	Deadline       time.Time     `json:"deadline"`
+	LandBefore     time.Time     `json:"landBefore"`
+	LandedAt       *time.Time    `json:"landedAt,omitempty"`
+	HandoffPath    string        `json:"handoffPath,omitempty"`
+	TaskAttemptCap int           `json:"taskAttemptCap"`
+	Exec           *ExecSettings `json:"exec,omitempty"`
+	StartedAt      time.Time     `json:"startedAt"`
+	UpdatedAt      time.Time     `json:"updatedAt,omitempty"`
+}
+
+// ExecSettings are the per-session coding-agent invocation settings,
+// persisted at start so `stint deep resume` can reconstruct the same
+// invocations without a live endpoint or operator memory. Nil on sessions
+// started before the field existed; resume falls back to the start-time
+// defaults. The API key is deliberately not persisted: it is re-passed with
+// --api-key or comes from the Cline config directory.
+type ExecSettings struct {
+	AutoApprove    bool   `json:"autoApprove"`
+	Provider       string `json:"provider,omitempty"`
+	Model          string `json:"model,omitempty"`
+	ClineConfig    string `json:"clineConfig,omitempty"`
+	TaskTimeoutSec int    `json:"taskTimeoutSec,omitempty"`
 }
 
 // DeepDir is the state directory for one session.

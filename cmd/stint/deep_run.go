@@ -29,7 +29,9 @@ type deepRunConfig struct {
 func lookPath(name string) (string, error) { return exec.LookPath(name) }
 
 // deepRunSession builds the coordinator and runs the loop until landing.
-func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, git *gitRunner) error {
+// resumed selects the banner verb: `start` reports "started", `resume`
+// reports "resumed" for the same coordinator.
+func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, git *gitRunner, resumed bool) error {
 	coord := &deepCoordinator{
 		stateDir: stateDir,
 		state:    state,
@@ -51,7 +53,19 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 		git:  git,
 	}
 
-	fmt.Printf("Deep Work session %s started.\n", state.SessionID)
+	// The pid file marks this process as the session's coordinator: `deep
+	// resume` probes it and refuses to start a second coordinator. A crash
+	// leaves a stale file, which resume tolerates via the liveness probe.
+	if err := deep.WriteCoordinatorPid(stateDir, state.SessionID, os.Getpid()); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: write coordinator pid: %v\n", err)
+	}
+	defer deep.ClearCoordinatorPid(stateDir, state.SessionID)
+
+	verb := "started"
+	if resumed {
+		verb = "resumed"
+	}
+	fmt.Printf("Deep Work session %s %s.\n", state.SessionID, verb)
 	fmt.Printf("  mission:   %s (%d tasks)\n", cfg.missionName, cfg.taskCount)
 	fmt.Printf("  model:     %s via http://127.0.0.1:8409/v1\n", cfg.model)
 	fmt.Printf("  worktree:  %s (branch %s)\n", state.WorktreePath, state.Branch)

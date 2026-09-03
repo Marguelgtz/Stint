@@ -194,3 +194,68 @@ func TestBuildTaskPromptReconstruction(t *testing.T) {
 		}
 	}
 }
+func TestExecSettingsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC)
+	m, err := ParseMission(sampleMission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := NewState(NewSessionID(now), m, "/repo", "/worktree", now.Add(time.Hour), now.Add(50*time.Minute), 3, now)
+	state.Exec = &ExecSettings{AutoApprove: false, Provider: "openai-compatible", Model: "qwen3.8-27b", ClineConfig: "/cfg", TaskTimeoutSec: 900}
+	if err := state.SaveDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadState(dir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Exec == nil {
+		t.Fatal("Exec settings were not persisted")
+	}
+	if loaded.Exec.AutoApprove || loaded.Exec.Model != "qwen3.8-27b" || loaded.Exec.TaskTimeoutSec != 900 {
+		t.Errorf("exec = %+v", loaded.Exec)
+	}
+
+	// A session started before the field existed loads with Exec == nil.
+	legacy := NewState(NewSessionID(now.Add(time.Minute)), m, "/repo", "/worktree", now.Add(2*time.Hour), now.Add(time.Hour+50*time.Minute), 3, now)
+	if err := legacy.SaveDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadState(dir, legacy.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Exec != nil {
+		t.Errorf("legacy state Exec = %+v, want nil (resume falls back to defaults)", got.Exec)
+	}
+}
+
+func TestCoordinatorPidLiveness(t *testing.T) {
+	dir := t.TempDir()
+	if alive, pid := CoordinatorAlive(dir, "s1"); alive || pid != 0 {
+		t.Fatalf("no pid file: alive=%v pid=%d, want none", alive, pid)
+	}
+	if err := WriteCoordinatorPid(dir, "s1", os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	if alive, pid := CoordinatorAlive(dir, "s1"); !alive || pid != os.Getpid() {
+		t.Fatalf("alive=%v pid=%d, want the running coordinator detected", alive, pid)
+	}
+	if err := WriteCoordinatorPid(dir, "s1", 999999999); err != nil {
+		t.Fatal(err)
+	}
+	if alive, _ := CoordinatorAlive(dir, "s1"); alive {
+		t.Fatal("stale pid file reported as a live coordinator")
+	}
+	if err := ClearCoordinatorPid(dir, "s1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ClearCoordinatorPid(dir, "s1"); err != nil {
+		t.Errorf("ClearCoordinatorPid twice: %v, want nil (missing file is fine)", err)
+	}
+	info, err := os.Stat(CoordinatorPidFile(dir, "s1"))
+	if err == nil {
+		t.Errorf("pid file still present: %v", info)
+	}
+}
