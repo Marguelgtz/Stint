@@ -258,6 +258,7 @@ Subcommands:
 		flags: []cliFlag{
 			{name: "--mission", argument: "<file>", purpose: "mission Markdown file (start, required)"},
 			{name: "--repo", argument: "<path>", purpose: "target git repository (start, required)"},
+			{name: "--worker", argument: "<cline|hermes>", defaultVal: "cline", purpose: "worker: cline (runs on this machine) or hermes (Hermes agent plus all file/shell work on the compute box, using its local model endpoint)"},
 			{name: "--hours", argument: "<float>", defaultVal: "compute session deadline", purpose: "optional Deep Work duration cap; may only tighten the session deadline"},
 			{name: "--task-timeout", argument: "<dur>", defaultVal: "10m", purpose: "maximum wall time per coding-agent invocation"},
 			{name: "--max-attempts", argument: "<int>", defaultVal: "3", purpose: "executor attempts per task before parking"},

@@ -28,9 +28,18 @@ type deepCoordinator struct {
 	// verify runs one verification command in the worktree; the coordinator
 	// decides which command (the task's own, else the mission's) to hand it.
 	verify func(ctx context.Context, command, workdir string) (string, bool, error)
-	logf   func(format string, args ...any)
-	out    io.Writer
-	git    *gitRunner
+	// finalVerify runs the mission-level command at landing; it may differ
+	// from verify when the worktree is remote (on the compute box). Nil
+	// skips the landing check.
+	finalVerify func(ctx context.Context, command string) (string, bool, error)
+	// worktreeWrite writes a file into the session worktree. It differs
+	// when the worktree is remote (on the compute box): the landing
+	// handoff write must reach the box, not the operator's machine. Nil
+	// uses the local os.WriteFile.
+	worktreeWrite func(path string, data []byte) error
+	logf          func(format string, args ...any)
+	out           io.Writer
+	git           gitOps
 }
 
 // execInputFor builds the per-task invocation from the session-wide config.
