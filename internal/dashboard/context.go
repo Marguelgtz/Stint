@@ -129,10 +129,10 @@ func contextLegend(m Model, p palette) string {
 					item += " · decode " + m.Inference.Decode + " (engine)"
 				}
 			} else {
-				item += " · decode —"
+				item += " · decode — tok/s"
 			}
 		} else {
-			item += " · decode —"
+			item += " · decode — tok/s"
 		}
 		items = append(items, p.wrap(residentContextColor(lane.Key), item))
 	}
