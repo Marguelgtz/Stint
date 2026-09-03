@@ -34,7 +34,7 @@ continuity comes from durable state + git, never from a long-lived conversation.
 
 | Requirement | Check |
 | --- | --- |
-| `stint` built with Deep Work (this branch) | `stint deep` → `deep requires a subcommand: start, status, or stop` |
+| `stint` built with Deep Work (this branch) | `stint deep` → `deep requires a subcommand: start, status, stop, or resume` |
 | A **READY** compute session | `stint status` (or `stint start interactive --hours 2` first) |
 | The Stint endpoint answering | `curl -s http://127.0.0.1:8409/v1/models` lists a model |
 | Cline CLI on PATH | `cline --version` (install: `npm i -g cline`) |
@@ -43,10 +43,14 @@ continuity comes from durable state + git, never from a long-lived conversation.
 
 Deep Work **rides your existing compute session**: it never rents, extends, or destroys
 compute, and never outlives the session deadline. If the session dies mid-run, re-establish
-compute with the usual `stint resume` / `stint start interactive` and start the next session.
+compute with the usual `stint resume` / `stint start interactive` and continue with
+`stint deep resume` (§4) — or start a fresh session with `stint deep start`.
 
 **Keep the machine awake.** The coordinator runs in the foreground process you launched.
-Wall-clock deadlines keep advancing while the host sleeps.
+Wall-clock deadlines keep advancing while the host sleeps. A sleep that lapses the
+deadline no longer loses the session — `stint deep resume` re-anchors the budget to the
+compute session you restore — but it does consume your compute budget, so `caffeinate`
+(or equivalent) is still the cheap option for long missions.
 
 ---
 
@@ -68,6 +72,10 @@ stint deep status --json
 
 # 5. Intervene if needed: land now, honestly, from durable state
 stint deep stop
+
+# 6. After a crash, a lapsed machine, or a deadline landing
+stint resume            # or: stint start interactive --hours 2
+stint deep resume       # continues the session in the same worktree and branch
 ```
 
 When the session lands, Stint prints the handoff path. Read
@@ -195,6 +203,32 @@ persists the final state atomically. The handoff distinguishes *verified* eviden
 *worker claims*, and *unresolved uncertainty*, and ends with the exact next action:
 review the branch, merge or discard.
 
+### Resuming
+
+`stint deep resume` restarts the coordinator for a session whose process is gone —
+after a crash, a killed process, a lapsed machine, or a deadline landing. It requires
+compute to be READY first (`stint resume` / `stint start interactive`) and then
+reconstructs everything else from durable state:
+
+1. **Single coordinator.** The coordinator writes `coordinator.pid`; `start` and
+   `resume` refuse to run if that process is still alive. A stale pid file (crash,
+   power loss) is cleared and tolerated — a signal-0 probe decides.
+2. **Deadline re-anchoring.** While the original deadline is still in the future it can
+   only be tightened: `min(deep deadline, compute deadline)`. If it lapsed while the
+   machine slept, the fresh compute deadline becomes the budget — you deliberately
+   re-provisioned compute to continue.
+3. **Worktree re-attachment.** If a crash or cleanup lost the worktree directory, the
+   branch still holds every checkpoint commit, so resume re-attaches the worktree over
+   the existing branch. Only a missing *branch* is unrecoverable (that is a fresh
+   `stint deep start`).
+4. **Phase revival.** A `landed` or `stopped` session is a pause, not a verdict: resume
+   sets it back to `executing` and the loop continues with the remaining tasks.
+   `verified` tasks are never redone.
+
+Executor settings (auto-approve, provider, model, timeouts) are persisted at start and
+come back on resume; `--auto-approve`, `--provider`, `--model`, `--api-key`,
+`--task-timeout`, and `--cline-config` override them per resume.
+
 ---
 
 ## 5. Where things live
@@ -202,7 +236,8 @@ review the branch, merge or discard.
 | Path | What |
 | --- | --- |
 | `~/.local/state/stint/deep/latest` | one line: the most recent session id |
-| `~/.local/state/stint/deep/<session-id>/deep.json` | durable state (tasks, statuses, deadlines, handoff path) — atomic, 0600 |
+| `~/.local/state/stint/deep/<session-id>/deep.json` | durable state (tasks, statuses, deadlines, executor settings, handoff path) — atomic, 0600 |
+| `…/<session-id>/coordinator.pid` | live coordinator pid (signal-0 probed by `start`/`resume`; cleared on exit, tolerated when stale) |
 | `…/<session-id>/mission.md` | copy of the mission as parsed |
 | `…/<session-id>/coordinator.log` | append-only coordinator decisions (invocations, transitions, landing reason) |
 | `…/<session-id>/handoff.md` | the landing report |
@@ -223,17 +258,20 @@ branches and logs.
 | `stint deep status --json` | the durable state, verbatim, for scripting |
 | `stint deep status --session <id>` | inspect a specific past session |
 | `stint deep stop` | land the latest session **now**, from durable state. Works whether or not the start process is alive; the running coordinator observes the phase change and exits on its next iteration. Stopping never touches compute. |
+| `stint deep resume` | continue the latest (or `--session <id>`) session after a crash, a lapsed machine, or a deadline landing. Compute must be READY first. Deadline re-anchored to the current compute session, worktree re-attached if lost, remaining tasks continue in the same branch. |
 
-**Recovering a crashed session.** State is durable, so recovery is: ensure compute is
-back (`stint resume` / `stint start interactive`), then start a **new** session with the
-same mission file. The new session starts from the repository state — which includes
-everything the old session checkpoint-committed into its worktree only if you continue
-on that branch; the simplest pattern for slice 1 is to merge/cherry-pick the old branch's
-commits into the repo first, or point `--repo` at a checkout of `stint/deep-<id>`.
-(`stint deep resume` — automatic restart from `deep.json` — is the next tracked step.)
+**Recovering a crashed or lapsed session.** Restore compute (`stint resume` /
+`stint start interactive`), then `stint deep resume`: the coordinator restarts from
+`deep.json`, re-anchors the deadline to your restored session, and continues in the same
+worktree and branch — verified and checkpointed work is never redone. If the *branch*
+itself is gone (deleted, not just the worktree directory), the session is unrecoverable:
+review any remaining evidence in `deep.json`/`coordinator.log` and start fresh with
+`stint deep start`.
 
-**Continuing a landed session.** Read the handoff's "Remaining work" section, adjust the
-mission (or add tasks), and launch again — the same commands, a new session id.
+**Continuing a landed session.** Two honest paths: read the handoff's "Remaining work"
+section, adjust the mission (or add tasks), and start a new session; or run
+`stint deep resume` to pick the same session back up where the handoff left off — the
+loop simply keeps working the tasks that were not yet verified.
 ---
 
 ## 7. Safety boundaries (hard rails)
@@ -250,6 +288,10 @@ mission (or add tasks), and launch again — the same commands, a new session id
 - **Approval policy**: `--auto-approve` (default on) lets the worker use tools inside the
   worktree. Because the workspace is isolated and git-rollbackable, this is the
   productive default; pass `--auto-approve=false` for review-everything runs.
+- **One coordinator per session**: `start` and `resume` write/probe a pid file and
+  refuse to run a second coordinator for a session that has one alive. Durable state
+  always wins over in-memory state: an external `stop` that lands a session cannot be
+  resurrected by the running process's later saves.
 - **Truthful reporting**: handoffs label worker claims as such; only coordinator-checked
   verification is reported as verified. A "completed" self-report that fails verification
   is reported as failed.
@@ -286,11 +328,15 @@ verification can pass on its own, or use a verify command that checks cumulative
 | session landed early with tasks `queued` | the landing window closed first; extend your session and re-launch the same mission |
 | Cline invocations seem slow | that's the model, not the coordinator: `run_result` durations are in `coordinator.log`; a bigger model or more context = slower |
 | state looks stale | `stint deep status --json` reads `deep.json` directly; the on-disk file is the truth the coordinator itself trusts |
+| `a coordinator for <id> is already running (pid N)` | a `start`/`resume` is in flight: wait for it to land, or `stint deep stop` first |
+| `is no longer a git repository` (resume) | the repo path in `deep.json` no longer exists (moved/deleted): restore it or start fresh |
+| `worktree … is not a usable git worktree` (resume) | the repository moved and the worktree's links are stale: `git -C <repo> worktree repair`, then resume again |
+| `the worktree (…) and its branch (…) are gone` (resume) | the branch was deleted: the session is unrecoverable — `stint deep start` with the same mission |
+| `both the Deep Work deadline and the compute session deadline have passed` | the machine lapsed past both budgets: `stint deep start` a fresh session |
+| resume lands immediately with `not started: insufficient time` | the re-anchored window was too short: restore more compute time first (`stint extend` / `stint start interactive --hours N`), then resume |
 
 ## 10. Going further
 
-- `stint deep resume` (automatic restart from `deep.json`, compute via existing
-  machinery) — next tracked step.
 - The `deep` profile opening its own compute rental (today Deep Work rides an existing
   session on purpose).
 - Live `stint deep plan` (mission drafting against a repo), cross-review of landed
