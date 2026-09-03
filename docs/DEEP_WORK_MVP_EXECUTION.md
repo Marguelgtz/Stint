@@ -1,7 +1,7 @@
 # Stint Deep Work — MVP Execution (Living Document)
 
 **Status:** ACTIVE execution run (supersedes the PROPOSED gate model of `STINT_DEEP_WORK_INVESTIGATION.md`).
-**Date started:** 2026-09-02 (run 1); continued run 2 (probe + `internal/deep`); continued run 3 (coordinator, CLI, tests, worktree recovery).
+**Date started:** 2026-09-02 (run 1); continued run 2 (probe + `internal/deep`); continued run 3 (coordinator, CLI, tests, worktree recovery); continued run 4 (DWX-008 `stint deep resume`); continued run 5 (DWX-015 per-task verify commands).
 **Repository baseline (run 2):** branch `fix/vast-marketplace-resilience`, HEAD `bbf3037` (pushed, clean tree, `go build ./...` OK, go1.27.0).
 **Implementation workspace (run 3):** separate git worktree `/home/marguel/Documents/projects/stint-deepwork` on branch `feat/deep-work-mvp` (cut from `bbf3037`). The user's active checkout (`~/Documents/projects/Stint`) is shared and was mid-dashboard-work during run 3 — see F-DW-007; all Deep Work implementation, tests, and commits happen in the worktree.
 Run 1 declared baseline `feat/cli-ansi-styling` @ `f6d0263`; run 2 rebases the effort onto the current checkout because it carries the newest compute-recovery work (queued Vast candidates, deferred marketplace refresh) that Deep Work sessions ride on. `origin/main` (5a2a866) is older than both.
@@ -166,13 +166,14 @@ Explicit record of what the historical baseline assumed and this run rejects:
 | DWX-005 | `stint deep start`: worktree setup, coordinator loop (continuation, parking, checkpoints), rides READY session | DWX-004 | COMPLETED (run 3) |
 | DWX-006 | Landing + truthful handoff + `stint deep stop` | DWX-005 | COMPLETED (run 3) |
 | DWX-007 | `stint deep status` (+ `--json`) | DWX-005 | COMPLETED (run 3) |
-| DWX-008 | `stint deep resume` (coordinator recovery from state; compute via existing machinery) | DWX-006 | queued |
+| DWX-008 | `stint deep resume` (coordinator recovery from state; compute via existing machinery) | DWX-006 | COMPLETED (run 4) |
 | DWX-009 | Offline E2E: fake cline + fake clock (continuation, park, landing, handoff), race-clean | DWX-006 | COMPLETED (run 3) |
 | DWX-010 | Live bounded mission run + findings + constant calibration | DWX-009 | COMPLETED (run 3, session 20260902-180013) |
 | DWX-011 | Docs: `docs/DEEP_WORK.md`, CLI.md/README deep sections, mission skeleton | DWX-010 | queued |
 | DWX-012 | Open `deep` profile in rental pipeline (`stint deep start` self-rents) | DWX-010 | DEFERRED |
 | DWX-013 | Live `stint deep plan` | — | DEFERRED |
 | DWX-014 | Safety hardening (command allow-list policy, incident log) | DWX-010 | DEFERRED |
+| DWX-015 | Per-task acceptance (verify) commands — the §9 precision step | DWX-006 | COMPLETED (run 5) |
 
 ## 7. Active task
 
@@ -245,6 +246,30 @@ Explicit record of what the historical baseline assumed and this run rejects:
   run". Fixed: landing reports pass/fail as its own signal (output is supplementary),
   and the handoff phase renders as `landed`. Regression test
   `TestDeepLandingSilentVerifyReported`.
+* **F-DW-011 — Stale snapshots clobber newer durable state (run 4, caught by the new
+  tests)**: an external `stint deep stop` lands from a state snapshot taken before the
+  running coordinator's latest transitions; saving that snapshot on landing would
+  silently revert verified tasks to `queued` (and a stopped session's phase could be
+  resurrected by the in-flight process's later saves). Fixed in both directions:
+  in-flight task saves re-check the durable phase before persisting
+  (`deepCoordinator.stillExecuting`), and `land()` merges onto the freshest on-disk
+  state (`*c.state = fresh`) before writing. Consequence (contract, not wart):
+  in-memory state is never truth — anything that must survive must be saved, which is
+  exactly what `stint deep resume` relies on. Regression tests:
+  `TestDeepLoopExternalStopBeatsInFlightTask`, `TestDeepResumeRevivesLandedSession`.
+* **F-DW-012 — Test-fixture branch/state drift (run 4)**: the loop-test fixture created
+  the worktree on `stint/deep-testsession` while the state recorded
+  `stint/deep-20260209T160000-testsess`; the mismatch was latent (nothing checked the
+  pair) until resume's worktree re-attach validated it. Fixed at the fixture root
+  (`deep.BranchName(sessionID)`), which is what makes the re-attach test meaningful.
+* **F-DW-013 — Mission-level verification is the wrong scope for per-task acceptance
+  (live run, resolved run 5 / DWX-015)**: T-001's scope (create `a.txt`) can never
+  satisfy the mission command (`test -f a.txt && test -f done.txt`), so a correctly
+  scoped task parked as blocked. Run 5 resolves it: a task's own `- verify:` command
+  (mission format, persisted in `deep.json`, named in the worker's prompt) takes
+  precedence over the mission-level command for that task; the mission command remains
+  the final cumulative check at landing. Handoff evidence labels keep the three truths
+  apart: task verify passed, mission verify passed, worker report.
 
 ## 9. Validation evidence
 
@@ -322,7 +347,8 @@ itself in **1m18s** (deadline untouched):
   binding (largest invocation 33 s); attempt cap 2 parked a correctly-scoped task
   that was unsatisfiable under the mission-level verify command — per-task
   acceptance commands (vs one mission-level command) is the next precision step;
-  landing window (10 m) unused.
+  landing window (10 m) unused. — RESOLVED (run 5, DWX-015): per-task `- verify:`
+  commands are now part of the mission format and take precedence per task (F-DW-013).
 
 **Gate C/D verdict (MVP):** the offline unit proofs (above) plus the live session
 prove the core loop end-to-end: fresh invocations continue from durable state +
@@ -373,7 +399,8 @@ already-active rental.
 3. Conventions (unchanged): zero third-party deps, atomic 0600 JSON state under
    `~/.local/state/stint/deep/<id>/`, executor behind an interface, orchestration in
    `cmd/stint` (F-019), fake cline binary + fake clock for tests, `go test -race ./...`.
-4. Next tasks: DWX-008 (`stint deep resume` — coordinator restart from durable
-   state; compute re-establishment is the existing `stint resume` machinery),
-   DWX-011 (docs package: mission-file skeleton, operator guide, `docs/DEEP_WORK.md`),
-   then the calibration follow-ups recorded in §9 (per-task acceptance commands).
+4. Next tasks: DWX-008 (run 4) and DWX-015 (run 5 — per-task `- verify:` commands;
+   see §8 F-DW-013) are COMPLETED. Next up: DWX-012 (`deep` profile self-rental)
+   and DWX-014 (safety hardening) when prioritized; the live-calibration loop
+   (bigger real missions, then per-task verify in a real mission) remains available
+   whenever compute is provisioned.
