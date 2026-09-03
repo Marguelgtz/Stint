@@ -20,11 +20,15 @@ import (
 func runResume(args []string) (retErr error) {
 	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	tunnelPort := fs.Int("tunnel-port", 8409, "local port the session's tunnel uses (must match the one start used; default 8409)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return errors.New("resume does not take positional arguments")
+	}
+	if *tunnelPort != 8409 {
+		clinePort = *tunnelPort
 	}
 
 	paths, err := config.DefaultPaths()

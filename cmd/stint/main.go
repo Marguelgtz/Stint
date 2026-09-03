@@ -22,7 +22,14 @@ import (
 )
 
 const version = "0.1.0"
-const clinePort = 8409
+
+// clinePort is the local port the SSH tunnel binds for the session's
+// OpenAI-compatible endpoint (default 8409). It is a var, not a const, so a
+// second, profile-isolated Stint instance on the same machine (e.g. the
+// two-box Dry Run mode: this box hosts the agent and rents another GPU box)
+// can override it with --tunnel-port on start/resume before the tunnel is
+// created.
+var clinePort = 8409
 
 type planDiagnostics struct {
 	Candidates      int                          `json:"candidates"`

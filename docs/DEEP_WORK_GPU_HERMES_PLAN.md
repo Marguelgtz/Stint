@@ -27,6 +27,20 @@ box by NInfer at `http://127.0.0.1:8080/v1`; the worker is **Hermes**, not Cline
 > local state + resume/watchdog integration. The GPU box is for inference + agent
 > tool execution, which is where all the compute is.
 
+> **Dry Run mode (added 2026-09-03):** for the one-off P4 validation the
+> operator machine is itself a Vast box (this session's inference host, which
+> must not be disturbed). `stint start interactive` therefore gained
+> `--tunnel-port <n>` (and `stint resume` the same flag) so a *second,
+> profile-isolated* Stint instance on the same machine — `XDG_CONFIG_HOME` /
+> `XDG_STATE_HOME` pointed at a fresh directory — can rent box B and tunnel to
+> a port other than 8409. The coordinator then runs on box A against box B's
+> session state, exactly the Mode-A topology in
+> `docs/CP1_DRYRUN_MISSION.md`. The production shape is unchanged: for the
+> real CP1 run the coordinator runs on the operator machine (or, per the
+> owner's stated preference for unattended operation, *inside* the Vast
+> instance — Option C: a `stint deep` that owns the session it works on,
+> with `deep.json` + git as the durable pair that must survive restarts).
+
 ---
 
 ## 1. Architecture
