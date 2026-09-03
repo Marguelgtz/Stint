@@ -51,8 +51,11 @@ type DeepState struct {
 // config directory. AllowedCommands is the session's command allow-list
 // policy (command prefixes the worker may run); it is named in every worker
 // prompt and, with auto-approval off, commands outside it are denied by the
-// CLI.
+// CLI. Worker selects the execution target: "cline" (worker on the operator
+// machine, the original design) or "hermes" (Hermes agent plus all file and
+// shell work on the compute box, talking to the box's local model endpoint).
 type ExecSettings struct {
+	Worker          string   `json:"worker,omitempty"`
 	AutoApprove     bool     `json:"autoApprove"`
 	Provider        string   `json:"provider,omitempty"`
 	Model           string   `json:"model,omitempty"`
