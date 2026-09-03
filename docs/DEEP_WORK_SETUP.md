@@ -48,7 +48,8 @@ mission resumable and honest.
 
 ### 2.1 The `stint` CLI
 
-Build it (repo contains both dashboard context and Deep Work on your working branch):
+Build it (any branch that includes Deep Work; the dashboard branch additionally
+carries the context bar):
 
 ```sh
 cd <stint-repo>
