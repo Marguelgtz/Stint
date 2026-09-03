@@ -42,11 +42,15 @@ func (s Status) Terminal() bool {
 func (s Status) String() string { return string(s) }
 
 // Task is one unit of Deep Work. IDs come from the mission (or from
-// coordinator discovery, marked via Source).
+// coordinator discovery, marked via Source). Verify is the task's own
+// acceptance command (a per-task precision step over the mission-level
+// command): when set, the coordinator runs it — instead of the mission's
+// ## Verification command — after each attempt of this task.
 type Task struct {
 	ID         string     `json:"id"`
 	Objective  string     `json:"objective"`
 	Acceptance string     `json:"acceptance,omitempty"`
+	Verify     string     `json:"verify,omitempty"`
 	Status     Status     `json:"status"`
 	Attempts   int        `json:"attempts"`
 	Blocker    string     `json:"blocker,omitempty"`

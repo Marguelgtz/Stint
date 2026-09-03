@@ -27,6 +27,8 @@ import (
 //	## Tasks
 //	- [ ] <ID>: <objective>
 //	  - acceptance: <what must be true for the task to count as done>
+//	  - verify: <shell command the coordinator runs to verify THIS task;
+//	    overrides the mission-level ## Verification command for this task>
 //
 // Unknown sections are ignored so the format can grow. Objective and a
 // non-empty task list are required; anything else is optional.
@@ -88,6 +90,8 @@ func ParseMission(content string) (Mission, error) {
 			}
 			if strings.HasPrefix(body, "acceptance:") && taskIdx >= 0 {
 				m.Tasks[taskIdx].Acceptance = strings.TrimSpace(strings.TrimPrefix(body, "acceptance:"))
+			} else if strings.HasPrefix(body, "verify:") && taskIdx >= 0 {
+				m.Tasks[taskIdx].Verify = strings.TrimSpace(stripCodeFence(strings.TrimPrefix(body, "verify:")))
 			} else if id, objective, ok := taskFields(body); ok {
 				if !taskIDRe.MatchString(id) {
 					return m, fmt.Errorf("task ID %q is invalid (use letters, digits, _ or -)", id)

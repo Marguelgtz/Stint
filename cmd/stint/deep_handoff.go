@@ -50,7 +50,12 @@ func buildHandoff(s deep.DeepState, reason string, now time.Time, finalVerify st
 	b.WriteString("\n## Verification\n\n")
 	switch {
 	case s.Verify == "":
-		b.WriteString("The mission defines no verification command; task results above reflect worker reports (unverified by the coordinator).\n")
+		if anyTaskHasVerify(s) {
+			b.WriteString("The mission defines no mission-level verification command, so no final mission check ran; " +
+				"tasks with their own `verify:` command were checked by it, and the rest reflect worker reports (unverified by the coordinator).\n")
+		} else {
+			b.WriteString("The mission defines no verification command; task results above reflect worker reports (unverified by the coordinator).\n")
+		}
 	case strings.TrimSpace(finalVerify) == "":
 		b.WriteString("Final verification produced no pass/fail signal; treat results as unverified.\n")
 	default:
@@ -98,7 +103,7 @@ func buildHandoff(s deep.DeepState, reason string, now time.Time, finalVerify st
 }
 
 func taskHandoffStatus(s deep.DeepState, t deep.Task) string {
-	if t.Status == deep.StatusVerified && s.Verify == "" {
+	if t.Status == deep.StatusVerified && s.Verify == "" && t.Verify == "" {
 		return "verified (unverified: no verify command; worker report)"
 	}
 	if t.Status == deep.StatusBlocked {
@@ -107,10 +112,22 @@ func taskHandoffStatus(s deep.DeepState, t deep.Task) string {
 	return string(t.Status)
 }
 
+func anyTaskHasVerify(s deep.DeepState) bool {
+	for _, t := range s.Tasks {
+		if t.Verify != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func taskHandoffEvidence(s deep.DeepState, t deep.Task) string {
 	switch {
 	case t.Status == deep.StatusVerified:
-		if s.Verify == "" {
+		switch {
+		case t.Verify != "":
+			return fmt.Sprintf("task verify passed (`%s`)", t.Verify)
+		case s.Verify == "":
 			return "worker reported completion (no verify command defined)"
 		}
 		return "mission verify passed"
