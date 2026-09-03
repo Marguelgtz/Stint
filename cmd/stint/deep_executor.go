@@ -18,10 +18,14 @@ type execInput struct {
 	prompt      string
 	timeout     time.Duration
 	autoApprove bool
-	provider    string
-	model       string
-	apiKey      string
-	clineConfig string
+	// allowedCommands is the session's command allow-list policy; it is
+	// named in the prompt (COMMAND POLICY) and is enforced by the CLI's
+	// approval mode (denied outside the list while auto-approval is off).
+	allowedCommands []string
+	provider        string
+	model           string
+	apiKey          string
+	clineConfig     string
 }
 
 // execResult is the observable outcome of an invocation. The invocation

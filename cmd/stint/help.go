@@ -261,7 +261,8 @@ Subcommands:
 			{name: "--hours", argument: "<float>", defaultVal: "compute session deadline", purpose: "optional Deep Work duration cap; may only tighten the session deadline"},
 			{name: "--task-timeout", argument: "<dur>", defaultVal: "10m", purpose: "maximum wall time per coding-agent invocation"},
 			{name: "--max-attempts", argument: "<int>", defaultVal: "3", purpose: "executor attempts per task before parking"},
-			{name: "--auto-approve", defaultVal: "true", purpose: "auto-approve Cline tool calls inside the isolated worktree"},
+			{name: "--auto-approve", defaultVal: "false", purpose: "auto-approve ALL Cline tool calls (default off: deny-by-default; with it off, only --allow-command prefixes may run)"},
+			{name: "--allow-command", argument: "<prefix>", defaultVal: "none", purpose: "command prefix the worker may run (repeatable; named in the worker prompt, denied by the CLI otherwise while auto-approve is off)"},
 			{name: "--provider", argument: "<id>", defaultVal: "openai-compatible", purpose: "Cline provider id"},
 			{name: "--model", argument: "<id>", defaultVal: "first model served by the Stint endpoint", purpose: "model id"},
 			{name: "--api-key", argument: "<key>", purpose: "Cline API key override"},
@@ -278,6 +279,7 @@ Subcommands:
 		notes: []string{
 			"Work happens in a Stint-owned worktree (<repo>/.stint-deep/<session>) on branch stint/deep-<session>; your active checkout is never touched and nothing is pushed.",
 			"State and the handoff live under ~/.local/state/stint/deep/<session>/; the handoff is also written to the worktree root.",
+			"Safety: auto-approval is off by default; grant the commands a mission needs with repeatable --allow-command prefixes, and every invocation, verification run, and state event is recorded in incidents.jsonl (recent tail: `stint deep status`).",
 			"The mission file must have an Objective and at least one task ('- [ ] ID: objective'); see docs/DEEP_WORK.md (DWX-011) for the full skeleton.",
 			"Host sleep matters: if the machine sleeps, wall-clock deadlines keep advancing.",
 		},

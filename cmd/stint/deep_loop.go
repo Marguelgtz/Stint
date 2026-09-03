@@ -22,6 +22,9 @@ type deepCoordinator struct {
 	executor    executor
 	now         func() time.Time
 	taskTimeout time.Duration
+	// verifyTimeout bounds one verification command run by the coordinator;
+	// a hung verify must not stall the loop (zero = the 3 m built-in bound).
+	verifyTimeout time.Duration
 	// verify runs one verification command in the worktree; the coordinator
 	// decides which command (the task's own, else the mission's) to hand it.
 	verify func(ctx context.Context, command, workdir string) (string, bool, error)
@@ -37,6 +40,12 @@ func (c *deepCoordinator) execInputFor(t deep.Task) execInput {
 	in.timeout = c.taskTimeout
 	mission := c.mission()
 	in.prompt = deep.BuildTaskPrompt(mission, t, t.Attempts, c.repoSummary())
+	// The session's command policy is part of the reconstructed context: the
+	// worker must know exactly which commands it may run and what will
+	// happen to the rest.
+	if sec := deep.CommandPolicySection(in.allowedCommands, in.autoApprove); sec != "" {
+		in.prompt += sec
+	}
 	return in
 }
 
@@ -52,7 +61,24 @@ func (c *deepCoordinator) mission() deep.Mission {
 func (c *deepCoordinator) save() {
 	if err := c.state.SaveDir(c.stateDir); err != nil {
 		c.logf("WARNING: persist state: %v", err)
+		c.incident(deep.IncidentStateSave, "", err.Error())
 	}
+}
+
+// incident records one safety-relevant event in the session's incident log
+// (and mirrors it to coordinator.log). Best effort: auditing must never fail
+// the run.
+func (c *deepCoordinator) incident(kind, taskID, detail string) {
+	deep.AppendIncident(c.stateDir, *c.state, kind, taskID, detail)
+	c.logf("incident %s %s: %s", kind, taskID, detail)
+}
+
+// policySummary is the compact command-policy description used in incidents.
+func policySummary(in execInput) string {
+	if len(in.allowedCommands) == 0 {
+		return fmt.Sprintf("autoApprove=%t allow=<none>", in.autoApprove)
+	}
+	return fmt.Sprintf("autoApprove=%t allow=[%s]", in.autoApprove, strings.Join(in.allowedCommands, ", "))
 }
 
 // stillExecuting re-reads the durable phase. An external `stint deep stop`
@@ -96,13 +122,23 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) {
 
 	tc, cancel := context.WithTimeout(ctx, c.taskTimeout)
 	defer cancel()
+	c.incident(deep.IncidentExecutorInvoke, t.ID,
+		fmt.Sprintf("attempt %d %s (timeout %s)", t.Attempts, policySummary(c.execCfg), c.taskTimeout))
 	res, err := c.executor.run(tc, c.execInputFor(*t))
 	if err != nil {
 		c.logf("task %s: executor error: %v", t.ID, err)
+		c.incident(deep.IncidentExecutorError, t.ID, err.Error())
 	}
 	c.logf("task %s attempt %d result: %s", t.ID, t.Attempts, res.summary())
 
-	verified, verifyOut := c.accept(t, res)
+	verified, verifyOut, verifyCmd := c.accept(t, res)
+	if verifyCmd != "" {
+		if verified {
+			c.incident(deep.IncidentVerifyRun, t.ID, "command=`"+verifyCmd+"` result=pass")
+		} else {
+			c.incident(deep.IncidentVerifyRun, t.ID, "command=`"+verifyCmd+"` result=fail")
+		}
+	}
 	t.LastResult = res.summary()
 	if verifyOut != "" {
 		t.LastResult += " | verify: " + strings.TrimSpace(tailLine(verifyOut, 2))
@@ -116,6 +152,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) {
 		t.Blocker = ""
 		if msg, err := c.git.commitAll(c.state.WorktreePath, fmt.Sprintf("deep: %s %s verified", c.state.SessionID, t.ID)); err != nil {
 			c.logf("checkpoint commit for %s: %v (%s)", t.ID, err, msg)
+			c.incident(deep.IncidentCheckpointFail, t.ID, "checkpoint commit failed: "+err.Error())
 		}
 		c.logf("task %s VERIFIED", t.ID)
 	case t.Attempts < c.state.TaskAttemptCap && now.Add(c.taskTimeout).Before(c.state.LandBefore):
@@ -136,6 +173,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) {
 		c.save()
 	} else {
 		c.logf("task %s: session stopped during the invocation; outcome not persisted", t.ID)
+		c.incident(deep.IncidentExternalStop, t.ID, "outcome of the in-flight attempt was not persisted")
 	}
 }
 
@@ -144,17 +182,25 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) {
 // (a per-task command is the precision step for missions whose single
 // command is broader than any one task's scope). With no command at all,
 // the worker's completion is recorded but the handoff marks the result
-// unverified.
-func (c *deepCoordinator) accept(t *deep.Task, res execResult) (bool, string) {
+// unverified. The verification run is bounded: a hung command must not
+// stall the coordinator. It returns the command it used so the caller can
+// record it in the incident log.
+func (c *deepCoordinator) accept(t *deep.Task, res execResult) (bool, string, string) {
 	command := t.Verify
 	if command == "" {
 		command = c.state.Verify
 	}
 	if command == "" {
-		return res.completed && res.exitCode == 0, ""
+		return res.completed && res.exitCode == 0, "", ""
 	}
-	out, ok, _ := c.verify(context.Background(), command, c.state.WorktreePath)
-	return ok, out
+	bound := c.verifyTimeout
+	if bound <= 0 {
+		bound = 3 * time.Minute
+	}
+	vctx, cancel := context.WithTimeout(context.Background(), bound)
+	defer cancel()
+	out, ok, _ := c.verify(vctx, command, c.state.WorktreePath)
+	return ok, out, command
 }
 
 func blockReason(res execResult, verified bool, verifyOut string) string {
@@ -189,6 +235,7 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 		if fresh, err := deep.LoadState(c.stateDir, c.state.SessionID); err == nil &&
 			fresh.Phase != deep.PhaseExecuting {
 			c.logf("state phase is %s; stopping loop", fresh.Phase)
+			c.incident(deep.IncidentExternalStop, "", "phase "+string(fresh.Phase))
 			return nil
 		}
 

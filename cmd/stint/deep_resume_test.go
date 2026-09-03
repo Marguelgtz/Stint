@@ -93,10 +93,17 @@ func TestResolveExecSettings(t *testing.T) {
 			t.Errorf("model = %q, want the persisted model (flags never clear it)", got.Model)
 		}
 	})
-	t.Run("legacy sessions fall back to start-time defaults", func(t *testing.T) {
+	t.Run("legacy sessions fall back to deny-by-default start-time defaults", func(t *testing.T) {
 		got := resolveExecSettings(&deep.DeepState{}, execOverrides{})
-		if !got.AutoApprove || got.Provider != "openai-compatible" || got.TaskTimeoutSec != 600 || got.Model != "" {
-			t.Errorf("got = %+v", got)
+		if got.AutoApprove || got.Provider != "openai-compatible" || got.TaskTimeoutSec != 600 || got.Model != "" {
+			t.Errorf("got = %+v, want auto-approval OFF (safety default)", got)
+		}
+	})
+	t.Run("command policy is persisted state, not an override", func(t *testing.T) {
+		st := &deep.DeepState{Exec: &deep.ExecSettings{AutoApprove: false, AllowedCommands: []string{"go test", "git status"}}}
+		got := resolveExecSettings(st, execOverrides{})
+		if got.AutoApprove || len(got.AllowedCommands) != 2 || got.AllowedCommands[0] != "go test" || got.AllowedCommands[1] != "git status" {
+			t.Errorf("got = %+v, want the persisted allow-list intact", got)
 		}
 	})
 }

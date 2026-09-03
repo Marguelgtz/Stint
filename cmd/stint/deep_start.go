@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
@@ -33,16 +34,30 @@ func runDeep(args []string) error {
 }
 
 type deepStartFlags struct {
-	missionPath string
-	repoPath    string
-	hours       float64
-	taskTimeout time.Duration
-	maxAttempts int
-	autoApprove bool
-	provider    string
-	model       string
-	apiKey      string
-	clineConfig string
+	missionPath   string
+	repoPath      string
+	hours         float64
+	taskTimeout   time.Duration
+	maxAttempts   int
+	autoApprove   bool
+	allowCommands stringSlice
+	provider      string
+	model         string
+	apiKey        string
+	clineConfig   string
+}
+
+// stringSlice collects a repeatable --flag value into a slice.
+type stringSlice []string
+
+func (s *stringSlice) String() string { return strings.Join(*s, ",") }
+
+func (s *stringSlice) Set(v string) error {
+	if v == "" {
+		return errors.New("empty command")
+	}
+	*s = append(*s, v)
+	return nil
 }
 
 // runDeepStart launches a Slice-1 Deep Work session: it rides an existing
@@ -58,7 +73,9 @@ func runDeepStart(args []string) error {
 	fs.Float64Var(&f.hours, "hours", 0, "optional Deep Work duration cap in hours (default: the compute session deadline)")
 	fs.DurationVar(&f.taskTimeout, "task-timeout", 10*time.Minute, "maximum wall time per coding-agent invocation")
 	fs.IntVar(&f.maxAttempts, "max-attempts", 3, "maximum executor attempts per task before parking")
-	fs.BoolVar(&f.autoApprove, "auto-approve", true, "auto-approve Cline tool calls inside the isolated worktree")
+	fs.BoolVar(&f.autoApprove, "auto-approve", false, "auto-approve ALL Cline tool calls (default: off — deny-by-default; "+
+		"with it off, commands outside --allow-command are denied by the CLI)")
+	fs.Var(&f.allowCommands, "allow-command", "command prefix the worker may run (repeatable; named in the prompt and denied otherwise while auto-approve is off)")
 	fs.StringVar(&f.provider, "provider", "openai-compatible", "Cline provider id")
 	fs.StringVar(&f.model, "model", "", "model id (default: first model served by the Stint endpoint)")
 	fs.StringVar(&f.apiKey, "api-key", "", "Cline API key override")
@@ -147,14 +164,16 @@ func runDeepStart(args []string) error {
 
 	state := deep.NewState(sessionID, mission, f.repoPath, worktree, deadline, landBefore, f.maxAttempts, now)
 	state.BaseCommit = baseCommit
-	// Persist the executor settings so `stint deep resume` can reconstruct
-	// identical invocations without a live endpoint or operator memory.
+	// Persist the executor settings (and command policy) so `stint deep resume`
+	// can reconstruct identical invocations without a live endpoint or
+	// operator memory.
 	state.Exec = &deep.ExecSettings{
-		AutoApprove:    f.autoApprove,
-		Provider:       f.provider,
-		Model:          modelID,
-		ClineConfig:    f.clineConfig,
-		TaskTimeoutSec: int(f.taskTimeout.Seconds()),
+		AutoApprove:     f.autoApprove,
+		Provider:        f.provider,
+		Model:           modelID,
+		ClineConfig:     f.clineConfig,
+		TaskTimeoutSec:  int(f.taskTimeout.Seconds()),
+		AllowedCommands: f.allowCommands,
 	}
 	if err := state.SaveDir(paths.StateDir); err != nil {
 		return err
@@ -164,13 +183,14 @@ func runDeepStart(args []string) error {
 	}
 
 	return deepRunSession(paths.StateDir, &state, &deepRunConfig{
-		autoApprove: f.autoApprove,
-		provider:    f.provider,
-		model:       modelID,
-		apiKey:      f.apiKey,
-		clineConfig: f.clineConfig,
-		taskTimeout: f.taskTimeout,
-		missionName: mission.Name,
-		taskCount:   len(mission.Tasks),
+		autoApprove:     f.autoApprove,
+		allowedCommands: f.allowCommands,
+		provider:        f.provider,
+		model:           modelID,
+		apiKey:          f.apiKey,
+		clineConfig:     f.clineConfig,
+		taskTimeout:     f.taskTimeout,
+		missionName:     mission.Name,
+		taskCount:       len(mission.Tasks),
 	}, git, false)
 }
