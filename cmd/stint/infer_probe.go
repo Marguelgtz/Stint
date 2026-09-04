@@ -204,9 +204,7 @@ func inferFromEpoch(result *inferenceTelemetry, epoch inferenceEpoch) {
 		result.Processing = int(counterOrDefault(epoch.Counters, metricRequestsProcessing, float64(result.Processing)))
 		result.Deferred = int(counterOrDefault(epoch.Counters, metricRequestsDeferred, 0))
 	}
-	result.CacheReuseRatio = inferenceRatio(epoch.Counters,
-		[]string{metricPromptCachedTotal, metricNInferPrefixCacheHit},
-		[]string{metricPromptTokensTotal})
+	result.CacheReuseRatio = cacheReuseRatio(epoch.Counters)
 	result.SpecAcceptRatio = inferenceRatio(epoch.Counters,
 		[]string{metricNInferDraftAccepted, metricLlamaSpecAccepted},
 		[]string{metricNInferDraftTokens, metricLlamaSpecDrafts})
@@ -249,6 +247,32 @@ func counterDeltaRate(prev, cur map[string]float64, name string, elapsed float64
 		return nil
 	}
 	return &rate
+}
+
+// cacheReuseRatio derives the prompt-cache reuse fraction per runtime.
+// llama.cpp publishes cached prompt tokens as a subset of all processed
+// prompt tokens, so reuse is cached/total. NInfer re-publishes
+// llamacpp:prompt_tokens_total counting non-cached tokens only and tracks
+// the cached portion in ninfer:prefix_cache_hit_tokens_total; the two are
+// disjoint parts of the prompt, so on NInfer reuse is
+// hits/(hits+non-cached). Using hits/non-cached on NInfer is unbounded and
+// pins at 100% on long sessions (verified on a live instance, 2026-09-03:
+// raw 78% reuse reported as a pinned "100%"). Detection is by the presence
+// of the NInfer-only series, so one probe works on both runtimes.
+func cacheReuseRatio(counters map[string]float64) *float64 {
+	if hits, ok := counters[metricNInferPrefixCacheHit]; ok {
+		nonCached := counterOrDefault(counters, metricPromptTokensTotal, 0)
+		denominator := hits + nonCached
+		if denominator <= 0 {
+			return nil
+		}
+		ratio := hits / denominator
+		if ratio > 1 {
+			ratio = 1
+		}
+		return &ratio
+	}
+	return inferenceRatio(counters, []string{metricPromptCachedTotal}, []string{metricPromptTokensTotal})
 }
 
 // inferenceRatio returns numerator/denominator, taking the first positive
