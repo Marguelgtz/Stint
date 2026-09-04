@@ -66,10 +66,11 @@ A previous-session, previous-runtime, or previous-context sample is treated as u
 
 Independent from the cached benchmark sample, `--refresh` (and the dashboard) observe live engine activity by polling two read-only surfaces through the local tunnel:
 
-- `/metrics` — Prometheus counters. Both runtimes publish the shared `llamacpp:*` series (`prompt_tokens_total`, `prompt_tokens_cached_total`, `tokens_predicted_total`, `requests_processing`, `requests_deferred`); NInfer additionally publishes `ninfer:prefix_cache_hit_tokens_total` and draft/speculative counters.
-- `/slots` — one lane object per concurrent runtime lane (llama.cpp slot or NInfer lane), including per-lane prompt token depth, processing state, and — on NInfer — `retained`/`session_digest` so a lane can be attributed to the agent that owns it.
+- `/metrics` — Prometheus counters. Both runtimes publish the shared `llamacpp:*` series (`prompt_tokens_total`, `prompt_tokens_cached_total`, `tokens_predicted_total`, `requests_processing`, `requests_deferred`); NInfer additionally publishes `ninfer:prefix_cache_hit_tokens_total` and draft/speculative counters. On NInfer the re-published `llamacpp:prompt_tokens_total` counts **non-cached** prompt tokens only (verified on a live instance, 2026-09-03); the cached portion is tracked by `ninfer:prefix_cache_hit_tokens_total`, so prefill rates and cache-reuse ratios derived from these counters must be interpreted per runtime.
+- `/slots` — one lane object per concurrent runtime lane (llama.cpp slot or NInfer lane), including per-lane prompt token depth, processing state, and — on NInfer — `retained` (context held after request completion) and `session_digest`. `session_digest` is runtime metadata only: a per-completion history fingerprint that changes on every completion; it is **not** a stable agent identity and must not be used to attribute a lane to a client.
+- Endpoint health — probed separately via `GET /v1/models` (model advertised). NInfer does not respond on `/` or `/health` (verified on a live instance, 2026-09-03), so health checks must use `/v1/models`.
 
-From two epochs separated by a 1.2s gap the snapshot derives:
+From two epochs separated by a 1.2s gap (each fetch capped at 2.5s) the snapshot derives:
 
 - active agents: lanes that are processing or hold a resident prompt
 - deferred/queued requests from the engine
@@ -78,7 +79,7 @@ From two epochs separated by a 1.2s gap the snapshot derives:
 - cache reuse ratio (cached prompt tokens ÷ prompt tokens, clamped at 100%)
 - speculative accept ratio (accepted draft tokens ÷ draft tokens)
 
-The domain degrades by surface: missing `/metrics` still yields lane-level activity from `/slots`; missing both yields an unavailable reason (for llama.cpp: launch with `--metrics --slots`; NInfer serves both by default). Live observation never sends an inference request and never mutates the remote session; it is also never mixed with the cached `performance` benchmark domain.
+The domain degrades by surface: missing `/metrics` still yields lane-level activity from `/slots`; missing both yields an unavailable reason (for llama.cpp: launch with `--metrics --slots`; NInfer serves both by default). A slow tunnel that outlives the parent probe budget drops the second epoch and degrades to a single-epoch lane snapshot (token rates unavailable) instead of reporting the engine unavailable. Live observation never sends an inference request and never mutates the remote session; it is also never mixed with the cached `performance` benchmark domain.
 
 ## Snapshot domains
 
