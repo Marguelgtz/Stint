@@ -153,6 +153,59 @@ func printActiveSessionStatus(state sessionstate.State) {
 		printSessionSnapshotHuman(buildSessionSnapshot(state, time.Now().UTC()), false)
 		return
 	}
-	snapshot := collectSessionSnapshot(contextBackground(), paths, state, time.Now().UTC(), false, defaultSnapshotProbeDeps())
+	now := time.Now().UTC()
+	snapshot := collectSessionSnapshot(contextBackground(), paths, state, now, false, defaultSnapshotProbeDeps())
 	printSessionSnapshotHuman(snapshot, false)
+	if warning := staleStateWarning(state, snapshot.Health.Tunnel.Running, now); warning != "" {
+		fmt.Println()
+		fmt.Println(warning)
+	}
+}
+
+// stateFreshnessWriteMax bounds how long local session state may go unwritten
+// while the tunnel is still running before the local deadline view is
+// considered possibly stale.
+const stateFreshnessWriteMax = 2 * time.Minute
+
+// stateFreshnessDangerRemaining is the locally computed remaining window in
+// which a stale local deadline is dangerous to act on. The 2026-09-03 live
+// investigation observed a pre-extend deadline displayed with ~10 minutes
+// left while the true deadline was ~2 hours out; warning once the local
+// deadline is within this window catches that class of mistake without
+// nagging on healthy long sessions.
+const stateFreshnessDangerRemaining = 15 * time.Minute
+
+// staleStateWarning reports a hint when the local-only view of a live session
+// may lag the remote session (for example after a `stint extend` executed
+// elsewhere that has not been resynced locally). It stays silent while the
+// state was written recently, the tunnel is not running, the session has no
+// deadline, or the local deadline is still comfortably in the future.
+func staleStateWarning(state sessionstate.State, tunnelRunning bool, now time.Time) string {
+	if !tunnelRunning || state.Deadline.IsZero() {
+		return ""
+	}
+	if remaining := sessionstate.Remaining(state, now); remaining > stateFreshnessDangerRemaining {
+		return ""
+	}
+	if !state.UpdatedAt.IsZero() && now.Sub(state.UpdatedAt) <= stateFreshnessWriteMax {
+		return ""
+	}
+	age := "never written"
+	if !state.UpdatedAt.IsZero() {
+		age = humanizeStateAge(now.Sub(state.UpdatedAt)) + " old"
+	}
+	if !now.Before(state.Deadline) {
+		return fmt.Sprintf("State freshness    local deadline has already passed while the tunnel is still running and local state is %s — run `stint status --refresh` to resync from the remote session", age)
+	}
+	return fmt.Sprintf("State freshness    local state is %s — the auto-destroy deadline shown may be stale — run `stint status --refresh` to resync from the remote session", age)
+}
+
+func humanizeStateAge(d time.Duration) string {
+	if d < time.Minute {
+		return "less than a minute"
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%d min", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
 }
