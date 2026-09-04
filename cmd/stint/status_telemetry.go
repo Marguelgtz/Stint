@@ -68,7 +68,7 @@ func runStatusTelemetry(args []string) error {
 	ctx := context.Background()
 	if *refresh {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 4*time.Second)
+		ctx, cancel = context.WithTimeout(ctx, statusRefreshBudget)
 		defer cancel()
 	}
 	snapshot := collectSessionSnapshot(ctx, paths, state, now, *refresh, defaultSnapshotProbeDeps())
