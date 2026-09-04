@@ -16,7 +16,8 @@ Read-only surfaces stay consistent with paid starts:
 
 - `stint plan interactive` prints `Runtime (auto)` for the selected offer, using the same selection rule as `stint start`.
 - `stint status` prints `NInfer config` (derived from the persisted context) for NInfer sessions.
-- `stint status --refresh` and `stint dash` observe the engine's `/slots` endpoint, so a two-client NInfer session exposes both lanes directly.
+- `stint status --refresh` and `stint dash` observe the engine's `/metrics` and `/slots` endpoints, so a two-client NInfer session exposes both lanes directly.
+- Endpoint health is probed via `GET /v1/models` (both runtimes answer it; NInfer does **not** respond on `/` or `/health`, verified on a live instance 2026-09-03), so health checks must not use those paths.
 - `stint dash` shows the runtime and context in the session header.
 
 ## Host qualification
