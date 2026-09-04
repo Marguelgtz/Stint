@@ -31,7 +31,11 @@ type remoteTelemetrySample struct {
 // lane). It is parsed from the runtime's /slots endpoint, so the field names
 // mirror both JSON schemas: llama.cpp publishes id/n_ctx/speculative/
 // is_processing plus n_prompt_tokens* while a task runs, and NInfer adds
-// retained and session_digest to identify the agent owning the lane.
+// retained (context held after request completion) and session_digest.
+// session_digest is runtime metadata only: a per-completion history
+// fingerprint that changes on every completion (verified on a live NInfer
+// instance, 2026-09-03). It is not a stable agent identity and must not be
+// used for lane attribution.
 type inferenceLane struct {
 	ID          int    `json:"id"`
 	NCTX        int    `json:"n_ctx,omitempty"`
