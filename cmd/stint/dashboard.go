@@ -88,6 +88,9 @@ type dashboardController struct {
 	deadlineDirection deadlineDirection
 	deadlineDelta     time.Duration
 	customDuration    string
+	lastGoodInference dash.Inference
+	lastGoodAt        time.Time
+	lastGoodInstance  int64
 }
 
 func runDashboard(args []string) error {
@@ -615,6 +618,9 @@ func (c *dashboardController) applyRefresh(result dashboardLoadResult) {
 		c.model.GPU = dash.GPU{}
 		c.model.Perf = dash.Perf{}
 		c.model.Inference = dash.Inference{}
+		c.lastGoodInference = dash.Inference{}
+		c.lastGoodAt = time.Time{}
+		c.lastGoodInstance = 0
 		c.model.Notice = "The recorded session has ended."
 		return
 	}
@@ -663,7 +669,7 @@ func (c *dashboardController) projectSnapshot() {
 	perf := dashboardPerf(s.Performance)
 	perf.Benchmarking = c.benchmarking
 	c.model.Perf = perf
-	c.model.Inference = dashboardInference(s.Inference)
+	c.model.Inference = c.projectInference(s)
 	c.model.Logs = c.logs
 	if notice := dashboardRecoveryNotice(s); notice != "" && c.model.Modal == nil {
 		c.model.Notice = notice
@@ -767,6 +773,37 @@ func dashboardInference(value inferenceTelemetry) dash.Inference {
 	}
 	result.Lanes = inferenceLaneSummary(value.Lanes)
 	return result
+}
+
+// projectInference displays the live inference domain. When a refresh probe
+// fails after a good sample exists (slow tunnel, engine restart), it keeps
+// the last good sample visible, marked stale with its age, instead of the
+// panel flipping to "unavailable" for that cycle (observed flicker at peak
+// two-client load, 2026-09-03). A successful probe replaces the retained
+// sample, and a different session discards it.
+func (c *dashboardController) projectInference(s sessionSnapshot) dash.Inference {
+	sample := dashboardInference(s.Inference)
+	if s.Session.InstanceID != c.lastGoodInstance {
+		c.lastGoodInference = dash.Inference{}
+		c.lastGoodAt = time.Time{}
+		c.lastGoodInstance = s.Session.InstanceID
+	}
+	if s.Inference.Refreshed && s.Inference.Available {
+		c.lastGoodInference = sample
+		if !s.Inference.Meta.SampledAt.IsZero() {
+			c.lastGoodAt = s.Inference.Meta.SampledAt
+		} else {
+			c.lastGoodAt = time.Now().UTC()
+		}
+		return sample
+	}
+	if c.lastGoodAt.IsZero() {
+		return sample
+	}
+	retained := c.lastGoodInference
+	retained.Stale = true
+	retained.Age = formatSessionDuration(time.Since(c.lastGoodAt))
+	return retained
 }
 
 func (c *dashboardController) reloadLogs() {
