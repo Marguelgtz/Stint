@@ -69,15 +69,19 @@ const llamaSlotsFixture = `[
    "is_processing": false, "is_child": false}
 ]`
 
-// ninferSlotsFixture mirrors NInfer /slots: lane objects add retained and
-// session_digest so the dashboard can attribute a lane to the owning agent.
+// ninferSlotsFixture mirrors the real NInfer /slots schema (captured on a
+// live instance, 2026-09-03): lane objects add retained (context held after
+// request completion), speculative, and session_digest — a per-completion
+// history fingerprint, not a stable agent identity — and checkpoints is an
+// array (empty while the run has no checkpoints). n_ctx matches this
+// branch's default "coding" preset; other presets launch different contexts.
 const ninferSlotsFixture = `[
-  {"id": 0, "n_ctx": 126976, "is_processing": true, "retained": true,
+  {"id": 0, "n_ctx": 126976, "speculative": true, "is_processing": true, "retained": true,
    "session_digest": "a1b2c3", "n_prompt_tokens": 45000, "n_prompt_tokens_cache": 41000,
-   "checkpoint": {"step": 12}},
-  {"id": 1, "n_ctx": 126976, "is_processing": false, "retained": true,
-   "session_digest": "d4e5f6", "n_prompt_tokens": 0},
-  {"id": 2, "n_ctx": 126976, "is_processing": false, "n_prompt_tokens": 0}
+   "checkpoints": []},
+  {"id": 1, "n_ctx": 126976, "speculative": true, "is_processing": false, "retained": true,
+   "session_digest": "d4e5f6", "n_prompt_tokens": 0, "checkpoints": []},
+  {"id": 2, "n_ctx": 126976, "speculative": true, "is_processing": false, "n_prompt_tokens": 0, "checkpoints": []}
 ]`
 
 type inferenceFixtureServer struct {
