@@ -214,7 +214,7 @@ Interactive confirmation does not hold the lifecycle lock. Stint previews the ch
 
 ### `stint down`
 
-Stops the local tunnel and watchdog, destroys the Vast instance, and clears the local session state. Safe to run when no session is recorded.
+Stops the local tunnel and watchdog, destroys the Vast instance, and clears the local session state. Before any destruction it shows the instance and remaining time and requires you to type the literal word `destroy`; any other input aborts with the session left running. `stint down --yes` skips the prompt for unattended use. Safe to run when no session is recorded.
 
 - Compute is also destroyed automatically at the session deadline by the watchdog.
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -303,6 +304,7 @@ func startRemoteModel(ctx context.Context, paths config.Paths, state sessionstat
 func runDown(args []string) error {
 	fs := flag.NewFlagSet("down", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	yes := fs.Bool("yes", false, "destroy without the interactive type-to-confirm")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -323,6 +325,9 @@ func runDown(args []string) error {
 	if err != nil {
 		return err
 	}
+	if !*yes && !confirmDestroy(os.Stdin, os.Stdout, state) {
+		return nil
+	}
 	credentials, err := config.LoadCredentials(paths)
 	if err != nil {
 		return err
@@ -341,6 +346,29 @@ func runDown(args []string) error {
 	}
 	fmt.Println("Compute destroyed. Cline endpoint is offline.")
 	return nil
+}
+
+// confirmDestroy is the type-to-confirm gate before `stint down` destroys a
+// paid instance: it summarizes what is about to be destroyed and requires
+// the literal word "destroy" (the dashboard uses an equivalent modal). Any
+// other input — including EOF on a non-interactive stdin — aborts with no
+// side effects; unattended callers pass --yes to skip the gate.
+func confirmDestroy(stdin io.Reader, out io.Writer, state sessionstate.State) bool {
+	fmt.Fprintf(out, "Instance       %d\n", state.InstanceID)
+	fmt.Fprintf(out, "Remaining      %s\n", formatSessionDuration(time.Until(state.Deadline)))
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "This immediately destroys the Vast instance, stops the tunnel and watchdog, and clears the local session state.")
+	fmt.Fprint(out, "Type \"destroy\" to confirm: ")
+	line, err := bufio.NewReader(stdin).ReadString('\n')
+	if err != nil {
+		fmt.Fprintln(out, "\nConfirmation unavailable (no interactive input). Use --yes to destroy without confirmation.")
+		return false
+	}
+	if strings.TrimSpace(line) != "destroy" {
+		fmt.Fprintln(out, "Aborted: session left running.")
+		return false
+	}
+	return true
 }
 
 func runWatchdog(args []string) error {
