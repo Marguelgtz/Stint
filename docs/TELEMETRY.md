@@ -79,7 +79,7 @@ From two epochs separated by a 1.2s gap (each fetch capped at 2.5s) the snapshot
 - cache reuse ratio (cached prompt tokens ÷ prompt tokens, clamped at 100%)
 - speculative accept ratio (accepted draft tokens ÷ draft tokens)
 
-The domain degrades by surface: missing `/metrics` still yields lane-level activity from `/slots`; missing both yields an unavailable reason (for llama.cpp: launch with `--metrics --slots`; NInfer serves both by default). A slow tunnel that outlives the parent probe budget drops the second epoch and degrades to a single-epoch lane snapshot (token rates unavailable) instead of reporting the engine unavailable. Live observation never sends an inference request and never mutates the remote session; it is also never mixed with the cached `performance` benchmark domain.
+The domain degrades by surface: missing `/metrics` still yields lane-level activity from `/slots`; missing both yields an unavailable reason (for llama.cpp: launch with `--metrics --slots`; NInfer serves both by default). A slow tunnel that outlives the parent probe budget drops the second epoch and degrades to a single-epoch lane snapshot (token rates unavailable) instead of reporting the engine unavailable. The parent probe budget is per consumer: `stint status --refresh` stays tight (4 s) for fast CLI feedback, while the dashboard auto-refresh allows 6 s so the second epoch usually fits on a slow tunnel, well under its 10 s cadence. Live observation never sends an inference request and never mutates the remote session; it is also never mixed with the cached `performance` benchmark domain.
 
 ## Snapshot domains
 

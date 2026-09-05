@@ -197,6 +197,22 @@ func TestParseSlotLanesRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+// TestRefreshBudgets pins the per-consumer refresh budget relationship:
+// the dashboard refresh gets more headroom than the CLI so its two-epoch
+// inference observation completes on slow tunnels, while staying under the
+// refresh cadence so consecutive refreshes never overlap.
+func TestRefreshBudgets(t *testing.T) {
+	if statusRefreshBudget <= 0 || dashboardRefreshBudget <= 0 {
+		t.Fatalf("refresh budgets must be positive: status=%v dashboard=%v", statusRefreshBudget, dashboardRefreshBudget)
+	}
+	if dashboardRefreshBudget <= statusRefreshBudget {
+		t.Fatalf("dashboard budget %v must exceed the status budget %v", dashboardRefreshBudget, statusRefreshBudget)
+	}
+	if dashboardRefreshBudget >= dashboardRefreshInterval {
+		t.Fatalf("dashboard budget %v must stay under the %v refresh cadence", dashboardRefreshBudget, dashboardRefreshInterval)
+	}
+}
+
 func TestProbeInferenceLlamaCPPBothEndpoints(t *testing.T) {
 	testInferenceTiming(t)
 	server := newInferenceFixtureServer(t, inferenceFixtureServer{

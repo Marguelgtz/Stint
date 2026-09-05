@@ -24,13 +24,28 @@ import (
 var inferenceProbeInterval = 1200 * time.Millisecond
 
 // inferenceFetchTimeout bounds each /metrics or /slots fetch of one epoch.
-// The parent probe context (4 s for `status --refresh` and the dashboard
-// refresh) still bounds the total two-epoch budget: a slow tunnel that cannot
-// finish the second epoch degrades to a single-epoch lane snapshot instead of
+// The per-consumer parent probe context (statusRefreshBudget for
+// `status --refresh`, dashboardRefreshBudget for the dashboard refresh)
+// bounds the total two-epoch budget: a slow tunnel that cannot finish the
+// second epoch degrades to a single-epoch lane snapshot instead of
 // flipping to unavailable. The 1.2 s budget starved under live two-client
 // load (observed 0.6–6 s tunnel latency, 2026-09-03) and made the dashboard
 // flicker to "unavailable" at peak load.
 var inferenceFetchTimeout = 2500 * time.Millisecond
+
+// statusRefreshBudget bounds one `stint status --refresh` cycle: the
+// endpoint probe, the SSH sample, and the two-epoch inference observation
+// together. Kept tight so the CLI returns fast; a slow tunnel that cannot
+// finish the second inference epoch degrades to a single-epoch snapshot.
+var statusRefreshBudget = 4 * time.Second
+
+// dashboardRefreshBudget bounds one dashboard auto-refresh cycle. It is
+// deliberately larger than statusRefreshBudget so the two-epoch inference
+// observation (worst case fetchTimeout + probeInterval + fetchTimeout)
+// usually fits even on a slow tunnel, keeping token rates live in the TUI;
+// it stays well under the 10 s refresh cadence, and the dashboard's
+// last-good inference display covers a refresh that still times out.
+var dashboardRefreshBudget = 6 * time.Second
 
 // Runtime-agnostic Prometheus metric names. llama.cpp (b10472) and NInfer
 // both publish the llamacpp:* series; NInfer additionally publishes the
