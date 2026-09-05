@@ -208,13 +208,13 @@ The detached watchdog is deadline-aware rather than a one-shot sleep:
 3. When the apparent deadline arrives, it acquires the same lifecycle lock used by start/resume/down/deadline mutation.
 4. It re-reads the state **under that lock** before destroying compute. An extension that commits at the old expiry boundary therefore wins safely.
 5. A watchdog whose recorded instance no longer matches the session exits without touching the replacement instance.
-6. If provider destruction fails, state is preserved and the watchdog retries rather than silently abandoning the paid resource.
+6. If provider destruction fails, state is preserved and the watchdog retries rather than silently abandoning the paid resource. The watchdog also verifies each destroy by polling Vast until the instance disappears; a destroy that was accepted but is still visible is treated as failed and retried the same way.
 
 Interactive confirmation does not hold the lifecycle lock. Stint previews the change first, then after confirmation acquires the lock and verifies that the instance and deadline are unchanged before committing. This prevents an unattended confirmation prompt from blocking auto-destroy.
 
 ### `stint down`
 
-Stops the local tunnel and watchdog, destroys the Vast instance, and clears the local session state. Before any destruction it shows the instance and remaining time and requires you to type the literal word `destroy`; any other input aborts with the session left running. `stint down --yes` skips the prompt for unattended use. Safe to run when no session is recorded.
+Stops the local tunnel and watchdog, destroys the Vast instance, and clears the local session state. Before any destruction it shows the instance and remaining time and requires you to type the literal word `destroy`; any other input aborts with the session left running. `stint down --yes` skips the prompt for unattended use. After the destroy is accepted, `stint down` polls Vast until the instance has disappeared; if it is still visible, a warning is printed and the session state is kept (re-running `stint down` once the instance is gone is a safe no-op). Safe to run when no session is recorded.
 
 - Compute is also destroyed automatically at the session deadline by the watchdog.
 

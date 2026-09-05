@@ -231,5 +231,12 @@ func destroyExpiredSession(paths config.Paths, state sessionstate.State) error {
 	if err := client.DestroyInstance(ctx, state.InstanceID); err != nil {
 		return err
 	}
+	// Verify the destroy actually landed: Vast can accept a destroy while
+	// host teardown is still in flight, and an unverified destroy must not
+	// clear the state that tracks the paid instance. Failure here flows
+	// into the watchdog's existing record-and-retry path.
+	if err := waitForInstanceGone(ctx, instanceGoneProbe(client, state.InstanceID)); err != nil {
+		return err
+	}
 	return sessionstate.Clear(paths)
 }

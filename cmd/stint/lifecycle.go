@@ -341,11 +341,64 @@ func runDown(args []string) error {
 	if err := client.DestroyInstance(ctx, state.InstanceID); err != nil {
 		return err
 	}
+	if err := waitForInstanceGone(ctx, instanceGoneProbe(client, state.InstanceID)); err != nil {
+		// Vast accepted the destroy but the instance is still visible after
+		// the verification window. Keep tracking the possibly-still-paid
+		// instance instead of clearing state: `stint down` is idempotent, so
+		// re-running it once the instance is gone is a safe no-op.
+		fmt.Printf("Warning: destroy was accepted but instance %d is still visible on Vast.\n", state.InstanceID)
+		fmt.Println("Local session state was kept. Check the Vast dashboard or run `stint down` again once the instance is gone.")
+		state.LastError = fmt.Sprintf("destroy unverified: instance %d still visible on Vast", state.InstanceID)
+		if err := sessionstate.Save(paths, state); err != nil {
+			return err
+		}
+		return nil
+	}
 	if err := sessionstate.Clear(paths); err != nil {
 		return err
 	}
 	fmt.Println("Compute destroyed. Cline endpoint is offline.")
 	return nil
+}
+
+// destroyGonePollInterval is the gap between Vast show polls that verify a
+// destroyed instance has actually disappeared before local state is cleared.
+var destroyGonePollInterval = 2 * time.Second
+
+// instanceGoneProbe adapts the Vast client to a probe that returns nil once
+// the instance no longer exists (404/410) and an error while it is still
+// visible or on transient API failures.
+func instanceGoneProbe(client *vast.Client, instanceID int64) func(context.Context) error {
+	return func(ctx context.Context) error {
+		_, err := client.ShowInstance(ctx, instanceID)
+		if err == nil {
+			return errors.New("instance still visible")
+		}
+		var apiErr *vast.APIError
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusGone) {
+			return nil
+		}
+		return err
+	}
+}
+
+// waitForInstanceGone polls show until it reports the instance as gone or
+// the context expires. Transient API failures do not abort verification;
+// an unconfirmed teardown returns an error so the caller keeps tracking
+// the paid instance.
+func waitForInstanceGone(ctx context.Context, show func(context.Context) error) error {
+	for {
+		if err := show(ctx); err == nil {
+			return nil
+		}
+		timer := time.NewTimer(destroyGonePollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("instance not confirmed gone: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 // confirmDestroy is the type-to-confirm gate before `stint down` destroys a

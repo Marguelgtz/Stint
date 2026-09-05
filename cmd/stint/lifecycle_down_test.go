@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -42,5 +44,37 @@ func TestConfirmDestroyNonInteractiveStdinAborts(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "--yes") {
 		t.Fatalf("missing --yes hint on EOF: %s", out.String())
+	}
+}
+
+func TestWaitForInstanceGoneConfirmsAfterRetries(t *testing.T) {
+	old := destroyGonePollInterval
+	destroyGonePollInterval = time.Millisecond
+	t.Cleanup(func() { destroyGonePollInterval = old })
+	calls := 0
+	show := func(context.Context) error {
+		calls++
+		if calls < 3 {
+			return errors.New("instance still visible")
+		}
+		return nil
+	}
+	if err := waitForInstanceGone(context.Background(), show); err != nil {
+		t.Fatalf("gave up on a verified-gone instance: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("show polled %d times, want 3", calls)
+	}
+}
+
+func TestWaitForInstanceGoneExpiresUnconfirmed(t *testing.T) {
+	old := destroyGonePollInterval
+	destroyGonePollInterval = time.Millisecond
+	t.Cleanup(func() { destroyGonePollInterval = old })
+	show := func(context.Context) error { return errors.New("instance still visible") }
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if err := waitForInstanceGone(ctx, show); err == nil {
+		t.Fatal("expected an error when the instance is never confirmed gone")
 	}
 }
