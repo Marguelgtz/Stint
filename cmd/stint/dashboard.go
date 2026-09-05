@@ -674,6 +674,12 @@ func (c *dashboardController) projectSnapshot() {
 	if notice := dashboardRecoveryNotice(s); notice != "" && c.model.Modal == nil {
 		c.model.Notice = notice
 	}
+	// The dashboard inherits the same staleness signal as `stint status` so
+	// an operator staring at the TUI sees the same "state may be stale"
+	// warning (and remedy) instead of an unexplained deadline.
+	if c.model.Modal == nil && c.model.Notice == "" && s.Staleness.DeadlineStale {
+		c.model.Notice = "State freshness: local state may be stale — run `stint status --refresh` to resync from the remote session"
+	}
 }
 
 func dashboardEndpointLabel(value endpointHealth) string {

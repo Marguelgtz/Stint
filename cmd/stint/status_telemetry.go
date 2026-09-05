@@ -236,6 +236,10 @@ func printSessionSnapshotHuman(snapshot sessionSnapshot, refreshed bool) {
 	default:
 		fmt.Println("Next action        wait for stint start")
 	}
+	if snapshot.Staleness.DeadlineStale {
+		fmt.Println()
+		fmt.Println("State freshness    local state may be stale (see the JSON `staleness` domain) — run `stint status --refresh` to resync from the remote session")
+	}
 }
 
 func runningLabel(running bool) string {
@@ -290,7 +294,8 @@ func snapshotJSON(snapshot sessionSnapshot) map[string]any {
 			"scheduledDurationSeconds": snapshot.Time.ScheduledDuration.Seconds(),
 			"expired":                  snapshot.Time.Expired,
 		},
-		"cost": snapshot.Cost,
+		"cost":      snapshot.Cost,
+		"staleness": snapshot.Staleness,
 		"health": map[string]any{
 			"tunnel":   snapshot.Health.Tunnel,
 			"watchdog": snapshot.Health.Watchdog,

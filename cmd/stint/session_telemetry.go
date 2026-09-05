@@ -93,6 +93,7 @@ func collectSessionSnapshot(ctx context.Context, paths config.Paths, state sessi
 	snapshot := buildSessionSnapshot(state, now)
 	snapshot.Health.Tunnel.Running = deps.processRunning(state.TunnelPID)
 	snapshot.Health.Watchdog.Running = deps.processRunning(state.WatchdogPID)
+	snapshot.Staleness.DeadlineStale = staleStateWarning(state, snapshot.Health.Tunnel.Running, now) != ""
 	snapshot.Performance = deps.performance(paths, state, now)
 	if !refresh {
 		return snapshot

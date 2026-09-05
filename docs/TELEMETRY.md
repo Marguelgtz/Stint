@@ -141,6 +141,11 @@ Remote observation objects contain a `refreshed` indicator plus sample time/erro
 
 The `inference` block uses: `refreshed`, `available`, `processing`, `deferred`, `agents`, `residentDepth` (tokens), `decodeTokensSec` / `prefillTokensSec` (null when the runtime does not publish the counter or only one epoch is usable), `cacheReuseRatio` / `specAcceptRatio` (0–1, null when not applicable), per-lane objects under `lanes`, and `unavailableReason` when the probe could not observe the engine.
 
+The `staleness` block reports how far the locally recorded session state may lag the remote session:
+
+- `stateAgeSeconds` — how long `session.json` has gone unwritten (measured from `updatedAt`, falling back to the session start for files that predate the field).
+- `deadlineStale` — `true` when the locally recorded deadline view may be untrustworthy: the tunnel is running and the local deadline is within 15 minutes (or has passed) with stale state (an `extend` executed elsewhere that has not been resynced), or the tunnel is **not** running while the state still claims `READY`/`RECOVERABLE` with a close deadline (a session destroyed or replaced elsewhere). It mirrors the `State freshness` line printed by `stint status`; `stint status --refresh` reconciles the local view from the remote session without mutating it.
+
 ## Intended dashboard cadence
 
 The telemetry API is designed for a later live TUI with different refresh classes:
@@ -179,3 +184,27 @@ Telemetry must preserve these invariants:
 6. Missing metrics degrade to unavailable rather than failing the full snapshot.
 7. Cached performance is never reused across a mismatched instance/runtime/context.
 8. Live inference observation is strictly read-only: it polls `/metrics` and `/slots` over the local tunnel, never sends an inference request, and never mutates the remote session.
+
+## Session state durability and destroy confirmation
+
+Telemetry is read-only, but the *session bookkeeping* that watches a paid
+instance has its own durability rails:
+
+- **Per-session archive.** Before every teardown that clears `session.json`
+  (`stint down`, the deadline watchdog, start/resume cleanup, rejected-instance
+  cleanup), the final state file is copied to
+  `<state>/archive/sessions/<instanceId>.<destroyedAt>.json`. A paid instance
+  that outlives its bookkeeping (an orphaned box after a bootstrap failure, or
+  a destroy that was accepted but never verified) is therefore provable from
+  the operator machine alone.
+- **Destroy confirmation.** `stint down` and the deadline watchdog verify a
+  destroy by polling Vast until the instance reports 404/410 before clearing
+  state; an unverified destroy keeps the state with a `lastError` marker.
+- **Watchdog lifetime.** The watchdog runs in its own process group
+  (`setsid`), so it survives the terminal that started the session.
+- **Provider ceiling.** Vast exposes no `auto_destroy` / `end_time` field on
+  `create_instance` (verified against the Vast OpenAPI spec, 2026-09-04), so
+  no value sent to Vast survives a dead operator machine: the detached
+  watchdog, the confirmation loop, and the archive above are the ceiling. A
+  provider-side deadline is the only structural fix and would require an
+  upstream Vast change.

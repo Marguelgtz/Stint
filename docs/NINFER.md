@@ -75,6 +75,11 @@ stint start interactive \
 
 Use `stint status --refresh` while both clients are active. The live inference section should report two processing lanes rather than one processing request plus a deferred request when both Cline clients are generating concurrently.
 
+### Choosing the lane count
+
+- **Single agent (default, `--clients 1`):** keep one lane when one coding agent drives the session — Deep Work missions, a solo Cline/Hermes session. With one lane there is no second session to displace resident context: the agent's history stays pinned in the KV pool and only pays re-prefill for genuinely new tokens. The live-branch dashboard renders retained lanes as `idle retained`, which is the expected shape for a turn-based agent alternating inference and local tool work.
+- **Two agents (`--clients 2`):** use it only when two independent clients really run in parallel (two agents, or an agent plus a long-running interactive session). A second lane is not free capacity for one agent: a new or auxiliary session re-registers a lane and can displace the working session's resident history, forcing a full re-prefill on its next turn (observed 10–60 s costs on a live NInfer session, 2026-09-03). If the second client is expected to be idle most of the time, prefer `--clients 1`.
+
 ## Pinned Vast image
 
 - Image: `ghcr.io/marguelgtz/stint-ninfer:981b685e-cuda12.8` (also tagged `:edge`).
