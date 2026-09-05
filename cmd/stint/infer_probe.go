@@ -1,7 +1,7 @@
 // infer_probe.go implements the read-only live-inference observation used by
 // `stint status --refresh` and the dashboard. It polls the local tunnel
 // (127.0.0.1:8409) for the runtime's /metrics and /slots endpoints over two
-// epochs and derives concurrent activity, per-agent prompt depth, and token
+// epochs and derives concurrent activity, per-lane prompt depth, and token
 // rates. It never sends an inference request and never mutates the remote
 // session.
 package main
@@ -175,9 +175,11 @@ func inferenceHTTPGet(ctx context.Context, client *http.Client, url string) ([]b
 	return body, resp.StatusCode, nil
 }
 
-// inferFromEpoch fills concurrency, per-agent lanes, and ratio fields from a
-// single usable epoch. Counter-based fields prefer llama.cpp metric names and
-// fall back to NInfer names so one probe works on both runtimes.
+// inferFromEpoch fills concurrency, per-lane state, and ratio fields from a
+// single usable epoch. Agents means active inference work only; retained or
+// resident lanes do not count as active. Counter-based fields prefer llama.cpp
+// metric names and fall back to NInfer names so one probe works on both
+// runtimes.
 func inferFromEpoch(result *inferenceTelemetry, epoch inferenceEpoch) {
 	result.Available = true
 	result.Lanes = epoch.Lanes
@@ -193,8 +195,6 @@ func inferFromEpoch(result *inferenceTelemetry, epoch inferenceEpoch) {
 		if lane.Processing {
 			result.Processing++
 			result.Agents++
-		} else if lane.Retained || depth > 0 {
-			result.Agents++
 		}
 		if depth > result.ResidentDepth {
 			result.ResidentDepth = depth
@@ -202,6 +202,10 @@ func inferFromEpoch(result *inferenceTelemetry, epoch inferenceEpoch) {
 	}
 	if epoch.metricsOK() {
 		result.Processing = int(counterOrDefault(epoch.Counters, metricRequestsProcessing, float64(result.Processing)))
+		// requests_processing is the engine's authoritative current activity
+		// gauge when available. Do not turn retained context into "active"
+		// agents just because it remains resident in a lane.
+		result.Agents = result.Processing
 		result.Deferred = int(counterOrDefault(epoch.Counters, metricRequestsDeferred, 0))
 	}
 	result.CacheReuseRatio = cacheReuseRatio(epoch.Counters)
