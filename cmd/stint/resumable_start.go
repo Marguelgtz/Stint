@@ -223,6 +223,20 @@ func runStartResumable(args []string) (retErr error) {
 		killPID(state.TunnelPID)
 		state.TunnelPID = 0
 		if checkpointIsRecoverable(state.Checkpoint) {
+			// A preserved paid instance still needs a live local deadline
+			// enforcer: this branch can exit without one (the watchdog may
+			// have died with the terminal that started the session, or may
+			// never have been spawned for this instance). Re-spawn it when
+			// the recorded PID is dead so the preserved instance cannot run
+			// past its deadline with nothing watching.
+			if !processAlive(state.WatchdogPID) {
+				pid, spawnErr := spawnWatchdog(paths)
+				if spawnErr != nil {
+					fmt.Fprintf(os.Stderr, "stint: preserved instance %d has no live watchdog: %v\n", state.InstanceID, spawnErr)
+				} else {
+					state.WatchdogPID = pid
+				}
+			}
 			state.Status = sessionstate.StatusRecoverable
 			if retErr != nil {
 				state.LastError = retErr.Error()
@@ -240,6 +254,7 @@ func runStartResumable(args []string) (retErr error) {
 			fmt.Fprintf(os.Stderr, "stint: cleanup instance %d: %v\n", state.InstanceID, destroyErr)
 		}
 		cancel()
+		ArchiveSession(paths, state, time.Now().UTC())
 		_ = sessionstate.Clear(paths)
 	}()
 

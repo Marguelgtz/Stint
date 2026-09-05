@@ -350,5 +350,6 @@ func destroyRejectedInstance(client *vast.Client, paths config.Paths, state sess
 	}
 	killPID(state.TunnelPID)
 	killPID(state.WatchdogPID)
+	ArchiveSession(paths, state, time.Now().UTC())
 	return sessionstate.Clear(paths)
 }

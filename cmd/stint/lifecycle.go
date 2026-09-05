@@ -142,6 +142,7 @@ func runStart(args []string) error {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			_ = client.DestroyInstance(cleanupCtx, state.InstanceID)
 			cancel()
+			ArchiveSession(paths, state, time.Now().UTC())
 			_ = sessionstate.Clear(paths)
 		}
 	}()
@@ -354,6 +355,7 @@ func runDown(args []string) error {
 		}
 		return nil
 	}
+	ArchiveSession(paths, state, time.Now().UTC())
 	if err := sessionstate.Clear(paths); err != nil {
 		return err
 	}
@@ -449,6 +451,7 @@ func runWatchdog(args []string) error {
 	if err := client.DestroyInstance(ctx, state.InstanceID); err != nil {
 		return err
 	}
+	ArchiveSession(paths, state, time.Now().UTC())
 	return sessionstate.Clear(paths)
 }
 
@@ -705,6 +708,13 @@ func spawnWatchdog(paths config.Paths) (int, error) {
 		return 0, err
 	}
 	cmd := exec.Command(exe, "_watchdog")
+	// Detach the watchdog from the spawning terminal's process group so it
+	// survives the SIGHUP that closing that terminal sends to the group. The
+	// watchdog is the only local deadline enforcer for a paid instance; if it
+	// died with the operator's shell, an unattended session could run past its
+	// deadline with nothing locally watching to destroy it. (A Vast-side
+	// auto-destroy field does not exist, so this local process is the ceiling.)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
