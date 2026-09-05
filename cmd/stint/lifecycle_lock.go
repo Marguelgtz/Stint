@@ -65,24 +65,30 @@ func acquireLifecycleLock(paths config.Paths) (func(), error) {
 	}
 
 	var busy *lifecycleBusyError
-	if !errors.As(err, &busy) || !busy.OwnerVerified || !lifecycleOperationInterruptible(busy.Owner.Operation) {
-		return nil, err
-	}
-	if !lifecycleOwnerStillHoldsLock(busy.Owner, busy.LockPath) {
-		// The metadata can outlive a process after an ungraceful exit, and the
-		// deadline watchdog also uses the same kernel lock without owner
-		// metadata. Never signal a PID unless that exact process still has this
-		// lock file open.
+	if !errors.As(err, &busy) {
 		return nil, err
 	}
 
-	if !downAssumesYes() && !confirmLifecycleInterrupt(busy.Owner) {
-		return nil, fmt.Errorf("down cancelled; active Stint %s (pid %d) is still running", busy.Owner.Operation, busy.Owner.PID)
+	// A verified start/resume owner can be terminated gracefully because those
+	// paths are signal-aware and preserve/clean up paid state before exiting.
+	// Everything else, including legacy watchdogs that acquired the same flock
+	// without owner metadata, is never signaled. `down` waits for the kernel lock
+	// instead. This lets an in-flight deadline destroy finish and closes the
+	// recovery dead-end where an expired RECOVERABLE session could not be torn
+	// down because its watchdog owned the lifecycle lock.
+	if busy.OwnerVerified && lifecycleOperationInterruptible(busy.Owner.Operation) && lifecycleOwnerStillHoldsLock(busy.Owner, busy.LockPath) {
+		if !downAssumesYes() && !confirmLifecycleInterrupt(busy.Owner) {
+			return nil, fmt.Errorf("down cancelled; active Stint %s (pid %d) is still running", busy.Owner.Operation, busy.Owner.PID)
+		}
+		if err := interruptLifecycleOwner(busy.Owner, busy.LockPath); err != nil {
+			return nil, err
+		}
+		fmt.Printf("Stopping active Stint %s (pid %d) before teardown...\n", busy.Owner.Operation, busy.Owner.PID)
+	} else if busy.OwnerVerified && busy.Owner.PID > 0 {
+		fmt.Printf("Waiting for active Stint %s (pid %d) to release the lifecycle lock before teardown...\n", busy.Owner.Operation, busy.Owner.PID)
+	} else {
+		fmt.Println("Lifecycle lock is busy; waiting for the current owner to finish before teardown...")
 	}
-	if err := interruptLifecycleOwner(busy.Owner, busy.LockPath); err != nil {
-		return nil, err
-	}
-	fmt.Printf("Stopping active Stint %s (pid %d) before teardown...\n", busy.Owner.Operation, busy.Owner.PID)
 
 	return waitForLifecycleLock(paths, lifecycleOperationDown, lifecyclePreemptTimeout)
 }
@@ -252,7 +258,8 @@ func waitForLifecycleLock(paths config.Paths, operation string, timeout time.Dur
 		}
 		if !time.Now().Before(deadline) {
 			return nil, fmt.Errorf(
-				"active lifecycle command did not release the lock after graceful termination; Stint did not force-kill it: %w",
+				"lifecycle lock remained busy for %s; Stint did not force-kill the owner: %w",
+				timeout.Round(time.Second),
 				lastErr,
 			)
 		}
