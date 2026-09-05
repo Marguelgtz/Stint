@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -303,6 +304,7 @@ func startRemoteModel(ctx context.Context, paths config.Paths, state sessionstat
 func runDown(args []string) error {
 	fs := flag.NewFlagSet("down", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	yes := fs.Bool("yes", false, "destroy without the interactive type-to-confirm")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -323,6 +325,9 @@ func runDown(args []string) error {
 	if err != nil {
 		return err
 	}
+	if !*yes && !confirmDestroy(os.Stdin, os.Stdout, state) {
+		return nil
+	}
 	credentials, err := config.LoadCredentials(paths)
 	if err != nil {
 		return err
@@ -336,11 +341,87 @@ func runDown(args []string) error {
 	if err := client.DestroyInstance(ctx, state.InstanceID); err != nil {
 		return err
 	}
+	if err := waitForInstanceGone(ctx, instanceGoneProbe(client, state.InstanceID)); err != nil {
+		// Vast accepted the destroy but the instance is still visible after
+		// the verification window. Keep tracking the possibly-still-paid
+		// instance instead of clearing state: `stint down` is idempotent, so
+		// re-running it once the instance is gone is a safe no-op.
+		fmt.Printf("Warning: destroy was accepted but instance %d is still visible on Vast.\n", state.InstanceID)
+		fmt.Println("Local session state was kept. Check the Vast dashboard or run `stint down` again once the instance is gone.")
+		state.LastError = fmt.Sprintf("destroy unverified: instance %d still visible on Vast", state.InstanceID)
+		if err := sessionstate.Save(paths, state); err != nil {
+			return err
+		}
+		return nil
+	}
 	if err := sessionstate.Clear(paths); err != nil {
 		return err
 	}
 	fmt.Println("Compute destroyed. Cline endpoint is offline.")
 	return nil
+}
+
+// destroyGonePollInterval is the gap between Vast show polls that verify a
+// destroyed instance has actually disappeared before local state is cleared.
+var destroyGonePollInterval = 2 * time.Second
+
+// instanceGoneProbe adapts the Vast client to a probe that returns nil once
+// the instance no longer exists (404/410) and an error while it is still
+// visible or on transient API failures.
+func instanceGoneProbe(client *vast.Client, instanceID int64) func(context.Context) error {
+	return func(ctx context.Context) error {
+		_, err := client.ShowInstance(ctx, instanceID)
+		if err == nil {
+			return errors.New("instance still visible")
+		}
+		var apiErr *vast.APIError
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusGone) {
+			return nil
+		}
+		return err
+	}
+}
+
+// waitForInstanceGone polls show until it reports the instance as gone or
+// the context expires. Transient API failures do not abort verification;
+// an unconfirmed teardown returns an error so the caller keeps tracking
+// the paid instance.
+func waitForInstanceGone(ctx context.Context, show func(context.Context) error) error {
+	for {
+		if err := show(ctx); err == nil {
+			return nil
+		}
+		timer := time.NewTimer(destroyGonePollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("instance not confirmed gone: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+// confirmDestroy is the type-to-confirm gate before `stint down` destroys a
+// paid instance: it summarizes what is about to be destroyed and requires
+// the literal word "destroy" (the dashboard uses an equivalent modal). Any
+// other input — including EOF on a non-interactive stdin — aborts with no
+// side effects; unattended callers pass --yes to skip the gate.
+func confirmDestroy(stdin io.Reader, out io.Writer, state sessionstate.State) bool {
+	fmt.Fprintf(out, "Instance       %d\n", state.InstanceID)
+	fmt.Fprintf(out, "Remaining      %s\n", formatSessionDuration(time.Until(state.Deadline)))
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "This immediately destroys the Vast instance, stops the tunnel and watchdog, and clears the local session state.")
+	fmt.Fprint(out, "Type \"destroy\" to confirm: ")
+	line, err := bufio.NewReader(stdin).ReadString('\n')
+	if err != nil {
+		fmt.Fprintln(out, "\nConfirmation unavailable (no interactive input). Use --yes to destroy without confirmation.")
+		return false
+	}
+	if strings.TrimSpace(line) != "destroy" {
+		fmt.Fprintln(out, "Aborted: session left running.")
+		return false
+	}
+	return true
 }
 
 func runWatchdog(args []string) error {
