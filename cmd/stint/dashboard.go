@@ -91,6 +91,12 @@ type dashboardController struct {
 	lastGoodInference dash.Inference
 	lastGoodAt        time.Time
 	lastGoodInstance  int64
+	// lanePrev holds the last observed per-lane state so the controller can
+	// detect transitions (active/retained/resident changes) and append them
+	// to the in-memory lane event log. The engine exposes no lane identity,
+	// so the log records transitions only — never a client attribution.
+	lanePrev           map[int]string
+	laneEventsInstance int64
 }
 
 func runDashboard(args []string) error {
@@ -621,11 +627,91 @@ func (c *dashboardController) applyRefresh(result dashboardLoadResult) {
 		c.lastGoodInference = dash.Inference{}
 		c.lastGoodAt = time.Time{}
 		c.lastGoodInstance = 0
+		c.lanePrev = nil
+		c.laneEventsInstance = 0
+		c.model.LaneEvents = nil
 		c.model.Notice = "The recorded session has ended."
 		return
 	}
 	c.snapshot = result.Snapshot
+	c.observeLaneEvents(result.Snapshot)
 	c.projectSnapshot()
+}
+
+// observeLaneEvents appends a LaneEvent for every lane whose observable state
+// changed since the last refresh (a fresh materialized lane, an active →
+// retained/resident transition, a displacement/eviction, or a depth change
+// while active). It is the operator-side correlation log: because the engine
+// exposes no per-lane client identity, it records state transitions only, so
+// an operator can line up "my request at T" with "lane 1 evicted at T+2s" —
+// the manual method from the 2026-09-03 investigation, surfaced. Log is
+// bounded (newest first) and in-memory only; the dashboard never writes state.
+func (c *dashboardController) observeLaneEvents(s sessionSnapshot) {
+	instanceID := s.Session.InstanceID
+	if c.laneEventsInstance != 0 && c.laneEventsInstance != instanceID {
+		// A new session replaced the old one: its lanes are unrelated, so
+		// reset both the transition baseline and the event log.
+		c.lanePrev = nil
+		c.model.LaneEvents = nil
+	}
+	c.laneEventsInstance = instanceID
+	if !s.Inference.Refreshed || !s.Inference.Available || len(s.Inference.Lanes) == 0 {
+		return
+	}
+	if c.lanePrev == nil {
+		c.lanePrev = make(map[int]string, len(s.Inference.Lanes))
+	}
+	now := s.Inference.Meta.SampledAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	for _, lane := range s.Inference.Lanes {
+		depth := lane.NPrompt
+		if depth < 0 {
+			depth = 0
+		}
+		var cachePct string
+		if lane.NPrompt > 0 {
+			cachePct = fmt.Sprintf("%.0f%%", float64(lane.NCached)/float64(lane.NPrompt)*100)
+		}
+		state := laneStateKind(lane)
+		prev, seen := c.lanePrev[lane.ID]
+		c.lanePrev[lane.ID] = state
+		if !seen {
+			// First observation of this lane for the session.
+			c.pushLaneEvent(dash.LaneEvent{At: now, LaneID: lane.ID, Kind: "observed " + state, Depth: depth, CachePct: cachePct})
+			continue
+		}
+		if state != prev {
+			c.pushLaneEvent(dash.LaneEvent{At: now, LaneID: lane.ID, Kind: prev + " -> " + state, Depth: depth, CachePct: cachePct})
+		}
+	}
+}
+
+// laneStateKind names a lane's observable state: active (processing),
+// idle retained (processing finished, context retained), idle resident
+// (resident context, not retained), or idle.
+func laneStateKind(lane inferenceLane) string {
+	switch {
+	case lane.Processing:
+		return "active"
+	case lane.Retained && lane.NPrompt > 0:
+		return "idle retained"
+	case lane.NPrompt > 0:
+		return "idle resident"
+	default:
+		return "idle"
+	}
+}
+
+// pushLaneEvent appends an event keeping the log bounded to the newest
+// dash.MaxLaneEvents entries, newest first.
+func (c *dashboardController) pushLaneEvent(ev dash.LaneEvent) {
+	events := append([]dash.LaneEvent{ev}, c.model.LaneEvents...)
+	if len(events) > dash.MaxLaneEvents {
+		events = events[:dash.MaxLaneEvents]
+	}
+	c.model.LaneEvents = events
 }
 
 func (c *dashboardController) tick(now time.Time) {
@@ -664,6 +750,7 @@ func (c *dashboardController) projectSnapshot() {
 	}
 	status := dashboardDisplayStatus(s)
 	c.model.Session = dash.Session{InstanceID: s.Session.InstanceID, Status: status, Model: s.Session.Model, GPUModel: s.Session.GPUModel, Runtime: s.Session.Runtime, Context: s.Session.ContextTokens, Profile: s.Session.Profile, Rate: s.Cost.HourlyUSD, Spent: s.Cost.EstimatedSpentUSD, Exposure: s.Cost.ScheduledUSD, Started: s.Time.StartedAt, Deadline: s.Time.Deadline, Elapsed: s.Time.Elapsed, Remaining: s.Time.Remaining, Scheduled: s.Time.ScheduledDuration}
+	c.model.ClientTag = s.Session.ClientTag
 	c.model.Health = dash.Health{Endpoint: dashboardEndpointLabel(s.Health.Endpoint), Tunnel: dashboardRunningLabel(s.Health.Tunnel.Running), Runtime: dashboardRuntimeLabel(s.Health.Runtime), Watchdog: dashboardRunningLabel(s.Health.Watchdog.Running), SSH: dashboardSSHLabel(s.Health.Runtime), Refreshed: s.Health.Endpoint.Refreshed || s.Health.Runtime.Refreshed, Refreshing: c.refreshing}
 	c.model.GPU = dashboardGPU(s.GPU)
 	perf := dashboardPerf(s.Performance)

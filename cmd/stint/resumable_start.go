@@ -48,6 +48,7 @@ func runStartResumable(args []string) (retErr error) {
 	contextValue := fs.String("context", "", "llama.cpp context tokens (1024-131072; default 16384)")
 	ninferConfigValue := fs.String("ninfer-config", ninferConfigCoding, "NInfer config: coding, precision, or native")
 	clients := fs.Int("clients", defaultNInferClients, "NInfer client lanes (1 or 2; shared dynamic KV pool)")
+	clientTag := fs.String("client-tag", "", "label the local client driving this session (bookkeeping only: shown on the dashboard; lanes are never attributed to clients)")
 	minNetworkMbps := fs.Float64("min-network-mbps", defaultMinAdvertisedNetworkMbps, "minimum Vast advertised download bandwidth in Mbps; 0 disables")
 	minMeasuredDownloadMBps := fs.Float64("min-measured-download-mbps", defaultMinMeasuredDownloadMBps, "minimum measured post-SSH download throughput in MB/s; 0 disables")
 	networkCandidateAttempts := fs.Int("network-candidate-attempts", defaultNetworkCandidateAttempts, "maximum rented Vast machines to test during startup/network qualification; stale offers are replaced without consuming an attempt")
@@ -349,6 +350,7 @@ func runStartResumable(args []string) (retErr error) {
 		state = sessionstate.State{
 			OfferID: selected.ID, Profile: profileName, GPUModel: selected.GPUModel,
 			RuntimeRequest: runtimeRequest, Runtime: selectedRuntime, ContextTokens: selectedContext, Clients: *clients,
+			ClientTag: strings.TrimSpace(*clientTag),
 			HourlyUSD: selected.HourlyUSD, Hours: hours, StartedAt: startedAt, Deadline: deadline,
 			Status: sessionstate.StatusRenting,
 		}

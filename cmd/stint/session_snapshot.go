@@ -25,6 +25,9 @@ type sessionInfo struct {
 	Profile       string `json:"profile,omitempty"`
 	Checkpoint    string `json:"checkpoint,omitempty"`
 	LastError     string `json:"lastError,omitempty"`
+	// ClientTag is the operator-assigned client label (bookkeeping only;
+	// lanes are never attributed to clients).
+	ClientTag string `json:"clientTag,omitempty"`
 }
 
 type sessionTimeSnapshot struct {
@@ -135,6 +138,7 @@ func buildSessionSnapshot(state sessionstate.State, now time.Time) sessionSnapsh
 			Profile:       state.Profile,
 			Checkpoint:    state.Checkpoint,
 			LastError:     state.LastError,
+			ClientTag:     state.ClientTag,
 		},
 		Time: sessionTimeSnapshot{
 			StartedAt:         state.StartedAt,

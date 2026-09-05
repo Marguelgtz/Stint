@@ -56,6 +56,11 @@ type State struct {
 	Checkpoint     string    `json:"checkpoint,omitempty"`
 	LastError      string    `json:"lastError,omitempty"`
 	UpdatedAt      time.Time `json:"updatedAt,omitempty"`
+	// ClientTag is an operator-assigned label for which local client drives
+	// the session (e.g. "hermes", "cline"). It is bookkeeping only: the
+	// engine exposes no lane identity, so Stint never uses it to attribute
+	// lanes — but the dashboard uses it to label the known client set.
+	ClientTag string `json:"clientTag,omitempty"`
 }
 
 func Path(paths config.Paths) string {

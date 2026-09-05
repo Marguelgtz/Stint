@@ -158,6 +158,7 @@ var (
 			{name: "--context", argument: "<int>", defaultVal: "16384", purpose: "llama.cpp context tokens (1024-131072)"},
 			{name: "--ninfer-config", argument: "<name>", defaultVal: "coding", purpose: "NInfer config: coding, precision, or native"},
 			{name: "--clients", argument: "<int>", defaultVal: "1", purpose: "NInfer client lanes: 1 or 2; lanes share the configured KV/context pool dynamically"},
+			{name: "--client-tag", argument: "<label>", defaultVal: "", purpose: "label the local client driving this session (dashboard bookkeeping only; lanes are never attributed to clients)"},
 			{name: "--min-network-mbps", argument: "<float>", defaultVal: "500", purpose: "minimum Vast advertised download bandwidth in Mbps; 0 disables the prefilter"},
 			{name: "--min-measured-download-mbps", argument: "<float>", defaultVal: "40", purpose: "minimum measured post-SSH model-transfer throughput in MB/s; 0 disables"},
 			{name: "--network-candidate-attempts", argument: "<int>", defaultVal: "3", purpose: "maximum distinct Vast machines to try during provider startup and network qualification"},
