@@ -109,18 +109,38 @@ func contextBar(width int, m Model, p palette) string {
 
 func contextLegend(m Model, p palette) string {
 	items := make([]string, 0, len(m.Inference.Clients))
-	for _, resident := range m.Inference.Clients {
-		if resident.Tokens <= 0 {
-			continue
+	active := 0
+	for _, lane := range m.Inference.Clients {
+		if laneIsActive(lane) {
+			active++
 		}
+	}
+	for _, lane := range m.Inference.Clients {
 		share := ""
-		if m.Session.Context > 0 {
-			share = fmt.Sprintf(" · %.0f%%", 100*float64(resident.Tokens)/float64(m.Session.Context))
+		if lane.Tokens > 0 && m.Session.Context > 0 {
+			share = fmt.Sprintf(" · %.0f%%", 100*float64(lane.Tokens)/float64(m.Session.Context))
 		}
-		item := fmt.Sprintf("● %s  %s%s", resident.Label, formatTokenCount(resident.Tokens), share)
-		items = append(items, p.wrap(residentContextColor(resident.Key), item))
+		item := fmt.Sprintf("● %s %s%s", lane.Label, formatTokenCount(lane.Tokens), share)
+		if laneIsActive(lane) {
+			if m.Inference.Decode != "" {
+				if active > 1 {
+					item += " · decode shared (engine " + m.Inference.Decode + ")"
+				} else {
+					item += " · decode " + m.Inference.Decode + " (engine)"
+				}
+			} else {
+				item += " · decode — tok/s"
+			}
+		} else {
+			item += " · decode — tok/s"
+		}
+		items = append(items, p.wrap(residentContextColor(lane.Key), item))
 	}
 	return strings.Join(wrap(items, m.Width), "\n")
+}
+
+func laneIsActive(lane ClientContext) bool {
+	return strings.Contains(lane.Label, " · active · ")
 }
 
 func residentContextColor(key string) string {
