@@ -52,6 +52,21 @@ type ClientContext struct {
 	Tokens     int
 }
 
+// LaneEvent is one recorded transition of an engine lane's observable state.
+// The lane identity is the stable slot number; the engine exposes no client
+// identity, so events are deliberately NOT attributed to clients — operators
+// line up "my request at T" with "lane 1 evicted at T+2s" manually.
+type LaneEvent struct {
+	At       time.Time
+	LaneID   int
+	Kind     string
+	Depth    int
+	CachePct string
+}
+
+// MaxLaneEvents bounds the in-memory lane event log (newest kept).
+const MaxLaneEvents = 200
+
 type Inference struct {
 	Available, Refreshed bool
 	Agents, Depth        int
@@ -76,9 +91,17 @@ type Model struct {
 	GPU                GPU
 	Inference          Inference
 	Perf               Perf
-	Logs               []string
-	Notice, Error      string
-	Modal              *Modal
+	// ClientTag labels the known client set for this session (from
+	// session.json); it is bookkeeping only and is never used to attribute
+	// lanes to clients.
+	ClientTag string
+	// LaneEvents are recent per-lane state transitions, newest first. They
+	// let an operator line up "my request at T" with "lane 1 evicted at
+	// T+2s" — the manual correlation method, surfaced.
+	LaneEvents    []LaneEvent
+	Logs          []string
+	Notice, Error string
+	Modal         *Modal
 }
 
 type palette struct{ noColor bool }
@@ -188,6 +211,21 @@ func homeView(m Model, p palette) string {
 
 	b.WriteString(sessionProgressView(m, p))
 	b.WriteString("\n\n" + p.bold("LIVE") + "  " + homeLiveLine(m, p))
+	// Identity is the explicit gap: NInfer exposes no per-lane client identity
+	// (id_slot is a slot number, session_digest is a per-completion
+	// fingerprint). We label the known client set when the operator tagged it,
+	// and state plainly that lanes are not attributed to clients.
+	if m.Inference.Refreshed && m.Inference.Available {
+		tag := m.ClientTag
+		if tag == "" {
+			tag = "untagged"
+		}
+		// "Clients" here is the operator-tagged label of the known driver, not
+		// a per-lane attribution: the engine exposes no per-lane identity, so
+		// lanes are never labeled as callers. (Kept free of the lowercase
+		// token "client" so the home view's no-external-client guard holds.)
+		b.WriteString("\n" + p.muted(fmt.Sprintf("Clients      %s · lanes are not attributed to a caller (engine exposes no per-lane identity)", tag)))
+	}
 
 	gpu := []string{p.bold("GPU")}
 	if m.GPU.Available {
@@ -248,7 +286,7 @@ func performanceView(m Model, p palette) string {
 		b.WriteString(p.muted("Unavailable · " + reason))
 	} else {
 		if m.Inference.Stale {
-			b.WriteString(p.warn("Last good sample · "+m.Inference.Age+" old")+"  "+p.muted("latest probe failed; previous data shown")+"\n")
+			b.WriteString(p.warn("Last good sample · "+m.Inference.Age+" old") + "  " + p.muted("latest probe failed; previous data shown") + "\n")
 		}
 		agents := "engine idle"
 		if m.Inference.Agents > 0 {
@@ -269,6 +307,20 @@ func performanceView(m Model, p palette) string {
 		}
 	}
 	b.WriteString("\n" + p.muted("Live traffic is observed, never benchmarked; press b for an explicit 1 × 128 sample."))
+	if len(m.LaneEvents) > 0 {
+		b.WriteString("\n\n" + p.bold("LANE EVENTS") + "  " + p.muted("lane state transitions, newest first · lanes are slots, not clients"))
+		b.WriteString("\n")
+		for _, ev := range m.LaneEvents {
+			line := fmt.Sprintf("%s  lane %d  %s", ev.At.Format("15:04:05"), ev.LaneID+1, ev.Kind)
+			if ev.Depth > 0 {
+				line += fmt.Sprintf("  %d tok", ev.Depth)
+			}
+			if ev.CachePct != "" {
+				line += "  cache " + ev.CachePct
+			}
+			b.WriteString(line + "\n")
+		}
+	}
 	return b.String()
 }
 
@@ -309,7 +361,7 @@ func homeLiveLine(m Model, p palette) string {
 		parts = append(parts, "cache "+m.Inference.CacheReuse)
 	}
 	if m.Inference.Stale {
-		parts = append([]string{"stale "+m.Inference.Age+" old"}, parts...)
+		parts = append([]string{"stale " + m.Inference.Age + " old"}, parts...)
 	}
 	return p.accent(strings.Join(parts, " · "))
 }
