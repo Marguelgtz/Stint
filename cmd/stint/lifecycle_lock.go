@@ -36,12 +36,13 @@ type lifecycleLockOwner struct {
 }
 
 type lifecycleBusyError struct {
-	Owner    lifecycleLockOwner
-	LockPath string
+	Owner         lifecycleLockOwner
+	OwnerVerified bool
+	LockPath      string
 }
 
 func (e *lifecycleBusyError) Error() string {
-	if e.Owner.PID > 0 && e.Owner.Operation != "" {
+	if e.OwnerVerified && e.Owner.PID > 0 && e.Owner.Operation != "" {
 		return fmt.Sprintf(
 			"another Stint %s lifecycle command is already running (pid %d); wait for it to finish or run `stint down` to stop an active start/resume",
 			e.Owner.Operation,
@@ -64,7 +65,7 @@ func acquireLifecycleLock(paths config.Paths) (func(), error) {
 	}
 
 	var busy *lifecycleBusyError
-	if !errors.As(err, &busy) || !lifecycleOperationInterruptible(busy.Owner.Operation) {
+	if !errors.As(err, &busy) || !busy.OwnerVerified || !lifecycleOperationInterruptible(busy.Owner.Operation) {
 		return nil, err
 	}
 	if !lifecycleOwnerStillHoldsLock(busy.Owner, busy.LockPath) {
@@ -99,7 +100,11 @@ func acquireLifecycleLockOnce(paths config.Paths, operation string) (func(), err
 		_ = file.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
 			owner, _ := readLifecycleLockOwner(lockPath)
-			return nil, &lifecycleBusyError{Owner: owner, LockPath: lockPath}
+			return nil, &lifecycleBusyError{
+				Owner:         owner,
+				OwnerVerified: lifecycleOwnerStillHoldsLock(owner, lockPath),
+				LockPath:      lockPath,
+			}
 		}
 		return nil, fmt.Errorf("lock Stint lifecycle: %w", err)
 	}
