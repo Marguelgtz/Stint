@@ -87,6 +87,7 @@ func runResume(args []string) (retErr error) {
 			return fmt.Errorf("session deadline passed and cleanup failed: %w", destroyErr)
 		}
 		preserve = false
+		ArchiveSession(paths, state, time.Now().UTC())
 		if err := sessionstate.Clear(paths); err != nil {
 			return err
 		}
@@ -141,6 +142,7 @@ func runResume(args []string) (retErr error) {
 		var apiErr *vast.APIError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
 			preserve = false
+			ArchiveSession(paths, state, time.Now().UTC())
 			_ = sessionstate.Clear(paths)
 			return errors.New("the recorded Vast instance no longer exists; cleared local session state")
 		}

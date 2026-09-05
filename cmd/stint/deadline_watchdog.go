@@ -238,5 +238,6 @@ func destroyExpiredSession(paths config.Paths, state sessionstate.State) error {
 	if err := waitForInstanceGone(ctx, instanceGoneProbe(client, state.InstanceID)); err != nil {
 		return err
 	}
+	ArchiveSession(paths, state, time.Now().UTC())
 	return sessionstate.Clear(paths)
 }
