@@ -58,7 +58,10 @@ func networkProbeURLForState(state sessionstate.State) string {
 
 func modelSizeBytesForState(state sessionstate.State) int64 {
 	if runtimeForState(state) == runtimeNInfer {
-		return 18_210_531_328
+		// NInfer artifact size is discovered from the immutable model URL by the
+		// transfer probe. Returning zero here prevents a stale compiled-in byte
+		// count from becoming lifecycle truth.
+		return 0
 	}
 	return llamaModelSizeBytes
 }
@@ -183,21 +186,53 @@ func ninferTransferSampleCommand() string {
 	return fmt.Sprintf(`set -eu
 model=/workspace/stint/models/qwen3_8_27b.ninfer
 model_url="%s"
+model_sha="%s"
+model_size_file=/workspace/stint/model-total-bytes
 sample_log=/workspace/stint/model-transfer-sample.log
-expected=%d
 warmup=%d
 sample=%d
 mkdir -p /workspace/stint/models
 
-if [ -f "$model" ] && [ "$(stat -c %%s "$model" 2>/dev/null || echo 0)" -ge "$expected" ]; then
-  echo "STINT_DOWNLOAD_MB_PER_SEC=9999.000"
-  echo "STINT_TRANSFER_BYTES_END=$expected"
-  echo "STINT_TRANSFER_SAMPLE_SECONDS=0"
-  exit 0
-fi
 if ! command -v curl >/dev/null 2>&1; then
   echo "curl is required for Stint model-transfer qualification" >&2
   exit 127
+fi
+
+discover_model_size() {
+  size="$(curl -fsSLI --retry 3 --retry-delay 1 -o /dev/null -w '%%header{content-length}' "$model_url" 2>/dev/null || true)"
+  case "$size" in
+    ''|*[!0-9]*) size=0 ;;
+  esac
+  printf '%%s\n' "$size"
+}
+
+expected="$(cat "$model_size_file" 2>/dev/null || true)"
+case "$expected" in
+  ''|*[!0-9]*) expected=0 ;;
+esac
+if [ "$expected" -le 0 ]; then
+  expected="$(discover_model_size)"
+  if [ "$expected" -gt 0 ]; then
+    printf '%%s\n' "$expected" > "$model_size_file"
+  fi
+fi
+
+if [ -f "$model" ] && echo "$model_sha  $model" | sha256sum -c - >/dev/null 2>&1; then
+  bytes="$(stat -c %%s "$model")"
+  [ "$expected" -le 0 ] && expected="$bytes"
+  echo "STINT_DOWNLOAD_MB_PER_SEC=9999.000"
+  echo "STINT_TRANSFER_BYTES_END=$bytes"
+  echo "STINT_TRANSFER_TOTAL_BYTES=$expected"
+  echo "STINT_TRANSFER_SAMPLE_SECONDS=0"
+  exit 0
+fi
+
+if [ -f "$model" ] && [ "$expected" -gt 0 ]; then
+  bytes="$(stat -c %%s "$model" 2>/dev/null || echo 0)"
+  if [ "$bytes" -ge "$expected" ]; then
+    echo "Discarding invalid completed/oversized NInfer model artifact before transfer sample." >&2
+    rm -f "$model"
+  fi
 fi
 
 : > "$sample_log"
@@ -250,8 +285,9 @@ if [ "$delta" -le 0 ]; then
 fi
 awk -v b="$delta" -v s="$seconds" 'BEGIN { printf "STINT_DOWNLOAD_MB_PER_SEC=%%.3f\n", b/s/1000000 }'
 echo "STINT_TRANSFER_BYTES_END=$end_bytes"
+[ "$expected" -gt 0 ] && echo "STINT_TRANSFER_TOTAL_BYTES=$expected"
 echo "STINT_TRANSFER_SAMPLE_SECONDS=$seconds"
-`, ninferModelURL, int64(18_210_531_328), int(transferWarmupTimeout/time.Second), int(transferSampleDuration/time.Second))
+`, ninferModelURL, ninferModelSHA256, int(transferWarmupTimeout/time.Second), int(transferSampleDuration/time.Second))
 }
 
 func measureRemoteDownloadMBps(ctx context.Context, paths config.Paths, state sessionstate.State) (float64, error) {
@@ -266,8 +302,12 @@ func measureRemoteDownloadMBps(ctx context.Context, paths config.Paths, state se
 		return 0, err
 	}
 	bytesEnd, bytesErr := parseTransferBytesEnd(out)
-	if bytesErr == nil && speed > 0 && speed < 9000 {
-		remaining := estimateRemainingTransfer(modelSizeBytesForState(state), bytesEnd, speed)
+	totalBytes := modelSizeBytesForState(state)
+	if discoveredTotal, totalErr := parseTransferTotalBytes(out); totalErr == nil && discoveredTotal > 0 {
+		totalBytes = discoveredTotal
+	}
+	if bytesErr == nil && totalBytes > 0 && speed > 0 && speed < 9000 {
+		remaining := estimateRemainingTransfer(totalBytes, bytesEnd, speed)
 		if remaining >= 0 {
 			projected := remaining + projectedModelLoadAllowance
 			if !state.StartedAt.IsZero() {
@@ -315,6 +355,23 @@ func parseTransferBytesEnd(output string) (int64, error) {
 		return bytes, nil
 	}
 	return 0, errors.New("model-transfer sample did not return a byte marker")
+}
+
+func parseTransferTotalBytes(output string) (int64, error) {
+	const marker = "STINT_TRANSFER_TOTAL_BYTES="
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, marker) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, marker))
+		bytes, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || bytes <= 0 {
+			return 0, fmt.Errorf("invalid transfer total-byte marker %q", value)
+		}
+		return bytes, nil
+	}
+	return 0, errors.New("model-transfer sample did not return a total-byte marker")
 }
 
 func estimateRemainingTransfer(totalBytes, downloadedBytes int64, speedMBps float64) time.Duration {
