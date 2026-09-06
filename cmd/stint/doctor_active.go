@@ -153,7 +153,7 @@ func diagnoseActiveSession(paths config.Paths, state sessionstate.State) activeD
 	instance, providerErr := client.ShowInstance(providerCtx, state.InstanceID)
 	cancelProvider()
 	if providerErr != nil {
-		if doctorInstanceMissing(providerErr) {
+		if isDoctorInstanceMissing(providerErr) {
 			inputs.ProviderReachable = true
 			inputs.InstancePresent = false
 			report.Observations = append(report.Observations, doctorObservation{Name: "Vast instance", OK: false, Detail: "not present in provider inventory"})
@@ -296,7 +296,7 @@ func startupRecordedState(status string) bool {
 	}
 }
 
-func doctorInstanceMissing(err error) bool {
+func isDoctorInstanceMissing(err error) bool {
 	var apiErr *vast.APIError
 	return errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusGone)
 }
