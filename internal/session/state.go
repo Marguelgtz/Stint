@@ -14,17 +14,18 @@ import (
 const stateFileName = "session.json"
 
 const (
-	StatusRenting          = "RENTING"
-	StatusBooting          = "BOOTING"
-	StatusSSHConnecting    = "SSH_CONNECTING"
-	StatusSSHReady         = "SSH_READY"
-	StatusRuntimeBootstrap = "RUNTIME_BOOTSTRAP"
-	StatusRuntimeReady     = "RUNTIME_READY"
-	StatusModelStarting    = "MODEL_STARTING"
-	StatusModelStarted     = "MODEL_STARTED"
-	StatusModelLoading     = "MODEL_LOADING"
-	StatusReady            = "READY"
-	StatusRecoverable      = "RECOVERABLE"
+	StatusRenting            = "RENTING"
+	StatusBooting            = "BOOTING"
+	StatusSSHConnecting      = "SSH_CONNECTING"
+	StatusSSHReady           = "SSH_READY"
+	StatusRuntimeBootstrap   = "RUNTIME_BOOTSTRAP"
+	StatusRuntimeReady       = "RUNTIME_READY"
+	StatusModelStarting      = "MODEL_STARTING"
+	StatusModelStarted       = "MODEL_STARTED"
+	StatusModelLoading       = "MODEL_LOADING"
+	StatusReady              = "READY"
+	StatusRecoverable        = "RECOVERABLE"
+	StatusDestroyUnconfirmed = "DESTROY_UNCONFIRMED"
 )
 
 const (
