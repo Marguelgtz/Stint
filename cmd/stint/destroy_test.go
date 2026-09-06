@@ -39,29 +39,45 @@ func (f *fakeDestroyClient) ShowInstance(context.Context, int64) (vast.Instance,
 }
 
 func TestDestroyAndConfirmTreatsMissingAsConfirmed(t *testing.T) {
-	old := destroyRetryDelays
-	destroyRetryDelays = []time.Duration{0}
-	defer func() { destroyRetryDelays = old }()
 	client := &fakeDestroyClient{showErrs: []error{errors.New("instance not found")}}
-	result := destroyAndConfirm(context.Background(), client, 42)
+	result := destroyAndConfirmWithDelays(context.Background(), client, 42, []time.Duration{0})
 	if !result.Confirmed {
 		t.Fatalf("expected confirmed, got %+v", result)
 	}
 }
 
 func TestDestroyAndConfirmPreservesUnconfirmedFailure(t *testing.T) {
-	old := destroyRetryDelays
-	destroyRetryDelays = []time.Duration{0, 0}
-	defer func() { destroyRetryDelays = old }()
 	client := &fakeDestroyClient{
 		destroyErrs: []error{errors.New("dns timeout"), errors.New("dns timeout")},
-		showErrs: []error{errors.New("dns timeout"), errors.New("dns timeout")},
+		showErrs:    []error{errors.New("dns timeout"), errors.New("dns timeout")},
 	}
-	result := destroyAndConfirm(context.Background(), client, 42)
+	result := destroyAndConfirmWithDelays(context.Background(), client, 42, []time.Duration{0, 0})
 	if result.Confirmed {
 		t.Fatalf("unexpected confirmation: %+v", result)
 	}
 	if result.Attempts != 2 || result.LastError == nil {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestDestroyAndConfirmRetriesTransientFailureThenConfirmsMissing(t *testing.T) {
+	client := &fakeDestroyClient{
+		destroyErrs: []error{errors.New("temporary DNS failure"), nil},
+		showErrs:    []error{errors.New("temporary DNS failure"), errors.New("instance not found")},
+	}
+	result := destroyAndConfirmWithDelays(context.Background(), client, 42, []time.Duration{0, 0})
+	if !result.Confirmed {
+		t.Fatalf("expected confirmation after retry, got %+v", result)
+	}
+	if result.Attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", result.Attempts)
+	}
+}
+
+func TestDestroyAndConfirmAcceptsTerminalProviderStatus(t *testing.T) {
+	client := &fakeDestroyClient{showStates: []vast.Instance{{ActualStatus: "destroyed"}}}
+	result := destroyAndConfirmWithDelays(context.Background(), client, 42, []time.Duration{0})
+	if !result.Confirmed {
+		t.Fatalf("expected terminal status to confirm teardown, got %+v", result)
 	}
 }
