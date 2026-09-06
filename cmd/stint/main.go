@@ -25,10 +25,10 @@ const version = "0.1.0"
 const clinePort = 8409
 
 type planDiagnostics struct {
-	Candidates      int                    `json:"candidates"`
-	Qualified       int                    `json:"qualified"`
+	Candidates      int                         `json:"candidates"`
+	Qualified       int                         `json:"qualified"`
 	RejectedBy      map[core.RejectionReason]int `json:"rejectedBy,omitempty"`
-	ClosestRejected []core.OfferEvaluation `json:"closestRejected,omitempty"`
+	ClosestRejected []core.OfferEvaluation      `json:"closestRejected,omitempty"`
 }
 
 type planOutput struct {
@@ -64,15 +64,15 @@ func run(args []string) error {
 	case "resume":
 		return runResume(args[1:])
 	case "down":
-		return runDown(args[1:])
+		return runDownSafe(args[1:])
 	case "_watchdog":
-		return runWatchdog(args[1:])
+		return runWatchdogSafe(args[1:])
 	case "auth":
 		return runAuth(args[1:])
 	case "setup":
 		return runSetup(args[1:])
 	case "doctor":
-		return runDoctor()
+		return runDoctorSafe(args[1:])
 	case "status":
 		return runStatus()
 	case "onboard":
@@ -416,6 +416,8 @@ func runStatus() error {
 	}
 	fmt.Printf("Auto-destroy       %s\n", state.Deadline.Local().Format(time.RFC1123))
 	switch state.Status {
+	case sessionstate.StatusDestroyUnconfirmed:
+		fmt.Println("Next action        stint down (destruction is unconfirmed; billing may still be active)")
 	case sessionstate.StatusRecoverable:
 		fmt.Println("Next action        stint resume")
 	case sessionstate.StatusReady:
@@ -512,6 +514,7 @@ Setup:
   stint auth vast --from-env
   stint setup ssh
   stint doctor
+  stint doctor --last
 
 Planning (read-only):
   stint plan interactive --hours 1
