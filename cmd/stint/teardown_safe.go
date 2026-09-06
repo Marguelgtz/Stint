@@ -70,6 +70,22 @@ func runWatchdogSafe(args []string) error {
 	if err != nil {
 		return err
 	}
+	initial, err := sessionstate.Load(paths)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	watchedInstanceID := initial.InstanceID
+	if wait := time.Until(initial.Deadline); wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		<-timer.C
+	}
+
+	// Refresh at the deadline. The session can gain SSH metadata, a new tunnel PID,
+	// runtime checkpoints, and a watchdog PID while this process is sleeping.
 	state, err := sessionstate.Load(paths)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -77,16 +93,15 @@ func runWatchdogSafe(args []string) error {
 	if err != nil {
 		return err
 	}
-	if wait := time.Until(state.Deadline); wait > 0 {
-		timer := time.NewTimer(wait)
-		defer timer.Stop()
-		<-timer.C
+	if state.InstanceID != watchedInstanceID {
+		// A stale watchdog must never tear down a later session.
+		return nil
 	}
+
 	credentials, err := config.LoadCredentials(paths)
 	if err != nil {
 		return err
 	}
-
 	captureRuntimeTail(paths, state)
 	killPID(state.TunnelPID)
 	client := vast.NewClient(credentials.Vast.APIKey)
