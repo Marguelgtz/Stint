@@ -59,46 +59,58 @@ func runDoctorSafe(args []string) error {
 		return err
 	}
 	if *last {
-		archive, err := sessionstate.LoadLastArchive(paths)
+		report, err := diagnoseLastSession(paths)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return errors.New("no archived Stint session is available")
-			}
 			return err
 		}
-		report := doctorReport{
-			Mode:       "last",
-			InstanceID: archive.State.InstanceID,
-			Status:     archive.State.Status,
-			Checkpoint: archive.State.Checkpoint,
-			Diagnosis:  diagnosticOK,
-			Severity:   "HEALTHY",
-			Recovery:   "none",
-		}
-		if !archive.DestroyConfirmed {
-			report.Diagnosis = diagnosticDestroyUnconfirmed
-			report.Severity = "SAFETY"
-			report.Recovery = "retry: stint down"
-		}
-		report.Observations = append(report.Observations,
-			doctorObservation{Name: "Disposition", OK: archive.DestroyConfirmed, Detail: archive.Disposition},
-			doctorObservation{Name: "Destroy confirmation", OK: archive.DestroyConfirmed, Detail: fmt.Sprintf("attempts=%d lastError=%s", archive.DestroyAttempts, archive.DestroyLastError)},
-		)
 		return printDoctorReport(report, *jsonOutput)
 	}
 
 	state, stateErr := sessionstate.Load(paths)
 	if errors.Is(stateErr, os.ErrNotExist) {
 		if *jsonOutput {
-			return printDoctorReport(doctorReport{Mode: "preflight", Diagnosis: diagnosticOK, Severity: "HEALTHY", Recovery: "run stint doctor without --json for setup checks"}, true)
+			return printDoctorReport(doctorReport{Mode: "preflight", Diagnosis: diagnosticOK, Severity: "HEALTHY", Recovery: "run stint doctor without --json for detailed setup checks"}, true)
 		}
 		return runDoctor()
 	}
 	if stateErr != nil {
 		return stateErr
 	}
-	report := diagnoseActiveSession(paths, state)
-	return printDoctorReport(report, *jsonOutput)
+	return printDoctorReport(diagnoseActiveSession(paths, state), *jsonOutput)
+}
+
+func diagnoseLastSession(paths config.Paths) (doctorReport, error) {
+	archive, err := sessionstate.LoadLastArchive(paths)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return doctorReport{}, errors.New("no archived Stint session is available")
+		}
+		return doctorReport{}, err
+	}
+	report := doctorReport{
+		Mode:       "last",
+		InstanceID: archive.State.InstanceID,
+		Status:     archive.State.Status,
+		Checkpoint: archive.State.Checkpoint,
+		Diagnosis:  diagnosticOK,
+		Severity:   "HEALTHY",
+		Recovery:   "none",
+	}
+	if !archive.DestroyConfirmed {
+		report.Diagnosis = diagnosticDestroyUnconfirmed
+		report.Severity = "SAFETY"
+		report.Recovery = "retry: stint down"
+	}
+	report.Observations = append(report.Observations,
+		doctorObservation{Name: "Disposition", OK: archive.DestroyConfirmed, Detail: archive.Disposition},
+		doctorObservation{Name: "Destroy confirmation", OK: archive.DestroyConfirmed, Detail: fmt.Sprintf("attempts=%d lastError=%s", archive.DestroyAttempts, archive.DestroyLastError)},
+	)
+	for _, name := range []string{"runtime-tail.log", "tunnel.log", "watchdog.log"} {
+		if tail := readSessionEvidenceTail(paths, archive.State.InstanceID, name, 600); tail != "" {
+			report.Observations = append(report.Observations, doctorObservation{Name: name, OK: true, Detail: tail})
+		}
+	}
+	return report, nil
 }
 
 func diagnoseActiveSession(paths config.Paths, state sessionstate.State) doctorReport {
@@ -110,11 +122,6 @@ func diagnoseActiveSession(paths config.Paths, state sessionstate.State) doctorR
 		Diagnosis:  diagnosticOK,
 		Severity:   "HEALTHY",
 		Recovery:   "none",
-	}
-	if state.Status == sessionstate.StatusDestroyUnconfirmed {
-		report.Diagnosis = diagnosticDestroyUnconfirmed
-		report.Severity = "SAFETY"
-		report.Recovery = "retry: stint down"
 	}
 
 	credentials, err := config.LoadCredentials(paths)
@@ -136,6 +143,9 @@ func diagnoseActiveSession(paths config.Paths, state sessionstate.State) doctorR
 	if !running {
 		return doctorFail(report, diagnosticInstanceNotRunning, "RECOVERABLE", "run: stint down or retry after provider state settles", "Instance state", instance.ActualStatus)
 	}
+	if state.Status == sessionstate.StatusDestroyUnconfirmed {
+		return doctorFail(report, diagnosticDestroyUnconfirmed, "SAFETY", "retry: stint down", "Destroy confirmation", "provider still reports the paid instance; billing may still be active")
+	}
 	if state.SSHHost == "" || state.SSHPort <= 0 {
 		return doctorFail(report, diagnosticSSHMetadataMissing, "RECOVERABLE", "run: stint resume", "SSH metadata", "missing host or port")
 	}
@@ -144,13 +154,15 @@ func diagnoseActiveSession(paths config.Paths, state sessionstate.State) doctorR
 	_, sshErr := runSSH(sshCtx, paths, state, "echo stint-doctor-ssh")
 	sshCancel()
 	if sshErr != nil {
-		return doctorFail(report, diagnosticSSHCommandFailed, "RECOVERABLE", "retry shortly; if persistent run: stint resume", "SSH command", sshErr.Error())
+		code := classifySSHFailure(sshErr)
+		return doctorFail(report, code, "RECOVERABLE", sshRecoveryFor(code), "SSH", sshErr.Error())
 	}
 	report.Observations = append(report.Observations, doctorObservation{Name: "SSH", OK: true, Detail: fmt.Sprintf("%s:%d", state.SSHHost, state.SSHPort)})
 
 	remote, remoteErr := probeRemoteRuntime(paths, state)
 	if remoteErr != nil {
-		return doctorFail(report, diagnosticSSHCommandFailed, "RECOVERABLE", "run: stint resume", "Remote runtime probe", remoteErr.Error())
+		code := classifySSHFailure(remoteErr)
+		return doctorFail(report, code, "RECOVERABLE", sshRecoveryFor(code), "Remote runtime probe", remoteErr.Error())
 	}
 	report.Observations = append(report.Observations,
 		doctorObservation{Name: "Runtime binary", OK: remote.RuntimeReady, Detail: runtimeForState(state)},
@@ -158,61 +170,47 @@ func diagnoseActiveSession(paths config.Paths, state sessionstate.State) doctorR
 		doctorObservation{Name: "Remote :8080", OK: remote.Listener, Detail: boolDetail(remote.Listener, "listening", "not listening")},
 		doctorObservation{Name: "Remote /v1/models", OK: remote.APIHealthy, Detail: boolDetail(remote.APIHealthy, "healthy", "not ready")},
 	)
-	if !remote.RuntimeReady {
-		return doctorFail(report, diagnosticRuntimeBinaryMissing, "RECOVERABLE", "run: stint resume", "Runtime", "selected runtime binary is missing")
-	}
-	if !remote.PIDAlive {
-		detail := "launcher/runtime process is not alive"
-		if remote.LogTail != "" {
-			detail += "; log: " + remote.LogTail
-		}
-		return doctorFail(report, diagnosticRuntimeProcessDead, "RECOVERABLE", "run: stint resume", "Runtime process", detail)
-	}
-	if !remote.Listener {
-		if runtimeForState(state) == runtimeNInfer && remote.ModelBytes > 0 {
-			report.Diagnosis = diagnosticModelDownloading
-			report.Severity = "PROGRESS"
-			report.Recovery = "wait; do not destroy or rent another instance"
-			report.Observations = append(report.Observations, doctorObservation{Name: "NInfer model artifact", OK: true, Detail: formatBytes(remote.ModelBytes) + " present/downloading"})
-		} else {
-			report.Diagnosis = diagnosticRuntimeProcessStarting
-			report.Severity = "PROGRESS"
-			report.Recovery = "wait; rerun stint doctor if startup stops making progress"
-		}
+	runtimeClass := classifyRemoteRuntimeState(state, remote)
+	if !runtimeClass.Progress && runtimeClass.Code != diagnosticOK {
+		return doctorFail(report, runtimeClass.Code, runtimeClass.Severity, runtimeClass.Recovery, "Runtime", runtimeClass.Detail)
 	}
 
 	tunnelAlive := processAlive(state.TunnelPID)
 	report.Observations = append(report.Observations, doctorObservation{Name: "Tunnel process", OK: tunnelAlive, Detail: pidDetail(state.TunnelPID, tunnelAlive)})
+	if !tunnelAlive {
+		return doctorFail(report, diagnosticTunnelProcessDead, "RECOVERABLE", "run: stint resume", "Tunnel", "recorded SSH tunnel process is not alive")
+	}
 	localListening := tcpListening(fmt.Sprintf("127.0.0.1:%d", clinePort), 700*time.Millisecond)
 	report.Observations = append(report.Observations, doctorObservation{Name: "Local :8409", OK: localListening, Detail: boolDetail(localListening, "listening", "not listening")})
+	if !localListening {
+		return doctorFail(report, diagnosticTunnelForwardInvalid, "RECOVERABLE", "run: stint resume", "Tunnel forward", "tunnel process exists but local port 8409 is not accepting connections")
+	}
+
+	watchdogAlive := processAlive(state.WatchdogPID)
+	report.Observations = append(report.Observations, doctorObservation{Name: "Watchdog", OK: watchdogAlive, Detail: pidDetail(state.WatchdogPID, watchdogAlive)})
+	if !watchdogAlive {
+		return doctorFail(report, diagnosticWatchdogMissing, "SAFETY", "session may work but deadline protection is missing; run: stint resume", "Watchdog", "recorded watchdog process is not alive")
+	}
+
+	if runtimeClass.Progress {
+		report.Diagnosis = runtimeClass.Code
+		report.Severity = runtimeClass.Severity
+		report.Recovery = runtimeClass.Recovery
+		if runtimeClass.Code == diagnosticModelDownloading {
+			report.Observations = append(report.Observations, doctorObservation{Name: "NInfer model artifact", OK: true, Detail: runtimeClass.Detail})
+		}
+		return report
+	}
+
 	localHealthy, localErr := localEndpointHealthy()
 	detail := "healthy"
 	if localErr != nil {
 		detail = localErr.Error()
 	}
 	report.Observations = append(report.Observations, doctorObservation{Name: "Local /v1/models", OK: localHealthy, Detail: detail})
-
-	watchdogAlive := processAlive(state.WatchdogPID)
-	report.Observations = append(report.Observations, doctorObservation{Name: "Watchdog", OK: watchdogAlive, Detail: pidDetail(state.WatchdogPID, watchdogAlive)})
-
-	if report.Severity == "PROGRESS" {
-		return report
-	}
-	if !tunnelAlive {
-		return doctorFail(report, diagnosticTunnelProcessMissing, "RECOVERABLE", "run: stint resume", "Tunnel", "recorded tunnel process is not alive")
-	}
-	if !localListening {
-		return doctorFail(report, diagnosticLocalPortNotListening, "RECOVERABLE", "run: stint resume", "Local port", "127.0.0.1:8409 is not listening")
-	}
 	if !localHealthy {
-		code := diagnosticLocalEndpointRefused
-		if localErr != nil && strings.Contains(strings.ToLower(localErr.Error()), "timeout") {
-			code = diagnosticLocalEndpointTimeout
-		}
+		code := classifyLocalEndpointFailure(localErr)
 		return doctorFail(report, code, "RECOVERABLE", "run: stint resume", "Local endpoint", detail)
-	}
-	if !watchdogAlive {
-		return doctorFail(report, diagnosticWatchdogMissing, "SAFETY", "session works but deadline protection is missing; run: stint resume", "Watchdog", "recorded watchdog process is not alive")
 	}
 	return report
 }
@@ -277,11 +275,9 @@ func parseKVLines(out string) map[string]string {
 }
 
 func doctorFail(report doctorReport, code, severity, recovery, name, detail string) doctorReport {
-	if report.Severity != "SAFETY" || code == diagnosticDestroyUnconfirmed {
-		report.Diagnosis = code
-		report.Severity = severity
-		report.Recovery = recovery
-	}
+	report.Diagnosis = code
+	report.Severity = severity
+	report.Recovery = recovery
 	report.Observations = append(report.Observations, doctorObservation{Name: name, OK: false, Detail: detail})
 	return report
 }
@@ -319,6 +315,21 @@ func printDoctorReport(report doctorReport, jsonOutput bool) error {
 	return nil
 }
 
+func classifyLocalEndpointFailure(err error) string {
+	if err == nil {
+		return diagnosticLocalEndpointHTTPError
+	}
+	text := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(text, "connection refused"):
+		return diagnosticLocalEndpointRefused
+	case strings.Contains(text, "timeout"), strings.Contains(text, "deadline exceeded"):
+		return diagnosticLocalEndpointTimeout
+	default:
+		return diagnosticLocalEndpointHTTPError
+	}
+}
+
 func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -350,6 +361,19 @@ func localEndpointHealthy() (bool, error) {
 		return false, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return true, nil
+}
+
+func readSessionEvidenceTail(paths config.Paths, instanceID int64, name string, limit int) string {
+	data, err := os.ReadFile(sessionstate.SessionLogPath(paths, instanceID, name))
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	text := strings.TrimSpace(string(data))
+	if len(text) > limit {
+		text = text[len(text)-limit:]
+	}
+	text = strings.ReplaceAll(text, "\n", " | ")
+	return text
 }
 
 func boolDetail(ok bool, yes, no string) string {
