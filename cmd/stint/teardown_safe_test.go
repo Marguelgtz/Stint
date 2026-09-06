@@ -11,7 +11,17 @@ import (
 )
 
 func TestPreserveUnconfirmedDestroyKeepsActiveStateAndArchive(t *testing.T) {
-	paths := config.Paths{StateDir: filepath.Join(t.TempDir(), "state")}
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	sshDir := filepath.Join(configDir, "ssh")
+	paths := config.Paths{
+		ConfigDir:       configDir,
+		StateDir:        filepath.Join(root, "state"),
+		CredentialsFile: filepath.Join(configDir, "credentials.json"),
+		SSHDir:          sshDir,
+		SSHPrivateKey:   filepath.Join(sshDir, "id_ed25519"),
+		SSHPublicKey:    filepath.Join(sshDir, "id_ed25519.pub"),
+	}
 	state := sessionstate.State{InstanceID: 42, Status: sessionstate.StatusReady, TunnelPID: 99}
 	result := destroyResult{Confirmed: false, Attempts: 2, LastError: errors.New("dns timeout")}
 
