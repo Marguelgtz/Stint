@@ -30,9 +30,26 @@ var destroyRetryDelays = []time.Duration{
 	60 * time.Second,
 }
 
+var watchdogDestroyRetryDelays = []time.Duration{
+	0,
+	5 * time.Second,
+	15 * time.Second,
+	30 * time.Second,
+	60 * time.Second,
+	60 * time.Second,
+	60 * time.Second,
+	60 * time.Second,
+	60 * time.Second,
+	60 * time.Second,
+}
+
 func destroyAndConfirm(ctx context.Context, client destroyClient, instanceID int64) destroyResult {
+	return destroyAndConfirmWithDelays(ctx, client, instanceID, destroyRetryDelays)
+}
+
+func destroyAndConfirmWithDelays(ctx context.Context, client destroyClient, instanceID int64, delays []time.Duration) destroyResult {
 	result := destroyResult{}
-	for i, delay := range destroyRetryDelays {
+	for i, delay := range delays {
 		if delay > 0 {
 			select {
 			case <-ctx.Done():
