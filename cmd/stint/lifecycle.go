@@ -135,13 +135,24 @@ func runStart(args []string) error {
 	created := false
 	ready := false
 	defer func() {
-		if created && !ready {
-			killPID(state.TunnelPID)
+		if !created || ready {
+			return
+		}
+		killPID(state.TunnelPID)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		result := destroyAndConfirm(cleanupCtx, client, state.InstanceID)
+		cancel()
+		if result.Confirmed {
 			killPID(state.WatchdogPID)
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-			_ = client.DestroyInstance(cleanupCtx, state.InstanceID)
-			cancel()
+			state.TunnelPID = 0
+			state.WatchdogPID = 0
+			state.LastError = ""
+			_ = sessionstate.ArchiveState(paths, state, sessionstate.DispositionDestroyedStartupAbort, true, result.Attempts, "")
 			_ = sessionstate.Clear(paths)
+			return
+		}
+		if err := preserveUnconfirmedDestroy(paths, state, result, sessionstate.DispositionDestroyUnconfirmed); err != nil {
+			fmt.Fprintln(os.Stderr, "stint:", err)
 		}
 	}()
 
@@ -159,6 +170,9 @@ func runStart(args []string) error {
 	state.Status = "BOOTING"
 	if err := sessionstate.Save(paths, state); err != nil {
 		return fmt.Errorf("instance %d was created but state persistence failed: %w", instanceID, err)
+	}
+	if err := sessionstate.EnsureSessionDir(paths, instanceID); err != nil {
+		return fmt.Errorf("create session evidence directory: %w", err)
 	}
 	fmt.Printf("Instance       %d\n", instanceID)
 
@@ -301,69 +315,11 @@ func startRemoteModel(ctx context.Context, paths config.Paths, state sessionstat
 }
 
 func runDown(args []string) error {
-	fs := flag.NewFlagSet("down", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	paths, err := config.DefaultPaths()
-	if err != nil {
-		return err
-	}
-	state, err := sessionstate.Load(paths)
-	if errors.Is(err, os.ErrNotExist) {
-		fmt.Println("No active Stint session is recorded.")
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	credentials, err := config.LoadCredentials(paths)
-	if err != nil {
-		return err
-	}
-	client := vast.NewClient(credentials.Vast.APIKey)
-	killPID(state.TunnelPID)
-	killPID(state.WatchdogPID)
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	fmt.Printf("Destroying Vast instance %d...\n", state.InstanceID)
-	if err := client.DestroyInstance(ctx, state.InstanceID); err != nil {
-		return err
-	}
-	if err := sessionstate.Clear(paths); err != nil {
-		return err
-	}
-	fmt.Println("Compute destroyed. Cline endpoint is offline.")
-	return nil
+	return runDownSafe(args)
 }
 
 func runWatchdog(args []string) error {
-	paths, err := config.DefaultPaths()
-	if err != nil {
-		return err
-	}
-	state, err := sessionstate.Load(paths)
-	if err != nil {
-		return nil
-	}
-	if wait := time.Until(state.Deadline); wait > 0 {
-		timer := time.NewTimer(wait)
-		defer timer.Stop()
-		<-timer.C
-	}
-	credentials, err := config.LoadCredentials(paths)
-	if err != nil {
-		return err
-	}
-	killPID(state.TunnelPID)
-	client := vast.NewClient(credentials.Vast.APIKey)
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	if err := client.DestroyInstance(ctx, state.InstanceID); err != nil {
-		return err
-	}
-	return sessionstate.Clear(paths)
+	return runWatchdogSafe(args)
 }
 
 func confirmRental() (bool, error) {
@@ -521,7 +477,10 @@ func startTunnel(paths config.Paths, state sessionstate.State) (int, error) {
 	if err := paths.Ensure(); err != nil {
 		return 0, err
 	}
-	logPath := filepath.Join(paths.StateDir, "tunnel.log")
+	if err := sessionstate.EnsureSessionDir(paths, state.InstanceID); err != nil {
+		return 0, err
+	}
+	logPath := sessionstate.SessionLogPath(paths, state.InstanceID, "tunnel.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, err
@@ -586,7 +545,7 @@ func waitForModel(ctx context.Context, paths config.Paths, state sessionstate.St
 					if len(tail) > 300 {
 						tail = tail[len(tail)-300:]
 					}
-					fmt.Printf("  llama: %s\n", tail)
+					fmt.Printf("  runtime: %s\n", tail)
 					lastLog = tail
 				}
 			}
@@ -594,9 +553,9 @@ func waitForModel(ctx context.Context, paths config.Paths, state sessionstate.St
 		if time.Now().After(deadline) {
 			tail, _ := runSSH(context.Background(), paths, state, "tail -n 12 /workspace/stint/llama.log 2>/dev/null || true")
 			if strings.TrimSpace(tail) != "" {
-				return fmt.Errorf("timed out waiting for Qwen endpoint; remote llama log:\n%s", strings.TrimSpace(tail))
+				return fmt.Errorf("timed out waiting for Qwen endpoint; remote runtime log:\n%s", strings.TrimSpace(tail))
 			}
-			return errors.New("timed out waiting for Qwen endpoint; startup cleanup will destroy the instance")
+			return errors.New("timed out waiting for Qwen endpoint")
 		}
 		select {
 		case <-ctx.Done():
@@ -614,7 +573,14 @@ func spawnWatchdog(paths config.Paths) (int, error) {
 	if err := paths.Ensure(); err != nil {
 		return 0, err
 	}
-	logFile, err := os.OpenFile(filepath.Join(paths.StateDir, "watchdog.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	state, err := sessionstate.Load(paths)
+	if err != nil {
+		return 0, fmt.Errorf("load session for watchdog: %w", err)
+	}
+	if err := sessionstate.EnsureSessionDir(paths, state.InstanceID); err != nil {
+		return 0, err
+	}
+	logFile, err := os.OpenFile(sessionstate.SessionLogPath(paths, state.InstanceID, "watchdog.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, err
 	}
