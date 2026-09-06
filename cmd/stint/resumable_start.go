@@ -72,6 +72,9 @@ func runStartResumable(args []string) (retErr error) {
 		if existing.Status == sessionstate.StatusRecoverable || checkpointIsRecoverable(existing.Checkpoint) {
 			next = "run: stint resume or stint down"
 		}
+		if existing.Status == sessionstate.StatusDestroyUnconfirmed {
+			next = "run: stint down; destruction is unconfirmed and billing may still be active"
+		}
 		return fmt.Errorf("session %d is already recorded (%s); %s", existing.InstanceID, existing.Status, next)
 	} else if !errors.Is(loadErr, os.ErrNotExist) {
 		return loadErr
@@ -180,20 +183,34 @@ func runStartResumable(args []string) (retErr error) {
 			if retErr != nil {
 				state.LastError = retErr.Error()
 			}
-			if saveErr := sessionstate.Save(paths, state); saveErr != nil {
-				fmt.Fprintf(os.Stderr, "stint: preserve session state: %v\n", saveErr)
+			if saveErr := sessionstate.Save(paths, state); saveErr == nil {
+				fmt.Fprintf(os.Stderr, "\nPaid instance %d preserved at %s. Run: stint doctor or stint resume\n", state.InstanceID, state.Checkpoint)
+				return
+			} else {
+				fmt.Fprintf(os.Stderr, "stint: cannot safely persist recoverable session %d: %v; attempting confirmed teardown\n", state.InstanceID, saveErr)
 			}
-			fmt.Fprintf(os.Stderr, "\nPaid instance %d preserved at %s. Run: stint resume\n", state.InstanceID, state.Checkpoint)
-			return
 		}
 
-		killPID(state.WatchdogPID)
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		if destroyErr := client.DestroyInstance(cleanupCtx, state.InstanceID); destroyErr != nil {
-			fmt.Fprintf(os.Stderr, "stint: cleanup instance %d: %v\n", state.InstanceID, destroyErr)
-		}
+		captureRuntimeTail(paths, state)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		result := destroyAndConfirm(cleanupCtx, client, state.InstanceID)
 		cancel()
-		_ = sessionstate.Clear(paths)
+		if result.Confirmed {
+			killPID(state.WatchdogPID)
+			state.TunnelPID = 0
+			state.WatchdogPID = 0
+			if archiveErr := sessionstate.ArchiveState(paths, state, sessionstate.DispositionDestroyedStartupAbort, true, result.Attempts, ""); archiveErr != nil {
+				fmt.Fprintf(os.Stderr, "stint: archive startup-abort session: %v\n", archiveErr)
+			}
+			if clearErr := sessionstate.Clear(paths); clearErr != nil {
+				fmt.Fprintf(os.Stderr, "stint: clear confirmed-destroy session state: %v\n", clearErr)
+			}
+			fmt.Fprintf(os.Stderr, "\nPaid instance %d teardown confirmed after startup failure.\n", state.InstanceID)
+			return
+		}
+		if preserveErr := preserveUnconfirmedDestroy(paths, state, result, sessionstate.DispositionDestroyUnconfirmed); preserveErr != nil {
+			fmt.Fprintf(os.Stderr, "stint: %v\n", preserveErr)
+		}
 	}()
 
 	fmt.Println("Renting selected offer...")
@@ -211,6 +228,9 @@ func runStartResumable(args []string) (retErr error) {
 	state.Checkpoint = sessionstate.CheckpointInstanceCreated
 	if err := sessionstate.Save(paths, state); err != nil {
 		return fmt.Errorf("instance %d was created but state persistence failed: %w", instanceID, err)
+	}
+	if err := sessionstate.EnsureSessionDir(paths, instanceID); err != nil {
+		return fmt.Errorf("create session evidence directory: %w", err)
 	}
 	fmt.Printf("Instance       %d\n", instanceID)
 
