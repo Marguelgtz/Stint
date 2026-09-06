@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -73,6 +74,10 @@ func isInstanceMissingError(err error) bool {
 	if err == nil {
 		return false
 	}
+	var apiErr *vast.APIError
+	if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusGone) {
+		return true
+	}
 	text := strings.ToLower(err.Error())
-	return errors.Is(err, vast.ErrInstanceNotFound) || strings.Contains(text, "not found") || strings.Contains(text, "404")
+	return strings.Contains(text, "not found") || strings.Contains(text, "404") || strings.Contains(text, "410")
 }
