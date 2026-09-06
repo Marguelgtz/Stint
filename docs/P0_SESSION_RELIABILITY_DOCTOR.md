@@ -72,8 +72,10 @@ Legend: `[ ]` planned, `[~]` in progress, `[x]` verified, `[!]` blocked, `[-]` s
 ### P0-B — Durable, attributable evidence
 
 - [x] Archive final `session.json` before confirmed teardown (existing current stack).
-- [~] Move tunnel logs from shared `tunnel.log` to an instance-scoped evidence path.
-- [~] Move watchdog logs from shared `watchdog.log` to an instance-scoped evidence path.
+- [x] Move tunnel logs from shared `tunnel.log` to `sessions/<instance-id>/tunnel.log`.
+- [x] Move watchdog logs from shared `watchdog.log` to `sessions/<instance-id>/watchdog.log`.
+- [x] Bind spawned watchdog to the exact instance ID whose evidence path and deadline it owns.
+- [x] CI verification for instance-scoped evidence: run #333 passed build, vet, unit, and race tests.
 - [ ] Preserve a bounded remote runtime/model log tail before teardown when SSH is available.
 - [ ] Make `doctor --last` surface relevant retained evidence, not only archived state.
 - [ ] Add retention/rotation policy so evidence remains bounded.
@@ -115,6 +117,7 @@ Legend: `[ ]` planned, `[~]` in progress, `[x]` verified, `[!]` blocked, `[-]` s
 - [x] Startup without a verified owner classified as stalled/recoverable.
 - [x] Missing tracked provider instance classified as safety issue.
 - [x] Missing tunnel and watchdog root-cause ordering.
+- [x] Instance-scoped evidence paths cannot collide across two instance IDs.
 - [ ] Tunnel-forward-refused while NInfer model acquisition is still progressing.
 - [ ] Transient provider DNS failure during deadline teardown followed by successful retry, exercised end-to-end with fake provider dependencies.
 
@@ -163,7 +166,8 @@ P0 is complete only when all are true:
 - [x] State is not cleared until provider disappearance is confirmed.
 - [x] Deadline teardown survives transient provider/API failure through retries.
 - [x] Active `stint doctor` diagnoses paid-session reality instead of preflight state.
-- [ ] Every session has isolated tunnel/watchdog/runtime evidence.
+- [x] Tunnel/watchdog evidence is isolated per instance.
+- [ ] Runtime/model evidence is captured per instance before teardown.
 - [ ] Doctor can distinguish active NInfer acquisition/load from a dead/stalled runtime.
 - [ ] Deterministic tests cover the observed remote-forward-refused-during-startup shape.
 - [ ] One controlled live validation proves start -> diagnose -> preempt/down -> confirmed-gone without a second rental.
