@@ -11,7 +11,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
@@ -328,17 +327,6 @@ func classifyLocalEndpointFailure(err error) string {
 	default:
 		return diagnosticLocalEndpointHTTPError
 	}
-}
-
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return process.Signal(syscall.Signal(0)) == nil
 }
 
 func tcpListening(address string, timeout time.Duration) bool {
