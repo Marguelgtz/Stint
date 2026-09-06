@@ -1,8 +1,8 @@
 # Stint P0 Session Reliability & Doctor
 
-**Status:** P0, active living plan  
-**Integration branch:** `fix/p0-ninfer-session-safety`  
-**Integration PR:** #76, based on the current NInfer artifact-fix line (#74)  
+**Status:** P0, active living plan
+**Integration branch:** `fix/p0-ninfer-session-safety`
+**Integration PR:** #76, based on the current NInfer artifact-fix line (#74)
 **Primary objective:** A paid Stint session must always be stoppable, attributable, diagnosable, and recoverable without requiring a second rental.
 
 ## Reliability invariants
@@ -72,8 +72,8 @@ Legend: `[ ]` planned, `[~]` in progress, `[x]` verified, `[!]` blocked, `[-]` s
 ### P0-B — Durable, attributable evidence
 
 - [x] Archive final `session.json` before confirmed teardown (existing current stack).
-- [ ] Move tunnel logs from shared `tunnel.log` to an instance-scoped evidence path.
-- [ ] Move watchdog logs from shared `watchdog.log` to an instance-scoped evidence path.
+- [~] Move tunnel logs from shared `tunnel.log` to an instance-scoped evidence path.
+- [~] Move watchdog logs from shared `watchdog.log` to an instance-scoped evidence path.
 - [ ] Preserve a bounded remote runtime/model log tail before teardown when SSH is available.
 - [ ] Make `doctor --last` surface relevant retained evidence, not only archived state.
 - [ ] Add retention/rotation policy so evidence remains bounded.
