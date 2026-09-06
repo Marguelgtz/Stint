@@ -610,7 +610,10 @@ func startTunnel(paths config.Paths, state sessionstate.State) (int, error) {
 	if err := paths.Ensure(); err != nil {
 		return 0, err
 	}
-	logPath := filepath.Join(paths.StateDir, "tunnel.log")
+	logPath, err := sessionEvidenceLogPath(paths, state.InstanceID, "tunnel.log")
+	if err != nil {
+		return 0, err
+	}
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, err
@@ -703,11 +706,19 @@ func spawnWatchdog(paths config.Paths) (int, error) {
 	if err := paths.Ensure(); err != nil {
 		return 0, err
 	}
-	logFile, err := os.OpenFile(filepath.Join(paths.StateDir, "watchdog.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	state, err := sessionstate.Load(paths)
+	if err != nil {
+		return 0, fmt.Errorf("load session for watchdog: %w", err)
+	}
+	logPath, err := sessionEvidenceLogPath(paths, state.InstanceID, "watchdog.log")
 	if err != nil {
 		return 0, err
 	}
-	cmd := exec.Command(exe, "_watchdog")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	cmd := exec.Command(exe, "_watchdog", strconv.FormatInt(state.InstanceID, 10))
 	// Detach the watchdog from the spawning terminal's process group so it
 	// survives the SIGHUP that closing that terminal sends to the group. The
 	// watchdog is the only local deadline enforcer for a paid instance; if it

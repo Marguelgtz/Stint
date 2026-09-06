@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -49,8 +50,11 @@ type createInstanceResponse struct {
 	NewContract int64 `json:"new_contract"`
 }
 
-type showInstanceResponse struct {
-	Instances Instance `json:"instances"`
+type showInstancesResponse struct {
+	Success        bool       `json:"success"`
+	InstancesFound int        `json:"instances_found"`
+	TotalInstances int        `json:"total_instances"`
+	Instances      []Instance `json:"instances"`
 }
 
 type successResponse struct {
@@ -145,7 +149,23 @@ func (c *Client) ShowInstance(ctx context.Context, instanceID int64) (Instance, 
 	if instanceID <= 0 {
 		return Instance{}, errors.New("invalid Vast instance id")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint(fmt.Sprintf("/api/v0/instances/%d", instanceID)), nil)
+
+	// Vast's v1 instance inventory supports an exact id filter and explicitly
+	// reports zero matches. Use it as the canonical read for a recorded contract
+	// instead of relying on the legacy single-instance endpoint to eventually
+	// change error shape after destroy. Teardown verification calls this same
+	// method, so an empty inventory result can deterministically become not-found.
+	filters, err := json.Marshal(map[string]any{
+		"id": map[string]any{"eq": instanceID},
+	})
+	if err != nil {
+		return Instance{}, fmt.Errorf("encode Vast instance filter: %w", err)
+	}
+	query := url.Values{}
+	query.Set("limit", "1")
+	query.Set("select_filters", string(filters))
+	endpoint := c.endpoint("/api/v1/instances") + "?" + query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return Instance{}, fmt.Errorf("build Vast show instance request: %w", err)
 	}
@@ -158,13 +178,26 @@ func (c *Client) ShowInstance(ctx context.Context, instanceID int64) (Instance, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return Instance{}, decodeAPIError(resp)
 	}
-	var result showInstanceResponse
+
+	var result showInstancesResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&result); err != nil {
-		return Instance{}, fmt.Errorf("decode Vast show instance response: %w", err)
+		return Instance{}, fmt.Errorf("decode Vast show instances response: %w", err)
 	}
-	instance := result.Instances
-	instance.SSHHost, instance.SSHPort = instance.resolvedSSHEndpoint()
-	return instance, nil
+	if !result.Success {
+		return Instance{}, errors.New("Vast instance inventory request was not successful")
+	}
+	for _, instance := range result.Instances {
+		if instance.ID != instanceID {
+			continue
+		}
+		instance.SSHHost, instance.SSHPort = instance.resolvedSSHEndpoint()
+		return instance, nil
+	}
+	return Instance{}, &APIError{
+		StatusCode: http.StatusNotFound,
+		Status:     http.StatusText(http.StatusNotFound),
+		Detail:     fmt.Sprintf("instance %d is not present in Vast instance inventory", instanceID),
+	}
 }
 
 func (c *Client) AttachSSHKey(ctx context.Context, instanceID int64, publicKey string) error {
