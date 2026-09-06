@@ -40,5 +40,12 @@ func classifyRemoteRuntimeState(state sessionstate.State, remote remoteDoctorSta
 			Detail: "runtime process is alive but remote port 8080 is not listening yet", Progress: true,
 		}
 	}
+	if !remote.APIHealthy {
+		return runtimeClassification{
+			Code: diagnosticModelLoadInProgress, Severity: "PROGRESS",
+			Recovery: "wait; rerun stint doctor if readiness does not converge",
+			Detail: "remote server is listening but /v1/models is not ready", Progress: true,
+		}
+	}
 	return runtimeClassification{Code: diagnosticOK, Severity: "HEALTHY", Recovery: "none"}
 }
