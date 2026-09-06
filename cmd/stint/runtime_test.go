@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -58,6 +59,18 @@ func TestRuntimeContextsAndLegacyResume(t *testing.T) {
 	}
 }
 
+func TestNInferModelArtifactIsRevisionPinned(t *testing.T) {
+	if ninferModelRevision == "" {
+		t.Fatal("NInfer model revision must be pinned")
+	}
+	if strings.Contains(ninferModelURL, "/resolve/main/") {
+		t.Fatalf("NInfer model URL is mutable: %s", ninferModelURL)
+	}
+	if !strings.Contains(ninferModelURL, "/resolve/"+ninferModelRevision+"/") {
+		t.Fatalf("NInfer model URL %q does not contain pinned revision %q", ninferModelURL, ninferModelRevision)
+	}
+}
+
 func TestNInferBootstrapIsPinnedAndPrefetchesInParallel(t *testing.T) {
 	command := ninferBootstrapCommand()
 	for _, required := range []string{
@@ -73,14 +86,19 @@ func TestNInferBootstrapIsPinnedAndPrefetchesInParallel(t *testing.T) {
 		"--target ninfer ninfer-serve",
 		"model-download.pid",
 		"model-download.log",
+		"model-total-bytes",
 		"Starting Qwen3.8-27B model prefetch in parallel",
 		"--retry-all-errors",
 		"-C -",
 		"waiting for the parallel Qwen model transfer",
-		"18210531328",
 	} {
 		if !strings.Contains(command, required) {
 			t.Fatalf("NInfer bootstrap missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"18210531328", "17367 MiB", "/resolve/main/"} {
+		if strings.Contains(command, forbidden) {
+			t.Fatalf("NInfer bootstrap retained stale hardcoded artifact metadata %q", forbidden)
 		}
 	}
 }
@@ -92,6 +110,9 @@ func TestNInferLaunchUsesQualified4090Profile(t *testing.T) {
 		ninferModelSHA256,
 		"/workspace/stint/llama.pid",
 		"/workspace/stint/llama.log",
+		"model-total-bytes",
+		"%header{content-length}",
+		"Discarding invalid completed/oversized NInfer model artifact",
 		"--model-id qwen3.8-27b",
 		"--max-context 126976",
 		"--kv-capacity 126976",
@@ -105,6 +126,33 @@ func TestNInferLaunchUsesQualified4090Profile(t *testing.T) {
 		if !strings.Contains(command, required) {
 			t.Fatalf("NInfer launch missing %q", required)
 		}
+	}
+}
+
+func TestNInferProgressDoesNotHardcodeArtifactSize(t *testing.T) {
+	command := remoteModelProgressCommandForState(sessionstate.State{Runtime: runtimeNInfer})
+	if !strings.Contains(command, "model-total-bytes") {
+		t.Fatal("NInfer progress does not read discovered model size")
+	}
+	for _, forbidden := range []string{"18210531328", "17367 MiB"} {
+		if strings.Contains(command, forbidden) {
+			t.Fatalf("NInfer progress retained hardcoded artifact metadata %q", forbidden)
+		}
+	}
+}
+
+func TestNInferGeneratedShellIsValid(t *testing.T) {
+	commands := map[string]string{
+		"bootstrap": ninferBootstrapCommand(),
+		"launch":    ninferModelLaunchCommandWithClients(262144, 2),
+		"progress":  remoteModelProgressCommandForState(sessionstate.State{Runtime: runtimeNInfer}),
+	}
+	for name, command := range commands {
+		t.Run(name, func(t *testing.T) {
+			if out, err := exec.Command("bash", "-n", "-c", command).CombinedOutput(); err != nil {
+				t.Fatalf("generated NInfer shell is invalid: %v\n%s\ncommand:\n%s", err, out, command)
+			}
+		})
 	}
 }
 
