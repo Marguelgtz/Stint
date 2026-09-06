@@ -3,6 +3,7 @@ package vast
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -123,16 +124,31 @@ func TestAttachSSHKeyUsesInstanceEndpointAndRepairsStrictModes(t *testing.T) {
 	}
 }
 
+func assertExactInstanceFilter(t *testing.T, r *http.Request, instanceID float64) {
+	t.Helper()
+	if r.Method != http.MethodGet || r.URL.Path != "/api/v1/instances" {
+		t.Fatalf("show request = %s %s", r.Method, r.URL.Path)
+	}
+	if r.URL.Query().Get("limit") != "1" {
+		t.Fatalf("limit = %q, want 1", r.URL.Query().Get("limit"))
+	}
+	var filters map[string]map[string]any
+	if err := json.Unmarshal([]byte(r.URL.Query().Get("select_filters")), &filters); err != nil {
+		t.Fatalf("decode select_filters: %v", err)
+	}
+	if filters["id"]["eq"] != instanceID {
+		t.Fatalf("id filter = %#v, want %.0f", filters["id"]["eq"], instanceID)
+	}
+}
+
 func TestShowAndDestroyInstanceEndpoints(t *testing.T) {
 	request := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		request++
 		switch request {
 		case 1:
-			if r.Method != http.MethodGet || r.URL.Path != "/api/v0/instances/9876" {
-				t.Fatalf("show request = %s %s", r.Method, r.URL.Path)
-			}
-			_, _ = w.Write([]byte(`{"instances":{"id":9876,"actual_status":"running","ssh_host":"ssh1.vast.ai","ssh_port":12345,"gpu_name":"RTX 3090","gpu_ram":24576,"dph_total":0.14}}`))
+			assertExactInstanceFilter(t, r, 9876)
+			_, _ = w.Write([]byte(`{"success":true,"instances_found":1,"total_instances":1,"instances":[{"id":9876,"actual_status":"running","ssh_host":"ssh1.vast.ai","ssh_port":12345,"gpu_name":"RTX 3090","gpu_ram":24576,"dph_total":0.14}]}`))
 		case 2:
 			if r.Method != http.MethodDelete || r.URL.Path != "/api/v0/instances/9876" {
 				t.Fatalf("destroy request = %s %s", r.Method, r.URL.Path)
@@ -161,10 +177,8 @@ func TestShowAndDestroyInstanceEndpoints(t *testing.T) {
 
 func TestShowInstanceUsesSSHDirectPortMapping(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v0/instances/9876" {
-			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
-		}
-		_, _ = w.Write([]byte(`{"instances":{"id":9876,"actual_status":"running","image_runtype":"ssh_direct","ssh_host":"ssh7.vast.ai","ssh_port":35446,"public_ipaddr":"189.79.25.23","ports":{"22/tcp":[{"HostIp":"0.0.0.0","HostPort":"42831"},{"HostIp":"::","HostPort":"42831"}]}}}`))
+		assertExactInstanceFilter(t, r, 9876)
+		_, _ = w.Write([]byte(`{"success":true,"instances_found":1,"total_instances":1,"instances":[{"id":9876,"actual_status":"running","image_runtype":"ssh_direct","ssh_host":"ssh7.vast.ai","ssh_port":35446,"public_ipaddr":"189.79.25.23","ports":{"22/tcp":[{"HostIp":"0.0.0.0","HostPort":"42831"},{"HostIp":"::","HostPort":"42831"}]}}]}`))
 	}))
 	defer server.Close()
 
@@ -177,6 +191,26 @@ func TestShowInstanceUsesSSHDirectPortMapping(t *testing.T) {
 	}
 	if instance.SSHHost != "189.79.25.23" || instance.SSHPort != 42831 {
 		t.Fatalf("SSH endpoint = %s:%d, want 189.79.25.23:42831", instance.SSHHost, instance.SSHPort)
+	}
+}
+
+func TestShowInstanceReturnsNotFoundWhenInventoryHasNoMatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertExactInstanceFilter(t, r, 9876)
+		_, _ = w.Write([]byte(`{"success":true,"instances_found":0,"total_instances":0,"instances":[]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.BaseURL = server.URL
+	client.HTTPClient = server.Client()
+	_, err := client.ShowInstance(context.Background(), 9876)
+	if err == nil {
+		t.Fatal("expected not-found error for absent instance")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("err = %v, want APIError 404", err)
 	}
 }
 
