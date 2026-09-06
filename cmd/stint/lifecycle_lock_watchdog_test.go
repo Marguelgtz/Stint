@@ -93,10 +93,10 @@ func TestDownYesPreemptsRecordedWatchdogHoldingLifecycleLock(t *testing.T) {
 		t.Fatalf("start watchdog helper: %v", err)
 	}
 	defer func() {
-		if cmd.Process != nil {
+		if cmd.ProcessState == nil && cmd.Process != nil {
 			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
 		}
-		_ = cmd.Wait()
 	}()
 
 	ready, err := bufio.NewReader(stdout).ReadString('\n')
@@ -122,6 +122,10 @@ func TestDownYesPreemptsRecordedWatchdogHoldingLifecycleLock(t *testing.T) {
 		t.Fatalf("down --yes should preempt recorded watchdog and acquire lock: %v", err)
 	}
 	releaseDown()
+
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("watchdog helper exited cleanly; want SIGTERM termination")
+	}
 }
 
 func TestLifecycleWatchdogLockHelperProcess(t *testing.T) {
