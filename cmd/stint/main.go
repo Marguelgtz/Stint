@@ -25,10 +25,10 @@ const version = "0.1.0"
 const clinePort = 8409
 
 type planDiagnostics struct {
-	Candidates      int                         `json:"candidates"`
-	Qualified       int                         `json:"qualified"`
+	Candidates      int                          `json:"candidates"`
+	Qualified       int                          `json:"qualified"`
 	RejectedBy      map[core.RejectionReason]int `json:"rejectedBy,omitempty"`
-	ClosestRejected []core.OfferEvaluation      `json:"closestRejected,omitempty"`
+	ClosestRejected []core.OfferEvaluation       `json:"closestRejected,omitempty"`
 }
 
 type planOutput struct {
@@ -74,7 +74,7 @@ func run(args []string) error {
 	case "doctor":
 		return runDoctorSafe(args[1:])
 	case "status":
-		return runStatus()
+		return runStatusSafe(args[1:])
 	case "onboard":
 		return runOnboard(args[1:])
 	case "help", "--help", "-h":
@@ -526,6 +526,7 @@ Compute (paid):
   stint start interactive --hours 1 --yes
   stint resume
   stint status
+  stint status --refresh
   stint down
 
 Other:
