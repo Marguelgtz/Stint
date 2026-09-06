@@ -87,8 +87,31 @@ func TestLlamaTransferSampleUsesXetWhenAvailableAndResumableFallback(t *testing.
 	}
 }
 
+func TestNInferTransferSampleDiscoversArtifactSize(t *testing.T) {
+	command := ninferTransferSampleCommand()
+	for _, required := range []string{
+		"model-total-bytes",
+		"%header{content-length}",
+		"STINT_TRANSFER_TOTAL_BYTES",
+		ninferModelRevision,
+		"Discarding invalid completed/oversized NInfer model artifact",
+	} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("NInfer transfer sample missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"18210531328", "18_210_531_328", "17367 MiB", "/resolve/main/"} {
+		if strings.Contains(command, forbidden) {
+			t.Fatalf("NInfer transfer sample retained stale hardcoded artifact metadata %q", forbidden)
+		}
+	}
+	if got := modelSizeBytesForState(sessionstate.State{Runtime: runtimeNInfer}); got != 0 {
+		t.Fatalf("NInfer compiled-in model size = %d, want 0 so remote metadata is authoritative", got)
+	}
+}
+
 func TestParseRemoteDownloadProbeIgnoresSSHBanners(t *testing.T) {
-	output := "Welcome to vast.ai.\nHave fun!\nSTINT_DOWNLOAD_MB_PER_SEC=127.625\nSTINT_TRANSFER_BYTES_END=2147483648\n"
+	output := "Welcome to vast.ai.\nHave fun!\nSTINT_DOWNLOAD_MB_PER_SEC=127.625\nSTINT_TRANSFER_BYTES_END=2147483648\nSTINT_TRANSFER_TOTAL_BYTES=4294967296\n"
 	got, err := parseRemoteDownloadProbe(output)
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +126,13 @@ func TestParseRemoteDownloadProbeIgnoresSSHBanners(t *testing.T) {
 	if bytes != 2147483648 {
 		t.Fatalf("bytes = %d, want 2147483648", bytes)
 	}
+	total, err := parseTransferTotalBytes(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 4294967296 {
+		t.Fatalf("total bytes = %d, want 4294967296", total)
+	}
 }
 
 func TestParseRemoteDownloadProbeRequiresMarker(t *testing.T) {
@@ -111,6 +141,9 @@ func TestParseRemoteDownloadProbeRequiresMarker(t *testing.T) {
 	}
 	if _, err := parseTransferBytesEnd("STINT_DOWNLOAD_MB_PER_SEC=50\n"); err == nil {
 		t.Fatal("expected missing byte marker error")
+	}
+	if _, err := parseTransferTotalBytes("STINT_TRANSFER_BYTES_END=100\n"); err == nil {
+		t.Fatal("expected missing total-byte marker error")
 	}
 }
 
