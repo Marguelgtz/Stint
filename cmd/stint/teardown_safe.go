@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
@@ -36,6 +37,7 @@ func runDownSafe(args []string) error {
 		return err
 	}
 
+	captureRuntimeTail(paths, state)
 	killPID(state.TunnelPID)
 	client := vast.NewClient(credentials.Vast.APIKey)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -85,11 +87,12 @@ func runWatchdogSafe(args []string) error {
 		return err
 	}
 
+	captureRuntimeTail(paths, state)
 	killPID(state.TunnelPID)
 	client := vast.NewClient(credentials.Vast.APIKey)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	result := destroyAndConfirm(ctx, client, state.InstanceID)
+	result := destroyAndConfirmWithDelays(ctx, client, state.InstanceID, watchdogDestroyRetryDelays)
 	if !result.Confirmed {
 		return preserveUnconfirmedDestroy(paths, state, result, sessionstate.DispositionDestroyUnconfirmed)
 	}
@@ -118,4 +121,20 @@ func preserveUnconfirmedDestroy(paths config.Paths, state sessionstate.State, re
 		return fmt.Errorf("destroy unconfirmed (%s); preserve archive: %w", lastError, err)
 	}
 	return fmt.Errorf("%s: Vast instance %d could not be confirmed destroyed after %d attempt(s); billing may still be active; state was preserved; retry: stint down", diagnosticDestroyUnconfirmed, state.InstanceID, result.Attempts)
+}
+
+func captureRuntimeTail(paths config.Paths, state sessionstate.State) {
+	if state.InstanceID <= 0 || state.SSHHost == "" || state.SSHPort <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	out, err := runSSH(ctx, paths, state, "tail -n 80 /workspace/stint/llama.log 2>/dev/null || true")
+	if err != nil || strings.TrimSpace(out) == "" {
+		return
+	}
+	if err := sessionstate.EnsureSessionDir(paths, state.InstanceID); err != nil {
+		return
+	}
+	_ = os.WriteFile(sessionstate.SessionLogPath(paths, state.InstanceID, "runtime-tail.log"), []byte(out), 0o600)
 }
