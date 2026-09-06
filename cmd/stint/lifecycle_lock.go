@@ -12,17 +12,19 @@ import (
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
+	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
 const lifecycleLockFile = "lifecycle.lock"
 
 const (
-	lifecycleOperationStart   = "start"
-	lifecycleOperationResume  = "resume"
-	lifecycleOperationDown    = "down"
-	lifecycleOperationExtend  = "extend"
-	lifecycleOperationShorten = "shorten"
-	lifecycleOperationUnknown = "lifecycle"
+	lifecycleOperationStart    = "start"
+	lifecycleOperationResume   = "resume"
+	lifecycleOperationDown     = "down"
+	lifecycleOperationExtend   = "extend"
+	lifecycleOperationShorten  = "shorten"
+	lifecycleOperationWatchdog = "watchdog"
+	lifecycleOperationUnknown  = "lifecycle"
 
 	lifecyclePreemptPollInterval = 100 * time.Millisecond
 	lifecyclePreemptTimeout      = 60 * time.Second
@@ -69,13 +71,28 @@ func acquireLifecycleLock(paths config.Paths) (func(), error) {
 		return nil, err
 	}
 
+	// `down --yes` is explicit teardown intent. If the lifecycle owner is the
+	// watchdog recorded for this exact session, verify both executable identity
+	// and ownership of this exact lock file before sending SIGTERM. The normal
+	// down path will then acquire the flock and perform the authoritative,
+	// idempotent provider destroy itself. Plain interactive `down` never does
+	// this before the user's destroy confirmation; it remains passive below.
+	if downAssumesYes() {
+		stoppedWatchdog, stopErr := interruptRecordedWatchdog(paths, busy.LockPath)
+		if stopErr != nil {
+			return nil, stopErr
+		}
+		if stoppedWatchdog {
+			fmt.Println("Stopping the recorded deadline watchdog before confirmed teardown...")
+			return waitForLifecycleLock(paths, lifecycleOperationDown, lifecyclePreemptTimeout)
+		}
+	}
+
 	// A verified start/resume owner can be terminated gracefully because those
 	// paths are signal-aware and preserve/clean up paid state before exiting.
-	// Everything else, including legacy watchdogs that acquired the same flock
-	// without owner metadata, is never signaled. `down` waits for the kernel lock
-	// instead. This lets an in-flight deadline destroy finish and closes the
-	// recovery dead-end where an expired RECOVERABLE session could not be torn
-	// down because its watchdog owned the lifecycle lock.
+	// Everything else is never signaled automatically. `down` waits for the
+	// kernel lock instead. This keeps plain interactive down side-effect-free
+	// until confirmation and retains compatibility with legacy anonymous owners.
 	if busy.OwnerVerified && lifecycleOperationInterruptible(busy.Owner.Operation) && lifecycleOwnerStillHoldsLock(busy.Owner, busy.LockPath) {
 		if !downAssumesYes() && !confirmLifecycleInterrupt(busy.Owner) {
 			return nil, fmt.Errorf("down cancelled; active Stint %s (pid %d) is still running", busy.Owner.Operation, busy.Owner.PID)
@@ -194,6 +211,8 @@ func normalizeLifecycleOperation(operation string) string {
 		return lifecycleOperationExtend
 	case lifecycleOperationShorten:
 		return lifecycleOperationShorten
+	case lifecycleOperationWatchdog:
+		return lifecycleOperationWatchdog
 	default:
 		return lifecycleOperationUnknown
 	}
@@ -241,6 +260,36 @@ func interruptLifecycleOwner(owner lifecycleLockOwner, lockPath string) error {
 		return fmt.Errorf("interrupt Stint %s pid %d: %w", owner.Operation, owner.PID, err)
 	}
 	return nil
+}
+
+func interruptRecordedWatchdog(paths config.Paths, lockPath string) (bool, error) {
+	state, err := sessionstate.Load(paths)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil || state.WatchdogPID <= 0 {
+		// Failure to load trustworthy session state must never turn into a PID
+		// signal. Fall back to passive lock waiting instead.
+		return false, nil
+	}
+
+	owner := lifecycleLockOwner{
+		PID:        state.WatchdogPID,
+		Operation:  lifecycleOperationWatchdog,
+		Executable: currentExecutablePath(),
+	}
+	if !lifecycleOwnerStillHoldsLock(owner, lockPath) {
+		return false, nil
+	}
+
+	process, err := os.FindProcess(owner.PID)
+	if err != nil {
+		return false, fmt.Errorf("find recorded watchdog pid %d: %w", owner.PID, err)
+	}
+	if err := process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return false, fmt.Errorf("stop recorded watchdog pid %d: %w", owner.PID, err)
+	}
+	return true, nil
 }
 
 func waitForLifecycleLock(paths config.Paths, operation string, timeout time.Duration) (func(), error) {
