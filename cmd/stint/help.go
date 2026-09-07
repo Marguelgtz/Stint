@@ -266,6 +266,8 @@ Subcommands:
 			{name: "--allow-command", argument: "<prefix>", defaultVal: "none", purpose: "command prefix the worker may run (repeatable; named in the worker prompt, denied by the CLI otherwise while auto-approve is off)"},
 			{name: "--provider", argument: "<id>", defaultVal: "openai-compatible", purpose: "Cline provider id"},
 			{name: "--model", argument: "<id>", defaultVal: "first model served by the Stint endpoint", purpose: "model id"},
+			{name: "--reasoning", argument: "<none|low|medium|xhigh>", defaultVal: "medium on start; persisted on resume", purpose: "request reasoning effort; task metadata may override it"},
+			{name: "--action-plan", argument: "<path>", purpose: "optional worktree-relative living plan; adds an xhigh PLAN-001 task"},
 			{name: "--api-key", argument: "<key>", purpose: "Cline API key override"},
 			{name: "--cline-config", argument: "<dir>", defaultVal: "~/.cline", purpose: "Cline config directory"},
 			{name: "--json", defaultVal: "false", purpose: "status: print machine-readable state"},
