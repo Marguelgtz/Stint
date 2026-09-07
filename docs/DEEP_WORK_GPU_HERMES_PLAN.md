@@ -283,6 +283,12 @@ and the main route also sets `model.context_length: 262144`, so a temporary
 `/v1/models` probe failure cannot make Hermes target a smaller or unknown
 window. `scripts/box-smoke.sh` checks these values before the worker probes run.
 
+Deep Work starts a fresh `hermes chat --oneshot` process for each task attempt.
+Hermes compression therefore protects the tool loop inside one attempt; it is
+not a cross-task memory mechanism. Between attempts Stint reconstructs the
+prompt from the persisted task state, action plan, worktree, and prior result,
+so a compressed Hermes transcript is never the sole source of continuity.
+
 P2 verified the box's Hermes v0.21.0 approval source (`tools/approval.py`) and probed
 it headless. The model is **not** a Cline-style positive allow-list:
 
