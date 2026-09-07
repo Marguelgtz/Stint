@@ -195,9 +195,10 @@ var (
 		name:     "down",
 		section:  "compute",
 		summary:  "destroy the instance, tunnel, and session state",
-		detail:   "Stops the local tunnel and watchdog, destroys the Vast instance, and clears the local session state. Safe to run when no session is recorded.",
-		usage:    "stint down",
-		examples: []string{"stint down"},
+		detail:   "Stops the local tunnel and watchdog, destroys the Vast instance, and clears the local session state. Before any destruction it shows the instance and remaining time and requires the literal word \"destroy\" to be typed; --yes skips the prompt for unattended use. Safe to run when no session is recorded.",
+		usage:    "stint down [--yes]",
+		flags:    []cliFlag{{name: "--yes", defaultVal: "false", purpose: "destroy without the interactive type-to-confirm"}},
+		examples: []string{"stint down", "stint down --yes"},
 		notes: []string{
 			"Compute is also destroyed automatically at the session deadline by the watchdog.",
 		},
