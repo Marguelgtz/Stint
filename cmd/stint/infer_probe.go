@@ -261,7 +261,10 @@ func counterDeltaRate(prev, cur map[string]float64, name string, elapsed float64
 // of the NInfer-only series, so one probe works on both runtimes.
 func cacheReuseRatio(counters map[string]float64) *float64 {
 	if hits, ok := counters[metricNInferPrefixCacheHit]; ok {
-		nonCached := counterOrDefault(counters, metricPromptTokensTotal, 0)
+		nonCached, present := counters[metricPromptTokensTotal]
+		if !present {
+			return nil
+		}
 		denominator := hits + nonCached
 		if denominator <= 0 {
 			return nil
