@@ -369,5 +369,7 @@ verification can pass on its own, or use a verify command that checks cumulative
   session on purpose).
 - Live `stint deep plan` (mission drafting against a repo), cross-review of landed
   branches, multiple workers.
+- [Deep Work dashboard action plan](DEEP_WORK_DASHBOARD_ACTION_PLAN.md) — a dedicated
+  execution cockpit for task, verifier, coordinator, and sanitized GPU-worker signals.
 - Engineering detail, findings, and live-run evidence: `docs/DEEP_WORK_MVP_EXECUTION.md`.
 - Product direction: `docs/STINT_DEEP_WORK_VISION.md`.
