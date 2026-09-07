@@ -247,6 +247,32 @@ idempotent and part of bootstrap.
 
 ## 5. Command/approval policy for the Hermes worker (source-verified on the box)
 
+### CP1 phase-aware reasoning routes
+
+For a living action plan, the coordinator persists `--reasoning medium` as the
+session default and creates an xhigh `PLAN-001` task when
+`--action-plan <worktree-relative-path>` is supplied. A mission may also set a
+task-level `reasoning: xhigh` override. Hermes receives the selected level from
+the provider template `custom:qwen-stint-{reasoning}`.
+
+Hermes custom-provider request overrides are associated with `base_url`. The
+CP1 setup therefore runs two small forwarding processes and gives them distinct
+URLs: `http://127.0.0.1:18091/v1` for xhigh and
+`http://127.0.0.1:18092/v1` for medium. Both forward to NInfer at
+`http://127.0.0.1:8080`; the setup script assigns each route a static
+`reasoning_effort` extra body. `scripts/box-smoke.sh` checks that both values
+appear in captured outbound request bodies before a run is allowed to start.
+
+Install and configure the routes on a provisioned box with:
+
+```bash
+rsync scripts/phaseproxy.py scripts/box-phase-setup.sh root@<host>:/root/
+ssh root@<host> 'chmod +x /root/phaseproxy.py /root/box-phase-setup.sh && PHASE_PROXY=/root/phaseproxy.py /root/box-phase-setup.sh'
+```
+
+Do not configure both phase entries with the same base URL: the first matching
+static override can otherwise win for every request.
+
 P2 verified the box's Hermes v0.21.0 approval source (`tools/approval.py`) and probed
 it headless. The model is **not** a Cline-style positive allow-list:
 

@@ -31,6 +31,14 @@ hermes config set model.base_url "$SMOKE_BASE_URL" || fail "config model.base_ur
 hermes config set model.api_key dummy        || fail "config model.api_key"
 hermes config set model.default "$HERMES_MODEL" || fail "config model.default"
 
+# A setup rerun may leave the forwarders alive. Clear their append-only wire
+# logs here so the assertions below prove this smoke invocation reached each
+# route, rather than matching an older request.
+if [ "$STINT_PHASED" = 1 ]; then
+  : >"${PHASING_DIR:-/root/stint-phasing}/wire-xhigh.jsonl"
+  : >"${PHASING_DIR:-/root/stint-phasing}/wire-medium.jsonl"
+fi
+
 echo "=== SMOKE configure approvals: manual (interactive) + oneshot deny ==="
 hermes config set approvals.mode manual      || fail "config approvals.mode"
 hermes config set approvals.single_query_mode deny || fail "config approvals.single_query_mode"
