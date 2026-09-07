@@ -51,12 +51,16 @@ func runStartResumable(args []string) (retErr error) {
 	minNetworkMbps := fs.Float64("min-network-mbps", defaultMinAdvertisedNetworkMbps, "minimum Vast advertised download bandwidth in Mbps; 0 disables")
 	minMeasuredDownloadMBps := fs.Float64("min-measured-download-mbps", defaultMinMeasuredDownloadMBps, "minimum measured post-SSH download throughput in MB/s; 0 disables")
 	networkCandidateAttempts := fs.Int("network-candidate-attempts", defaultNetworkCandidateAttempts, "maximum rented Vast machines to test during startup/network qualification; stale offers are replaced without consuming an attempt")
+	maxCostUSD := fs.Float64("max-cost-usd", 0, "override the profile's session cost ceiling (USD); 0 keeps the builtin ceiling — required for long unattended deep-work boxes (e.g. --hours 8 --max-cost-usd 4)")
 	tunnelPort := fs.Int("tunnel-port", 8409, "local port for the session's OpenAI-compatible endpoint tunnel (default 8409; a second Stint instance on the same machine, run under a separate XDG profile, must use a different one)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	if *tunnelPort != 8409 {
 		clinePort = *tunnelPort
+	}
+	if *maxCostUSD > 0 {
+		profile.Session.MaxCostUSD = *maxCostUSD
 	}
 	hours, err := strconv.ParseFloat(*hoursValue, 64)
 	if err != nil || hours <= 0 {

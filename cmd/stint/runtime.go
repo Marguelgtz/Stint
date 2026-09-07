@@ -18,7 +18,7 @@ const (
 
 	ninferSourceRepository = "https://github.com/sergiuszm/ninfer-4090.git"
 	ninferSourceCommit     = "981b685ea2124fdaed023123d2e63fd29d529ab8"
-	ninferModelURL         = "https://huggingface.co/neroued/Qwen3.8-27B-NInfer/resolve/main/qwen3_8_27b.ninfer"
+	ninferModelURL         = "https://huggingface.co/neroued/Qwen3.8-27B-NInfer/resolve/18dfc887423fa5aabf3cb56fac41490e462b3fab/qwen3_8_27b.ninfer" // pinned to the pre-DFlash2 commit; `main` was re-uploaded 2026-09-06 (dc370fb, +DFlash2 weights, 20.4 GB) which breaks the SHA gate (F7)
 	ninferModelSHA256      = "eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e"
 )
 
@@ -408,6 +408,7 @@ exec /workspace/stint/ninfer/build/apps/ninfer-serve "$model" \
   --model-id %s \
   --max-context %d \
   --kv-capacity %d \
+  --default-max-tokens %d \
   --max-concurrency %d \
   --max-pending-requests 16 \
   --pending-timeout-ms 600000 \
@@ -425,5 +426,5 @@ if ! kill -0 "$new_pid" 2>/dev/null; then
   tail -n 20 "$log_file" >&2 || true
   exit 1
 fi
-`, ninferModelSHA256, ninferModelURL, ninferModelSHA256, clineRemotePort, interactiveModelAlias, contextTokens, contextTokens, clients, config.KVDType)
+`, ninferModelSHA256, ninferModelURL, ninferModelSHA256, clineRemotePort, interactiveModelAlias, contextTokens, contextTokens, contextTokens, clients, config.KVDType)
 }

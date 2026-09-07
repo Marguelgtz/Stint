@@ -27,6 +27,17 @@ RPT "model_endpoint: $(curl -s -m5 http://127.0.0.1:8080/v1/models | head -c 300
 RPT "py_crypto: $(python3 -c 'import cryptography; print("cryptography", cryptography.__version__)' 2>&1 | head -1)"
 command -v node >/dev/null 2>&1 && RPT "node_ed25519: $(node -e 'require("crypto").generateKeyPairSync("ed25519");console.log("node-ed25519 OK")' 2>&1 | head -1)"
 
+# --- git identity for on-box checkpoint commits (finding F1, CP1 blocker) ---
+# Fresh Vast images have no committer identity: every `git commit` in the
+# deep-work worktree fails with "Committer identity unknown". Set a
+# deterministic identity so checkpoints and the on-box handoff commit can be
+# created.
+if command -v git >/dev/null 2>&1; then
+  git config --global user.name  "Stint Deep Work"
+  git config --global user.email "deepwork@stint.local"
+  RPT "git_identity: $(git config --global user.name) <$(git config --global user.email)>"
+fi
+
 # --- install node (only if missing; box has outbound net) ---
 if ! command -v node >/dev/null 2>&1; then
   RPT "installing node (nodesource 22.x)..."

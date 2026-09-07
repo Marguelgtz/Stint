@@ -73,6 +73,9 @@ func buildHandoff(s deep.DeepState, reason string, now time.Time, finalVerify st
 	if repo.HeadCommit != "" {
 		fmt.Fprintf(&b, "- head: `%s`\n", repo.HeadCommit)
 	}
+	if strings.TrimSpace(repo.RecentLog) != "" {
+		b.WriteString("\nOn-box commits (last 5, new→old) — checkpoint commits are one per verified task:\n\n```\n" + repo.RecentLog + "\n```\n")
+	}
 	if strings.TrimSpace(repo.DiffStat) != "" {
 		b.WriteString("\nDiff vs session base:\n\n```\n" + repo.DiffStat + "\n```\n")
 	}
