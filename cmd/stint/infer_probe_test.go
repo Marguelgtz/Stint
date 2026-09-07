@@ -272,8 +272,10 @@ func TestProbeInferenceNInferBothEndpoints(t *testing.T) {
 	if result.ResidentDepth != 45000 {
 		t.Fatalf("resident depth = %d, want 45000", result.ResidentDepth)
 	}
-	if result.CacheReuseRatio == nil || *result.CacheReuseRatio < 0.74 || *result.CacheReuseRatio > 0.76 {
-		t.Fatalf("ninfer cache reuse = %v, want about 0.75", result.CacheReuseRatio)
+	if result.CacheReuseRatio == nil || *result.CacheReuseRatio < 0.42 || *result.CacheReuseRatio > 0.44 {
+		// NInfer's re-published prompt counter counts non-cached tokens
+		// only, so reuse must be hits/(hits+non-cached): 4608/(4608+6144).
+		t.Fatalf("ninfer cache reuse = %v, want about 0.43", result.CacheReuseRatio)
 	}
 	if result.SpecAcceptRatio == nil || *result.SpecAcceptRatio < 0.69 || *result.SpecAcceptRatio > 0.71 {
 		t.Fatalf("ninfer spec accept = %v, want about 0.70", result.SpecAcceptRatio)
