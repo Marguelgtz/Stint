@@ -351,3 +351,30 @@ func TestProbeInferenceSecondEpochUnavailableKeepsFirstEpoch(t *testing.T) {
 		t.Fatalf("rates must stay nil without a usable second epoch: %+v", result)
 	}
 }
+
+func TestProbeInferenceSlowFirstEpochSurvivesParentDeadline(t *testing.T) {
+	// A healthy tunnel slower than the former 1.2s fetch timeout should
+	// preserve the first sample when the parent budget prevents epoch two.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(1400 * time.Millisecond):
+		}
+		if r.URL.Path == "/metrics" {
+			fmt.Fprint(w, ninferMetricsFixture(0))
+		} else {
+			fmt.Fprint(w, ninferSlotsFixture)
+		}
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 1800*time.Millisecond)
+	defer cancel()
+	result := probeInferenceBase(ctx, server.URL)
+	if !result.Available || len(result.Lanes) == 0 {
+		t.Fatalf("healthy slow first epoch was lost: %+v", result)
+	}
+	if result.DecodeTokensSec != nil || result.PrefillTokensSec != nil {
+		t.Fatal("single epoch must not invent token rates")
+	}
+}
