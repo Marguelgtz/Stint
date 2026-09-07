@@ -273,6 +273,9 @@ branches and logs.
 | `stint deep status` | latest session: phase, deadline remaining, worktree, task table (+ blockers) |
 | `stint deep status --json` | the durable state, verbatim, for scripting |
 | `stint deep status --session <id>` | inspect a specific past session |
+| `stint deep dash` | interactive execution cockpit: task state, coordinator events, passive compute telemetry, and sanitized GPU-worker evidence |
+| `stint deep dash --session <id>` | inspect a specific session, including landed/recoverable work with no active compute |
+| `stint deep dash --refresh` | in a non-TTY, print the snapshot plus one passive compute/GPU-worker observation |
 | `stint deep stop` | land the latest session **now**, from durable state. Works whether or not the start process is alive; the running coordinator observes the phase change and exits on its next iteration. Stopping never touches compute. |
 | `stint deep resume` | continue the latest (or `--session <id>`) session after a crash, a lapsed machine, or a deadline landing. Compute must be READY first. Deadline re-anchored to the current compute session, worktree re-attached if lost, remaining tasks continue in the same branch. |
 
@@ -288,6 +291,18 @@ review any remaining evidence in `deep.json`/`coordinator.log` and start fresh w
 section, adjust the mission (or add tasks), and start a new session; or run
 `stint deep resume` to pick the same session back up where the handoff left off — the
 loop simply keeps working the tasks that were not yet verified.
+
+### Deep Work dashboard
+
+`stint deep dash` is separate from `stint dash`: the former monitors execution
+continuity while the latter controls and observes paid compute. The Deep Work dashboard
+loads `deep.json` and coordinator incidents locally, so it remains useful after a
+compute loss or landing. Its GPU Worker view performs only a bounded read-only
+observation; it never sends a model request or exposes Hermes prompts/tool output.
+
+`s` opens a confirmation and uppercase `S` lands the latest Deep Work session through
+the existing `stint deep stop` path. It does not destroy or change compute. `q` only
+closes the dashboard.
 ---
 
 ## 7. Safety boundaries (hard rails)

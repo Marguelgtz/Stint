@@ -251,10 +251,11 @@ After a crash, a lapsed machine, or a deadline landing: restore compute with ` +
 Subcommands:
   start   run a mission to landing (foreground)
   status  show session phase, deadline, and task table
+  dash    open the Deep Work execution cockpit (dashboard alias accepted)
   stop    land the latest session now (works from durable state)
   resume  continue the latest (or given) session after a crash, sleep, or compute loss`,
-		usage: "stint deep <start|status|stop|resume> [flags]",
-		args:  []cliArg{{name: "<subcommand>", purpose: "start, status, stop, or resume"}},
+		usage: "stint deep <start|status|dash|stop|resume> [flags]",
+		args:  []cliArg{{name: "<subcommand>", purpose: "start, status, dash, stop, or resume"}},
 		flags: []cliFlag{
 			{name: "--mission", argument: "<file>", purpose: "mission Markdown file (start, required)"},
 			{name: "--repo", argument: "<path>", purpose: "target git repository (start, required)"},
@@ -272,11 +273,13 @@ Subcommands:
 			{name: "--cline-config", argument: "<dir>", defaultVal: "~/.cline", purpose: "Cline config directory"},
 			{name: "--json", defaultVal: "false", purpose: "status: print machine-readable state"},
 			{name: "--session", argument: "<id>", defaultVal: "latest", purpose: "status: session to inspect"},
+			{name: "--refresh", defaultVal: "false", purpose: "dash: in non-interactive mode, add one passive compute/GPU-worker observation"},
 		},
 		examples: []string{
 			"stint start interactive --hours 2",
 			"stint deep start --mission mission.md --repo /path/to/repo",
 			"stint deep status --json",
+			"stint deep dash",
 			"stint deep stop",
 		},
 		notes: []string{

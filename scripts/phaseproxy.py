@@ -10,6 +10,7 @@ import http.server
 import json
 import os
 import sys
+from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 
@@ -23,6 +24,7 @@ os.makedirs(os.path.dirname(LOGFILE) or ".", exist_ok=True)
 
 class Forwarder(http.server.BaseHTTPRequestHandler):
     def _forward(self, body: bytes) -> None:
+        status = 502
         headers = {
             key: value
             for key, value in self.headers.items()
@@ -37,6 +39,7 @@ class Forwarder(http.server.BaseHTTPRequestHandler):
         try:
             response = urllib.request.urlopen(request, timeout=300)
             payload = response.read()
+            status = response.status
             self.send_response(response.status)
             for key, value in response.headers.items():
                 if key.lower() in {"transfer-encoding", "connection", "content-length"}:
@@ -47,6 +50,7 @@ class Forwarder(http.server.BaseHTTPRequestHandler):
             self.wfile.write(payload)
         except urllib.error.HTTPError as error:
             payload = error.read()
+            status = error.code
             self.send_response(error.code)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
@@ -61,9 +65,12 @@ class Forwarder(http.server.BaseHTTPRequestHandler):
             try:
                 payload = json.loads(body)
                 record = {
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     "phase": TAG,
                     "model": payload.get("model"),
                     "reasoning_effort": payload.get("reasoning_effort"),
+                    "response_status": status,
+                    "response_class": f"{status // 100}xx",
                 }
                 with open(LOGFILE, "a", encoding="utf-8") as stream:
                     stream.write(json.dumps(record) + "\n")

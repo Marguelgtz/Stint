@@ -1,6 +1,7 @@
 # Deep Work dashboard — action plan
 
-**Status:** proposed.  
+**Status:** implementation in progress — P0–P3 are implemented on the feature
+branch; P4 requires the dedicated GPU compression smoke.
 **Owner:** Stint Deep Work.  
 **Scope:** a terminal dashboard that lets an operator judge whether a Deep Work
 session is progressing safely while Hermes executes on the GPU box.
