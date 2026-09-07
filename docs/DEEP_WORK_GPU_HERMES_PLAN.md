@@ -273,6 +273,16 @@ ssh root@<host> 'chmod +x /root/phaseproxy.py /root/box-phase-setup.sh && PHASE_
 Do not configure both phase entries with the same base URL: the first matching
 static override can otherwise win for every request.
 
+The phase setup also pins Hermes's compression contract for the native NInfer
+window. Compression remains enabled with a `180000`-token absolute trigger,
+`lean` retention, three summary attempts, and a deterministic tool-result prune
+starting at `48000` re-sent tokens. Summary calls use the medium forwarder with
+an explicit `reasoning_effort: medium` body and a 300-second auxiliary timeout.
+Both custom phase entries declare `models.qwen3.8-27b.context_length: 262144`,
+and the main route also sets `model.context_length: 262144`, so a temporary
+`/v1/models` probe failure cannot make Hermes target a smaller or unknown
+window. `scripts/box-smoke.sh` checks these values before the worker probes run.
+
 P2 verified the box's Hermes v0.21.0 approval source (`tools/approval.py`) and probed
 it headless. The model is **not** a Cline-style positive allow-list:
 

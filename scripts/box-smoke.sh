@@ -31,6 +31,29 @@ hermes config set model.base_url "$SMOKE_BASE_URL" || fail "config model.base_ur
 hermes config set model.api_key dummy        || fail "config model.api_key"
 hermes config set model.default "$HERMES_MODEL" || fail "config model.default"
 
+if [ "$STINT_PHASED" = 1 ]; then
+  config_contains() {
+    local key="$1" expected="$2" actual
+    actual="$(hermes config get "$key" 2>/dev/null)" \
+      || fail "config get $key"
+    printf '%s' "$actual" | grep -Fq "$expected" \
+      || fail "config $key does not contain '$expected' (got: $actual)"
+  }
+  echo "=== SMOKE compression config is pinned and routed to medium ==="
+  config_contains model.context_length 262144
+  config_contains auxiliary.compression.provider custom
+  config_contains auxiliary.compression.model "$HERMES_MODEL"
+  config_contains auxiliary.compression.base_url http://127.0.0.1:18092/v1
+  config_contains auxiliary.compression.extra_body reasoning_effort
+  config_contains custom_providers context_length
+  config_contains custom_providers 262144
+  config_contains compression.enabled true
+  config_contains compression.threshold_tokens 180000
+  config_contains compression.proactive_prune_tokens 48000
+  config_contains compression.tail_mode lean
+  echo "SMOKE compression config: enabled, 180K trigger, 48K prune, medium summary route"
+fi
+
 # A setup rerun may leave the forwarders alive. Clear their append-only wire
 # logs here so the assertions below prove this smoke invocation reached each
 # route, rather than matching an older request.
