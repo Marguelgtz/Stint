@@ -21,6 +21,13 @@ type RepoSummary struct {
 // current repository state. A fresh coding-agent process reading only this
 // prompt can continue the work.
 func BuildTaskPrompt(m Mission, t Task, attempt int, repo RepoSummary) string {
+	return BuildTaskPromptWithActionPlan(m, t, attempt, repo, "")
+}
+
+// BuildTaskPromptWithActionPlan adds the path to an optional durable plan.
+// The plan is guidance and an audit trail; repository evidence and the task's
+// verify command remain authoritative.
+func BuildTaskPromptWithActionPlan(m Mission, t Task, attempt int, repo RepoSummary, actionPlanPath string) string {
 	var b strings.Builder
 	b.WriteString("You are resuming a bounded Deep Work mission. Work only inside your working directory. ")
 	b.WriteString("Never push, open pull requests, or run destructive commands. ")
@@ -43,6 +50,13 @@ func BuildTaskPrompt(m Mission, t Task, attempt int, repo RepoSummary) string {
 
 	fmt.Fprintf(&b, "\nCURRENT TASK: %s (attempt %d)\n", t.ID, attempt)
 	fmt.Fprintf(&b, "TASK OBJECTIVE: %s\n", t.Objective)
+	if t.Reasoning != "" {
+		fmt.Fprintf(&b, "TASK REASONING EFFORT: %s\n", t.Reasoning)
+	}
+	if strings.TrimSpace(actionPlanPath) != "" {
+		fmt.Fprintf(&b, "LIVING ACTION PLAN: %s\n", actionPlanPath)
+		b.WriteString("Read the living action plan before acting. Keep it current with decisions, risks, next steps, and evidence pointers; do not treat it as proof when repository or verification evidence is available.\n")
+	}
 	if t.Acceptance != "" {
 		fmt.Fprintf(&b, "ACCEPTANCE: %s\n", t.Acceptance)
 	}

@@ -51,6 +51,7 @@ type Task struct {
 	Objective  string     `json:"objective"`
 	Acceptance string     `json:"acceptance,omitempty"`
 	Verify     string     `json:"verify,omitempty"`
+	Reasoning  string     `json:"reasoning,omitempty"`
 	Status     Status     `json:"status"`
 	Attempts   int        `json:"attempts"`
 	Blocker    string     `json:"blocker,omitempty"`
