@@ -48,7 +48,10 @@ func (c *deepCoordinator) execInputFor(t deep.Task) execInput {
 	in.workdir = c.state.WorktreePath
 	in.timeout = c.taskTimeout
 	mission := c.mission()
-	in.prompt = deep.BuildTaskPrompt(mission, t, t.Attempts, c.repoSummary())
+	in.prompt = deep.BuildTaskPromptWithActionPlan(mission, t, t.Attempts, c.repoSummary(), c.execCfg.actionPlan)
+	if t.Reasoning != "" {
+		in.reasoning = t.Reasoning
+	}
 	// The session's command policy is part of the reconstructed context: the
 	// worker must know exactly which commands it may run and what will
 	// happen to the rest.
@@ -87,7 +90,7 @@ func policySummary(in execInput) string {
 	if len(in.allowedCommands) == 0 {
 		return fmt.Sprintf("autoApprove=%t allow=<none>", in.autoApprove)
 	}
-	return fmt.Sprintf("autoApprove=%t allow=[%s]", in.autoApprove, strings.Join(in.allowedCommands, ", "))
+	return fmt.Sprintf("autoApprove=%t reasoning=%s allow=[%s]", in.autoApprove, in.reasoning, strings.Join(in.allowedCommands, ", "))
 }
 
 // stillExecuting re-reads the durable phase. An external `stint deep stop`

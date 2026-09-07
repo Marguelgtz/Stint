@@ -31,6 +31,8 @@ type deepRunConfig struct {
 	allowedCommands []string
 	provider        string
 	model           string
+	reasoning       string
+	actionPlan      string
 	apiKey          string
 	clineConfig     string
 	taskTimeout     time.Duration
@@ -73,6 +75,8 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 			allowedCommands: cfg.allowedCommands,
 			provider:        cfg.provider,
 			model:           cfg.model,
+			reasoning:       cfg.reasoning,
+			actionPlan:      cfg.actionPlan,
 			apiKey:          cfg.apiKey,
 			clineConfig:     cfg.clineConfig,
 		},

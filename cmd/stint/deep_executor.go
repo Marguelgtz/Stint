@@ -24,6 +24,8 @@ type execInput struct {
 	allowedCommands []string
 	provider        string
 	model           string
+	reasoning       string
+	actionPlan      string
 	apiKey          string
 	clineConfig     string
 }
