@@ -24,13 +24,28 @@ import (
 var inferenceProbeInterval = 1200 * time.Millisecond
 
 // inferenceFetchTimeout bounds each /metrics or /slots fetch of one epoch.
-// The parent probe context (4 s for `status --refresh` and the dashboard
-// refresh) still bounds the total two-epoch budget: a slow tunnel that cannot
-// finish the second epoch degrades to a single-epoch lane snapshot instead of
+// The per-consumer parent probe context (statusRefreshBudget for
+// `status --refresh`, dashboardRefreshBudget for the dashboard refresh)
+// bounds the total two-epoch budget: a slow tunnel that cannot finish the
+// second epoch degrades to a single-epoch lane snapshot instead of
 // flipping to unavailable. The 1.2 s budget starved under live two-client
 // load (observed 0.6–6 s tunnel latency, 2026-09-03) and made the dashboard
 // flicker to "unavailable" at peak load.
 var inferenceFetchTimeout = 2500 * time.Millisecond
+
+// statusRefreshBudget bounds one `stint status --refresh` cycle: the
+// endpoint probe, the SSH sample, and the two-epoch inference observation
+// together. Kept tight so the CLI returns fast; a slow tunnel that cannot
+// finish the second inference epoch degrades to a single-epoch snapshot.
+var statusRefreshBudget = 4 * time.Second
+
+// dashboardRefreshBudget bounds one dashboard auto-refresh cycle. It is
+// deliberately larger than statusRefreshBudget so the two-epoch inference
+// observation (worst case fetchTimeout + probeInterval + fetchTimeout)
+// usually fits even on a slow tunnel, keeping token rates live in the TUI;
+// it stays well under the 10 s refresh cadence, and the dashboard's
+// last-good inference display covers a refresh that still times out.
+var dashboardRefreshBudget = 6 * time.Second
 
 // Runtime-agnostic Prometheus metric names. llama.cpp (b10472) and NInfer
 // both publish the llamacpp:* series; NInfer additionally publishes the
@@ -189,9 +204,7 @@ func inferFromEpoch(result *inferenceTelemetry, epoch inferenceEpoch) {
 		result.Processing = int(counterOrDefault(epoch.Counters, metricRequestsProcessing, float64(result.Processing)))
 		result.Deferred = int(counterOrDefault(epoch.Counters, metricRequestsDeferred, 0))
 	}
-	result.CacheReuseRatio = inferenceRatio(epoch.Counters,
-		[]string{metricPromptCachedTotal, metricNInferPrefixCacheHit},
-		[]string{metricPromptTokensTotal})
+	result.CacheReuseRatio = cacheReuseRatio(epoch.Counters)
 	result.SpecAcceptRatio = inferenceRatio(epoch.Counters,
 		[]string{metricNInferDraftAccepted, metricLlamaSpecAccepted},
 		[]string{metricNInferDraftTokens, metricLlamaSpecDrafts})
@@ -234,6 +247,35 @@ func counterDeltaRate(prev, cur map[string]float64, name string, elapsed float64
 		return nil
 	}
 	return &rate
+}
+
+// cacheReuseRatio derives the prompt-cache reuse fraction per runtime.
+// llama.cpp publishes cached prompt tokens as a subset of all processed
+// prompt tokens, so reuse is cached/total. NInfer re-publishes
+// llamacpp:prompt_tokens_total counting non-cached tokens only and tracks
+// the cached portion in ninfer:prefix_cache_hit_tokens_total; the two are
+// disjoint parts of the prompt, so on NInfer reuse is
+// hits/(hits+non-cached). Using hits/non-cached on NInfer is unbounded and
+// pins at 100% on long sessions (verified on a live instance, 2026-09-03:
+// raw 78% reuse reported as a pinned "100%"). Detection is by the presence
+// of the NInfer-only series, so one probe works on both runtimes.
+func cacheReuseRatio(counters map[string]float64) *float64 {
+	if hits, ok := counters[metricNInferPrefixCacheHit]; ok {
+		nonCached, present := counters[metricPromptTokensTotal]
+		if !present {
+			return nil
+		}
+		denominator := hits + nonCached
+		if denominator <= 0 {
+			return nil
+		}
+		ratio := hits / denominator
+		if ratio > 1 {
+			ratio = 1
+		}
+		return &ratio
+	}
+	return inferenceRatio(counters, []string{metricPromptCachedTotal}, []string{metricPromptTokensTotal})
 }
 
 // inferenceRatio returns numerator/denominator, taking the first positive

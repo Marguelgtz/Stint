@@ -61,6 +61,10 @@ type Inference struct {
 	Queue, CacheReuse    string
 	Speculative          string
 	Lanes, Error         string
+	// Stale marks a retained last-good sample shown because the latest
+	// probe failed; Age describes how old that sample is.
+	Stale bool
+	Age   string
 }
 
 type Model struct {
@@ -243,6 +247,9 @@ func performanceView(m Model, p palette) string {
 		}
 		b.WriteString(p.muted("Unavailable · " + reason))
 	} else {
+		if m.Inference.Stale {
+			b.WriteString(p.warn("Last good sample · "+m.Inference.Age+" old")+"  "+p.muted("latest probe failed; previous data shown")+"\n")
+		}
 		agents := "engine idle"
 		if m.Inference.Agents > 0 {
 			agents = fmt.Sprintf("%d active", m.Inference.Agents)
@@ -300,6 +307,9 @@ func homeLiveLine(m Model, p palette) string {
 	}
 	if m.Inference.CacheReuse != "" {
 		parts = append(parts, "cache "+m.Inference.CacheReuse)
+	}
+	if m.Inference.Stale {
+		parts = append([]string{"stale "+m.Inference.Age+" old"}, parts...)
 	}
 	return p.accent(strings.Join(parts, " · "))
 }

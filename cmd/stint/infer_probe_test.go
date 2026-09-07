@@ -197,6 +197,22 @@ func TestParseSlotLanesRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+// TestRefreshBudgets pins the per-consumer refresh budget relationship:
+// the dashboard refresh gets more headroom than the CLI so its two-epoch
+// inference observation completes on slow tunnels, while staying under the
+// refresh cadence so consecutive refreshes never overlap.
+func TestRefreshBudgets(t *testing.T) {
+	if statusRefreshBudget <= 0 || dashboardRefreshBudget <= 0 {
+		t.Fatalf("refresh budgets must be positive: status=%v dashboard=%v", statusRefreshBudget, dashboardRefreshBudget)
+	}
+	if dashboardRefreshBudget <= statusRefreshBudget {
+		t.Fatalf("dashboard budget %v must exceed the status budget %v", dashboardRefreshBudget, statusRefreshBudget)
+	}
+	if dashboardRefreshBudget >= dashboardRefreshInterval {
+		t.Fatalf("dashboard budget %v must stay under the %v refresh cadence", dashboardRefreshBudget, dashboardRefreshInterval)
+	}
+}
+
 func TestProbeInferenceLlamaCPPBothEndpoints(t *testing.T) {
 	testInferenceTiming(t)
 	server := newInferenceFixtureServer(t, inferenceFixtureServer{
@@ -256,8 +272,10 @@ func TestProbeInferenceNInferBothEndpoints(t *testing.T) {
 	if result.ResidentDepth != 45000 {
 		t.Fatalf("resident depth = %d, want 45000", result.ResidentDepth)
 	}
-	if result.CacheReuseRatio == nil || *result.CacheReuseRatio < 0.74 || *result.CacheReuseRatio > 0.76 {
-		t.Fatalf("ninfer cache reuse = %v, want about 0.75", result.CacheReuseRatio)
+	if result.CacheReuseRatio == nil || *result.CacheReuseRatio < 0.42 || *result.CacheReuseRatio > 0.44 {
+		// NInfer's re-published prompt counter counts non-cached tokens
+		// only, so reuse must be hits/(hits+non-cached): 4608/(4608+6144).
+		t.Fatalf("ninfer cache reuse = %v, want about 0.43", result.CacheReuseRatio)
 	}
 	if result.SpecAcceptRatio == nil || *result.SpecAcceptRatio < 0.69 || *result.SpecAcceptRatio > 0.71 {
 		t.Fatalf("ninfer spec accept = %v, want about 0.70", result.SpecAcceptRatio)
