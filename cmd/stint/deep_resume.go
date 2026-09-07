@@ -20,6 +20,8 @@ type deepResumeFlags struct {
 	autoApproveSet bool
 	provider       string
 	model          string
+	reasoning      string
+	reasoningSet   bool
 	apiKey         string
 	clineConfig    string
 }
@@ -42,6 +44,7 @@ func runDeepResume(args []string) error {
 	fs.BoolVar(&f.autoApprove, "auto-approve", true, "override the session's auto-approve setting")
 	fs.StringVar(&f.provider, "provider", "", "override the session's Cline provider id")
 	fs.StringVar(&f.model, "model", "", "override the session's model id")
+	fs.StringVar(&f.reasoning, "reasoning", "", "override the session's reasoning effort: none, low, medium, or xhigh")
 	fs.StringVar(&f.apiKey, "api-key", "", "Cline API key override (never persisted)")
 	fs.StringVar(&f.clineConfig, "cline-config", "", "override the session's Cline config directory")
 	if err := fs.Parse(args); err != nil {
@@ -54,7 +57,16 @@ func runDeepResume(args []string) error {
 		if flg.Name == "auto-approve" {
 			f.autoApproveSet = true
 		}
+		if flg.Name == "reasoning" {
+			f.reasoningSet = true
+		}
 	})
+	if f.reasoningSet {
+		var err error
+		if f.reasoning, err = deep.NormalizeReasoning(f.reasoning); err != nil {
+			return fmt.Errorf("--reasoning: %w", err)
+		}
+	}
 
 	paths, err := config.DefaultPaths()
 	if err != nil {
@@ -101,6 +113,8 @@ func runDeepResume(args []string) error {
 		provider:    f.provider,
 		clineConfig: f.clineConfig,
 		taskTimeout: f.taskTimeout,
+		reasoning:  f.reasoning,
+		reasoningSet: f.reasoningSet,
 	})
 	workerID := exec.Worker
 	if workerID == "" {
@@ -186,6 +200,8 @@ func runDeepResume(args []string) error {
 		allowedCommands: exec.AllowedCommands,
 		provider:        exec.Provider,
 		model:           modelID,
+		reasoning:       exec.Reasoning,
+		actionPlan:      exec.ActionPlanPath,
 		apiKey:          f.apiKey,
 		clineConfig:     exec.ClineConfig,
 		taskTimeout:     time.Duration(exec.TaskTimeoutSec) * time.Second,
@@ -247,6 +263,8 @@ type execOverrides struct {
 	provider    string
 	clineConfig string
 	taskTimeout time.Duration // zero = keep the session's value
+	reasoning  string
+	reasoningSet bool
 }
 
 // resolveExecSettings merges the session's persisted executor settings with
@@ -257,7 +275,7 @@ type execOverrides struct {
 func resolveExecSettings(st *deep.DeepState, o execOverrides) *deep.ExecSettings {
 	const defaultProvider = "openai-compatible"
 	const defaultTaskTimeout = 10 * time.Minute
-	es := &deep.ExecSettings{AutoApprove: false, Provider: defaultProvider, TaskTimeoutSec: int(defaultTaskTimeout.Seconds())}
+	es := &deep.ExecSettings{AutoApprove: false, Provider: defaultProvider, Reasoning: deep.ReasoningMedium, TaskTimeoutSec: int(defaultTaskTimeout.Seconds())}
 	if st.Exec != nil {
 		*es = *st.Exec
 	}
@@ -273,11 +291,17 @@ func resolveExecSettings(st *deep.DeepState, o execOverrides) *deep.ExecSettings
 	if o.taskTimeout > 0 {
 		es.TaskTimeoutSec = int(o.taskTimeout.Seconds())
 	}
+	if o.reasoningSet {
+		es.Reasoning = o.reasoning
+	}
 	if es.Provider == "" {
 		es.Provider = defaultProvider
 	}
 	if es.TaskTimeoutSec <= 0 {
 		es.TaskTimeoutSec = int(defaultTaskTimeout.Seconds())
+	}
+	if es.Reasoning == "" {
+		es.Reasoning = deep.ReasoningMedium
 	}
 	return es
 }

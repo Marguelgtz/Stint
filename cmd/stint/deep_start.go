@@ -45,6 +45,8 @@ type deepStartFlags struct {
 	allowCommands stringSlice
 	provider      string
 	model         string
+	reasoning     string
+	actionPlan    string
 	apiKey        string
 	clineConfig   string
 }
@@ -83,6 +85,8 @@ func runDeepStart(args []string) error {
 	fs.Var(&f.allowCommands, "allow-command", "command prefix the worker may run (repeatable; named in the prompt and denied otherwise while auto-approve is off)")
 	fs.StringVar(&f.provider, "provider", "openai-compatible", "Cline provider id")
 	fs.StringVar(&f.model, "model", "", "model id (default: first model served by the Stint endpoint)")
+	fs.StringVar(&f.reasoning, "reasoning", deep.ReasoningMedium, "request reasoning effort: none, low, medium, or xhigh (task-level metadata may override it)")
+	fs.StringVar(&f.actionPlan, "action-plan", "", "optional path inside the worktree for a living action plan; creates a first xhigh planning task")
 	fs.StringVar(&f.apiKey, "api-key", "", "Cline API key override")
 	fs.StringVar(&f.clineConfig, "cline-config", "", "Cline config directory (default: ~/.cline)")
 	if err := fs.Parse(args); err != nil {
@@ -96,6 +100,19 @@ func runDeepStart(args []string) error {
 	}
 	if f.maxAttempts < 1 {
 		return errors.New("--max-attempts must be at least 1")
+	}
+	var err error
+	if f.reasoning, err = deep.NormalizeReasoning(f.reasoning); err != nil {
+		return fmt.Errorf("--reasoning: %w", err)
+	}
+	if f.reasoning == "" {
+		return errors.New("--reasoning cannot be empty")
+	}
+	if f.actionPlan != "" {
+		f.actionPlan, err = actionPlanPath(f.actionPlan)
+		if err != nil {
+			return err
+		}
 	}
 	if f.worker != workerCline && f.worker != workerHermes {
 		return fmt.Errorf("--worker must be %s or %s", workerCline, workerHermes)
@@ -198,6 +215,17 @@ func runDeepStart(args []string) error {
 
 	state := deep.NewState(sessionID, mission, f.repoPath, worktree, deadline, landBefore, f.maxAttempts, now)
 	state.BaseCommit = baseCommit
+	if f.actionPlan != "" {
+		state.Tasks = append([]deep.Task{{
+			ID:         "PLAN-001",
+			Objective:  "Create or update the living action plan at " + f.actionPlan + " before execution begins",
+			Acceptance: "the living action plan exists at the requested path and records decisions, risks, next steps, and evidence pointers consistent with the mission and repository state",
+			Verify:     "test -s " + shellQuote(f.actionPlan),
+			Reasoning:  deep.ReasoningXHigh,
+			Status:     deep.StatusQueued,
+			Source:     "coordinator",
+		}}, state.Tasks...)
+	}
 	// Persist the executor settings (and command policy) so `stint deep resume`
 	// can reconstruct identical invocations without a live endpoint or
 	// operator memory.
@@ -206,6 +234,8 @@ func runDeepStart(args []string) error {
 		AutoApprove:     f.autoApprove,
 		Provider:        f.provider,
 		Model:           modelID,
+		Reasoning:       f.reasoning,
+		ActionPlanPath:  f.actionPlan,
 		ClineConfig:     f.clineConfig,
 		TaskTimeoutSec:  int(f.taskTimeout.Seconds()),
 		AllowedCommands: f.allowCommands,
@@ -223,6 +253,8 @@ func runDeepStart(args []string) error {
 		allowedCommands: f.allowCommands,
 		provider:        f.provider,
 		model:           modelID,
+		reasoning:       f.reasoning,
+		actionPlan:      f.actionPlan,
 		apiKey:          f.apiKey,
 		clineConfig:     f.clineConfig,
 		taskTimeout:     f.taskTimeout,
@@ -231,4 +263,18 @@ func runDeepStart(args []string) error {
 		remote:          remoteFn,
 		paths:           paths,
 	}, git, false)
+}
+
+// actionPlanPath accepts a worktree-relative path so the same persisted value
+// works for local Cline and on-box Hermes workers. Keeping it below the
+// worktree prevents a planning task from writing outside the session branch.
+func actionPlanPath(raw string) (string, error) {
+	clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(raw)))
+	if clean == "." || clean == "" || filepath.IsAbs(raw) || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", errors.New("--action-plan must be a non-empty path inside the worktree")
+	}
+	if strings.IndexByte(clean, 0) >= 0 {
+		return "", errors.New("--action-plan contains a NUL byte")
+	}
+	return clean, nil
 }

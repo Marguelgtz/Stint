@@ -59,6 +59,8 @@ type ExecSettings struct {
 	AutoApprove     bool     `json:"autoApprove"`
 	Provider        string   `json:"provider,omitempty"`
 	Model           string   `json:"model,omitempty"`
+	Reasoning       string   `json:"reasoning,omitempty"`
+	ActionPlanPath  string   `json:"actionPlanPath,omitempty"`
 	ClineConfig     string   `json:"clineConfig,omitempty"`
 	TaskTimeoutSec  int      `json:"taskTimeoutSec,omitempty"`
 	AllowedCommands []string `json:"allowedCommands,omitempty"`

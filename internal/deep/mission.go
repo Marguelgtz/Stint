@@ -92,6 +92,12 @@ func ParseMission(content string) (Mission, error) {
 				m.Tasks[taskIdx].Acceptance = strings.TrimSpace(strings.TrimPrefix(body, "acceptance:"))
 			} else if strings.HasPrefix(body, "verify:") && taskIdx >= 0 {
 				m.Tasks[taskIdx].Verify = strings.TrimSpace(stripCodeFence(strings.TrimPrefix(body, "verify:")))
+			} else if strings.HasPrefix(body, "reasoning:") && taskIdx >= 0 {
+				level, err := NormalizeReasoning(strings.TrimSpace(strings.TrimPrefix(body, "reasoning:")))
+				if err != nil {
+					return m, fmt.Errorf("task %s: %w", m.Tasks[taskIdx].ID, err)
+				}
+				m.Tasks[taskIdx].Reasoning = level
 			} else if id, objective, ok := taskFields(body); ok {
 				if !taskIDRe.MatchString(id) {
 					return m, fmt.Errorf("task ID %q is invalid (use letters, digits, _ or -)", id)

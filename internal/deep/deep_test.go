@@ -169,7 +169,7 @@ func TestExecSettingsAllowedCommandsRoundTrip(t *testing.T) {
 }
 
 func TestParseMissionPerTaskVerify(t *testing.T) {
-	mission := "# x\n\n## Objective\no\n\n## Verification\ngo test ./...\n\n## Tasks\n- [ ] T1: a\n  - acceptance: a is done\n  - verify: test -f a.txt\n- [ ] T2: b\n  - acceptance: b is done\n"
+	mission := "# x\n\n## Objective\no\n\n## Verification\ngo test ./...\n\n## Tasks\n- [ ] T1: a\n  - acceptance: a is done\n  - verify: test -f a.txt\n  - reasoning: xhigh\n- [ ] T2: b\n  - acceptance: b is done\n"
 	m, err := ParseMission(mission)
 	if err != nil {
 		t.Fatalf("ParseMission: %v", err)
@@ -183,8 +183,18 @@ func TestParseMissionPerTaskVerify(t *testing.T) {
 	if m.Tasks[0].Acceptance != "a is done" {
 		t.Errorf("T1 acceptance = %q", m.Tasks[0].Acceptance)
 	}
+	if m.Tasks[0].Reasoning != ReasoningXHigh {
+		t.Errorf("T1 reasoning = %q, want %q", m.Tasks[0].Reasoning, ReasoningXHigh)
+	}
 	if m.Tasks[1].Verify != "" {
 		t.Errorf("T2 verify = %q, want empty (no per-task command)", m.Tasks[1].Verify)
+	}
+}
+
+func TestParseMissionRejectsUnknownReasoning(t *testing.T) {
+	mission := "# x\n\n## Objective\no\n\n## Tasks\n- [ ] T1: a\n  - reasoning: ultra\n"
+	if _, err := ParseMission(mission); err == nil || !strings.Contains(err.Error(), "invalid reasoning level") {
+		t.Fatalf("ParseMission error = %v, want invalid reasoning level", err)
 	}
 }
 
@@ -330,6 +340,19 @@ func TestTaskVerifyInPromptAndRoundTrip(t *testing.T) {
 	}
 }
 
+func TestActionPlanPrompt(t *testing.T) {
+	m, err := ParseMission("# x\n\n## Objective\no\n\n## Tasks\n- [ ] T1: a\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := BuildTaskPromptWithActionPlan(m, m.Tasks[0], 1, RepoSummary{Branch: "b"}, "deep-work/action-plan.md")
+	for _, want := range []string{"LIVING ACTION PLAN: deep-work/action-plan.md", "Read the living action plan before acting"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestExecSettingsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC)
@@ -338,7 +361,7 @@ func TestExecSettingsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := NewState(NewSessionID(now), m, "/repo", "/worktree", now.Add(time.Hour), now.Add(50*time.Minute), 3, now)
-	state.Exec = &ExecSettings{AutoApprove: false, Provider: "openai-compatible", Model: "qwen3.8-27b", ClineConfig: "/cfg", TaskTimeoutSec: 900}
+	state.Exec = &ExecSettings{AutoApprove: false, Provider: "openai-compatible", Model: "qwen3.8-27b", Reasoning: ReasoningMedium, ActionPlanPath: "deep-work/action-plan.md", ClineConfig: "/cfg", TaskTimeoutSec: 900}
 	if err := state.SaveDir(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +372,7 @@ func TestExecSettingsRoundTrip(t *testing.T) {
 	if loaded.Exec == nil {
 		t.Fatal("Exec settings were not persisted")
 	}
-	if loaded.Exec.AutoApprove || loaded.Exec.Model != "qwen3.8-27b" || loaded.Exec.TaskTimeoutSec != 900 {
+	if loaded.Exec.AutoApprove || loaded.Exec.Model != "qwen3.8-27b" || loaded.Exec.Reasoning != ReasoningMedium || loaded.Exec.ActionPlanPath != "deep-work/action-plan.md" || loaded.Exec.TaskTimeoutSec != 900 {
 		t.Errorf("exec = %+v", loaded.Exec)
 	}
 

@@ -231,8 +231,25 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 	hermesArgs := "hermes chat --query-file " + shellQuote(hermesPromptFile) +
 		" --oneshot -Q"
 	if in.model != "" {
+		provider := in.provider
+		if provider == "" {
+			provider = "custom"
+		}
+		// A provider template lets a box provision static request overrides
+		// for endpoints such as NInfer that do not advertise dynamic reasoning
+		// fields. For example custom:qwen-stint-{reasoning} resolves to the
+		// medium or xhigh custom-provider entry before Hermes starts.
+		provider = strings.ReplaceAll(provider, "{reasoning}", in.reasoning)
+		providerArg := shellQuote(provider)
+		if provider == "custom" {
+			// Preserve the established smoke/diagnostic command shape.
+			providerArg = provider
+		}
 		hermesArgs = "hermes chat --query-file " + shellQuote(hermesPromptFile) +
-			" --oneshot -Q --provider custom -m " + shellQuote(in.model)
+			" --oneshot -Q --provider " + providerArg + " -m " + shellQuote(in.model)
+		if in.reasoning != "" {
+			hermesArgs += " --reasoning " + shellQuote(in.reasoning)
+		}
 	}
 	line := fmt.Sprintf(
 		"printf %%s %s | base64 -d > %s; cd %s; timeout %d %s 2>&1; ec=$?; echo %s$ec",

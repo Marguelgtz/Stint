@@ -111,6 +111,30 @@ func TestHermesExecutorSuccess(t *testing.T) {
 	}
 }
 
+func TestHermesExecutorReasoningProviderTemplate(t *testing.T) {
+	fr := &fakeRemote{}
+	e := newHermesExecutor(fr.run)
+	_, err := e.run(context.Background(), execInput{
+		workdir: "/wt", prompt: "plan", timeout: time.Minute,
+		provider: "custom:qwen-stint-{reasoning}", model: "qwen3.8-27b", reasoning: "xhigh",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("remote calls = %d, want 1", len(fr.calls))
+	}
+	line := fr.calls[0]
+	for _, want := range []string{"custom:qwen-stint-xhigh", "--reasoning 'xhigh'"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("box line missing %q:\n%s", want, line)
+		}
+	}
+	if strings.Contains(line, "{reasoning}") {
+		t.Errorf("provider template was not resolved:\n%s", line)
+	}
+}
+
 func TestHermesExecutorNonZeroExit(t *testing.T) {
 	fr := &fakeRemote{}
 	e := newHermesExecutor(func(ctx context.Context, cmd string) (string, error) {
