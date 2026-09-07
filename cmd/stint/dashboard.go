@@ -596,7 +596,7 @@ func (c *dashboardController) startRefresh() {
 			c.refreshCh <- dashboardLoadResult{Err: err}
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), dashboardRefreshBudget)
 		defer cancel()
 		snapshot := collectSessionSnapshot(ctx, paths, state, time.Now().UTC(), true, defaultSnapshotProbeDeps())
 		c.refreshCh <- dashboardLoadResult{Snapshot: snapshot}
