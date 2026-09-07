@@ -52,6 +52,20 @@ if [ "$STINT_PHASED" = 1 ]; then
   config_contains compression.proactive_prune_tokens 48000
   config_contains compression.tail_mode lean
   echo "SMOKE compression config: enabled, 180K trigger, 48K prune, medium summary route"
+
+  # The historical failure was NInfer's implicit 8K completion cap truncating
+  # every thinking-model summary. Verify the running server carries the launch
+  # flag from PR #78 before any Deep Work process can encounter that path.
+  ninfer_pid="$(pgrep -xo ninfer-serve 2>/dev/null || true)"
+  [ -n "$ninfer_pid" ] || fail "NInfer process is not running"
+  ninfer_cmd="$(tr '\0' ' ' <"/proc/$ninfer_pid/cmdline" 2>/dev/null || true)"
+  printf '%s' "$ninfer_cmd" | grep -Fq -- "--max-context 262144" \
+    || fail "NInfer is not serving --max-context 262144"
+  printf '%s' "$ninfer_cmd" | grep -Fq -- "--kv-capacity 262144" \
+    || fail "NInfer is not serving --kv-capacity 262144"
+  printf '%s' "$ninfer_cmd" | grep -Fq -- "--default-max-tokens 262144" \
+    || fail "NInfer is still using the historical completion cap"
+  echo "SMOKE NInfer launch: native context/KV and uncapped summary budget observed"
 fi
 
 # A setup rerun may leave the forwarders alive. Clear their append-only wire
