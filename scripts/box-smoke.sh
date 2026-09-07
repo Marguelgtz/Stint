@@ -47,6 +47,8 @@ if [ "$STINT_PHASED" = 1 ]; then
   config_contains auxiliary.compression.extra_body reasoning_effort
   config_contains custom_providers context_length
   config_contains custom_providers 262144
+  config_contains custom_providers models:
+  config_contains custom_providers "$HERMES_MODEL:"
   config_contains compression.enabled true
   config_contains compression.threshold_tokens 180000
   config_contains compression.proactive_prune_tokens 48000
