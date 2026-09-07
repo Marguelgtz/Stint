@@ -1,7 +1,7 @@
 # Deep Work dashboard — action plan
 
 **Status:** implementation in progress — P0–P3 are implemented on the feature
-branch; P4 requires the dedicated GPU compression smoke.
+branch; P4 has a dedicated fixture and fresh-box setup ready for its GPU smoke.
 **Owner:** Stint Deep Work.
 **Scope:** a terminal dashboard that lets an operator judge whether a Deep Work
 session is progressing safely while Hermes executes on the GPU box.
@@ -246,7 +246,10 @@ truncation, missing medium route, a dead phase proxy, and an unavailable observe
 ### P4 — box smoke and first-run acceptance
 
 1. Run the normal box phase smoke.
-2. Run the short forced-compression smoke with the lower temporary threshold.
+2. Run `deep-work/COMPRESSION_SMOKE_MISSION.md` against a repository created by
+   `scripts/deep-compression-smoke-box-setup.sh`, with a temporary 20K-token
+   compression threshold. The fixture supplies twelve distinct 16 KiB tool results
+   to force compaction without using an actual mission repository.
 3. Keep `stint deep dash` open from the operator machine throughout the smoke.
 4. Record a screenshot/transcript showing the active task, completed compaction,
 medium-route observation, verifier pass, and checkpoint.
