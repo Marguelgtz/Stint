@@ -233,7 +233,7 @@ var (
 		aliases:  []string{"--version", "-v"},
 		section:  "reference",
 		summary:  "print the Stint version",
-		detail:   "Prints the Stint CLI version.",
+		detail:   "Prints the Stint CLI version and embedded commit/working-tree provenance when available.",
 		usage:    "stint version",
 		examples: []string{"stint version"},
 	}
