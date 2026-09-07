@@ -24,11 +24,20 @@ import (
 var inferenceProbeInterval = 1200 * time.Millisecond
 
 // inferenceFetchTimeout bounds each /metrics or /slots fetch of one epoch.
-var inferenceFetchTimeout = 1200 * time.Millisecond
+// The parent probe context (4 s for `status --refresh` and the dashboard
+// refresh) still bounds the total two-epoch budget: a slow tunnel that cannot
+// finish the second epoch degrades to a single-epoch lane snapshot instead of
+// flipping to unavailable. The 1.2 s budget starved under live two-client
+// load (observed 0.6–6 s tunnel latency, 2026-09-03) and made the dashboard
+// flicker to "unavailable" at peak load.
+var inferenceFetchTimeout = 2500 * time.Millisecond
 
 // Runtime-agnostic Prometheus metric names. llama.cpp (b10472) and NInfer
 // both publish the llamacpp:* series; NInfer additionally publishes the
-// ninfer:* series.
+// ninfer:* series. Beware: NInfer's re-published llamacpp:prompt_tokens_total
+// counts non-cached prompt tokens only (verified live, 2026-09-03), unlike
+// llama.cpp's all-tokens counter, so prefill rates and cache-reuse ratios
+// derived from it must be interpreted per runtime.
 const (
 	metricPromptTokensTotal    = "llamacpp:prompt_tokens_total"
 	metricPromptCachedTotal    = "llamacpp:prompt_tokens_cached_total"
