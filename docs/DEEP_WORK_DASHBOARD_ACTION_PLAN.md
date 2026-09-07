@@ -250,6 +250,8 @@ truncation, missing medium route, a dead phase proxy, and an unavailable observe
    `scripts/deep-compression-smoke-box-setup.sh`, with a temporary 20K-token
    compression threshold. The fixture supplies twelve distinct 16 KiB tool results
    to force compaction without using an actual mission repository.
+   `scripts/run-deep-compression-smoke.sh` owns the isolated 90-minute lease,
+   transcript, evidence capture, and teardown for this gate.
 3. Keep `stint deep dash` open from the operator machine throughout the smoke.
 4. Record a screenshot/transcript showing the active task, completed compaction,
 medium-route observation, verifier pass, and checkpoint.
