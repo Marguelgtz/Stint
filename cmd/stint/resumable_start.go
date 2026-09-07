@@ -27,6 +27,7 @@ const providerStartupTimeout = 6 * time.Minute
 // the paid instance and leave the deadline watchdog running so `stint resume`
 // can continue rather than forcing another rental.
 func runStartResumable(args []string) (retErr error) {
+	startupStartedAt := time.Now()
 	if len(args) == 0 {
 		return errors.New("start requires a profile: interactive")
 	}
@@ -555,6 +556,7 @@ func runStartResumable(args []string) (retErr error) {
 	if err := waitForModel(rootCtx, paths, state, 20*time.Minute); err != nil {
 		return err
 	}
+	modelServingAt := time.Now()
 	state.Status = sessionstate.StatusReady
 	state.Checkpoint = sessionstate.CheckpointReady
 	state.LastError = ""
@@ -563,6 +565,7 @@ func runStartResumable(args []string) (retErr error) {
 	}
 	ready = true
 	printReadySession(state)
+	fmt.Printf("Startup         %s (stint start -> model serving)\n", formatStartupDuration(startupStartedAt, modelServingAt))
 	return nil
 }
 
