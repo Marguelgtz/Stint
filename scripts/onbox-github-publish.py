@@ -159,7 +159,18 @@ def slug(value: str) -> str:
     return (out or "task")[:40]
 
 
-def find_checkpoint_commit(worktree: str, session: str, task_id: str) -> str:
+def find_checkpoint_commit(worktree: str, session: str, task: dict) -> str:
+    task_id = str(task.get("id", ""))
+    recorded = str(task.get("checkpointCommit", "")).strip()
+    if recorded:
+        if not re.fullmatch(r"[0-9a-f]{40}", recorded):
+            raise RuntimeError(f"invalid recorded checkpoint commit for {task_id}: {recorded!r}")
+        git(worktree, "cat-file", "-e", recorded + "^{commit}")
+        git(worktree, "merge-base", "--is-ancestor", recorded, "HEAD")
+        return recorded
+
+    # Compatibility for sessions started before checkpointCommit was added.
+    # New sessions never infer the published revision from a subject line.
     subject = f"deep: {session} {task_id} verified"
     out = git(worktree, "log", "--format=%H%x00%s", "-2000")
     for line in out.splitlines():
@@ -284,7 +295,7 @@ def sync(state_dir: str) -> None:
         task_id = str(task.get("id", ""))
         if task.get("status") != "verified":
             continue
-        commit = find_checkpoint_commit(worktree, session, task_id)
+        commit = find_checkpoint_commit(worktree, session, task)
         branch = f"stint/deep-{session}-{index:02d}-{slug(task_id)}"
         entry = existing.get(task_id)
         if entry is not None:

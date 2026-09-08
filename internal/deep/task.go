@@ -58,5 +58,9 @@ type Task struct {
 	LastResult string     `json:"lastResult,omitempty"`
 	Findings   []string   `json:"findings,omitempty"`
 	VerifiedAt *time.Time `json:"verifiedAt,omitempty"`
-	Source     string     `json:"source,omitempty"`
+	// CheckpointCommit is the exact repository HEAD accepted by the
+	// coordinator for this task. It remains valid when the worker committed
+	// its own changes and the coordinator's commitAll call had nothing to do.
+	CheckpointCommit string `json:"checkpointCommit,omitempty"`
+	Source           string `json:"source,omitempty"`
 }

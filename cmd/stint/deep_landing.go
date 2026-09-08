@@ -133,7 +133,10 @@ func (g *gitRunner) commitAll(dir, message string) (string, error) {
 	}
 	out, err := g.run(dir, "commit", "-m", message,
 		"--author", "Stint Deep Work <deep@stint.local>")
-	if err != nil && strings.Contains(err.Error(), "nothing to commit") {
+	// Git writes the clean-tree diagnostic to stdout on some versions, while
+	// run reports stderr as the error detail. Inspect both channels so a
+	// worker-created commit is recognized as a valid checkpoint.
+	if err != nil && strings.Contains(out+"\n"+err.Error(), "nothing to commit") {
 		return "nothing to commit", nil
 	}
 	if err != nil {

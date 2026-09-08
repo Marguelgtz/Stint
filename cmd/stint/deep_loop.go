@@ -165,6 +165,11 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) {
 		if msg, err := c.git.commitAll(c.state.WorktreePath, fmt.Sprintf("deep: %s %s verified", c.state.SessionID, t.ID)); err != nil {
 			c.logf("checkpoint commit for %s: %v (%s)", t.ID, err, msg)
 			c.incident(deep.IncidentCheckpointFail, t.ID, "checkpoint commit failed: "+err.Error())
+		} else if head, err := c.git.headCommit(c.state.WorktreePath); err != nil {
+			c.logf("checkpoint HEAD for %s: %v", t.ID, err)
+			c.incident(deep.IncidentCheckpointFail, t.ID, "read checkpoint HEAD failed: "+err.Error())
+		} else {
+			t.CheckpointCommit = strings.TrimSpace(head)
 		}
 		c.logf("task %s VERIFIED", t.ID)
 	case t.Attempts < c.state.TaskAttemptCap && now.Add(c.taskTimeout).Before(c.state.LandBefore):

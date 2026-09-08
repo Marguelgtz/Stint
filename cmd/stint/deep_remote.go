@@ -162,7 +162,7 @@ func (g *remoteGit) commitAll(dir, message string) (string, error) {
 	}
 	out, err := g.run(dir, "commit", "-m", message,
 		"--author", "Stint Deep Work <deep@stint.local>")
-	if err != nil && strings.Contains(err.Error(), "nothing to commit") {
+	if err != nil && strings.Contains(out+"\n"+err.Error(), "nothing to commit") {
 		return "nothing to commit", nil
 	}
 	if err != nil {

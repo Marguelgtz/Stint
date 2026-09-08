@@ -183,6 +183,52 @@ func TestDeepLoopContinuation(t *testing.T) {
 	}
 }
 
+// A worker may commit its own verified changes before returning. In that case
+// commitAll has nothing to commit, but the accepted HEAD must still be recorded
+// explicitly so the on-box publisher never has to guess which revision to push.
+func TestVerifiedTaskRecordsWorkerCheckpointHead(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	var workerHead string
+	env.fake.after = func() {
+		for _, args := range [][]string{{"add", "-A"}, {"commit", "-m", "worker checkpoint"}} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = env.wt
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v (%s)", args, err, out)
+			}
+		}
+		cmd := exec.Command("git", "rev-parse", "HEAD")
+		cmd.Dir = env.wt
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git rev-parse HEAD: %v (%s)", err, out)
+		}
+		workerHead = strings.TrimSpace(string(out))
+	}
+
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := env.state.Tasks[0].CheckpointCommit; got != workerHead {
+		t.Fatalf("checkpointCommit = %q, want worker HEAD %q", got, workerHead)
+	}
+	persisted, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatalf("load persisted state: %v", err)
+	}
+	if got := persisted.Tasks[0].CheckpointCommit; got != workerHead {
+		t.Fatalf("persisted checkpointCommit = %q, want %q", got, workerHead)
+	}
+	finalHead, err := env.coord.git.headCommit(env.wt)
+	if err != nil {
+		t.Fatalf("final HEAD: %v", err)
+	}
+	if finalHead == workerHead {
+		t.Fatal("landing handoff should be a later commit than the task checkpoint")
+	}
+}
+
 // Gate D at the unit level: a task that cannot reach verification is parked
 // as blocked after its attempt cap and the coordinator continues with the
 // next useful work; the handoff is truthful about the split.
