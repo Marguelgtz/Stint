@@ -128,13 +128,24 @@ heartbeat_loop() {
   done
 }
 
+archive_final() {
+  [ -x "${STINT_ONBOX_R2_ARCHIVE:-}" ] || return 0
+  latest="$STATE_HOME/stint/deep/latest"
+  [ -r "$latest" ] || return 0
+  session="$(tr -d '[:space:]' < "$latest")"
+  case "$session" in
+    ''|*[!A-Za-z0-9_-]*) return 0 ;;
+  esac
+  "$STINT_ONBOX_R2_ARCHIVE" "$STATE_HOME/stint/deep/$session" || true
+}
+
 run_supervisor() {
   local -a onbox_args=("$@")
   mkdir -p "$ROOT" "$RUNTIME_DIR" "$CONFIG_HOME/stint" "$STATE_HOME"
   start_watchdog
   heartbeat_loop &
   local heartbeat_pid=$!
-  trap 'kill "$heartbeat_pid" 2>/dev/null || true; snapshot || true' EXIT
+  trap 'kill "$heartbeat_pid" 2>/dev/null || true; snapshot || true; archive_final' EXIT
 
   local first=1
   while :; do
@@ -155,6 +166,9 @@ run_supervisor() {
     esac
     if [ "$rc" -eq 0 ]; then
       return 0
+    fi
+    if [ ! -r "$STATE_HOME/stint/deep/latest" ]; then
+      return "$rc"
     fi
     echo "$(date -u +%FT%TZ) coordinator exited rc=$rc; retrying from durable state" >>"$LOG_FILE"
     sleep 5

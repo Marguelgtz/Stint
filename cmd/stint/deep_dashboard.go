@@ -275,7 +275,7 @@ func (c *deepDashboardController) project() {
 	m.Phase = string(s.Phase)
 	m.WorkerName = "Cline on operator machine"
 	if s.Exec != nil && s.Exec.Worker != "" {
-		if s.Exec.Worker == workerHermes {
+		if s.Exec.Worker == workerHermes || s.Exec.Worker == workerHermesOnBox {
 			m.WorkerName = "Hermes on GPU"
 		} else {
 			m.WorkerName = s.Exec.Worker

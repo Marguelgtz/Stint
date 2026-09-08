@@ -10,6 +10,7 @@ ROOT="${STINT_REMOTE_ROOT:-/var/lib/stint-onbox}"
 BIN="${STINT_BIN:-./bin/stint}"
 SUPERVISOR_LOCAL="${STINT_SUPERVISOR_LOCAL:-scripts/onbox-deep-supervisor.sh}"
 R2_SYNC_LOCAL="${STINT_R2_SYNC_LOCAL:-scripts/onbox-r2-sync.py}"
+R2_ARCHIVE_LOCAL="${STINT_R2_ARCHIVE_LOCAL:-scripts/onbox-r2-archive.py}"
 MISSION_LOCAL="${STINT_MISSION:-}"
 REPO_LOCAL="${STINT_REPO:-}"
 HOST="${STINT_BOX_HOST:-}"
@@ -19,6 +20,7 @@ CLIENTS="${STINT_ONBOX_CLIENTS:-1}"
 REMOTE_BIN="$ROOT/bin/stint"
 REMOTE_SUPERVISOR="$ROOT/onbox-deep-supervisor.sh"
 REMOTE_R2_SYNC="$ROOT/onbox-r2-sync.py"
+REMOTE_R2_ARCHIVE="$ROOT/onbox-r2-archive.py"
 REMOTE_MISSION="$ROOT/mission.md"
 REMOTE_REPO="$ROOT/repo"
 REMOTE_READY="$ROOT/runtime/RUNNING.json"
@@ -69,9 +71,11 @@ fi
 if [ -n "${STINT_R2_ENV_FILE:-}" ]; then
   [ -r "$STINT_R2_ENV_FILE" ] || die "STINT_R2_ENV_FILE is not readable"
   [ -x "$R2_SYNC_LOCAL" ] || die "R2 sync helper is missing or not executable: $R2_SYNC_LOCAL"
+  [ -x "$R2_ARCHIVE_LOCAL" ] || die "R2 archive helper is missing or not executable: $R2_ARCHIVE_LOCAL"
   scp -q -i "$KEY" -P "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$R2_SYNC_LOCAL" "root@$HOST:$REMOTE_R2_SYNC"
+  scp -q -i "$KEY" -P "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$R2_ARCHIVE_LOCAL" "root@$HOST:$REMOTE_R2_ARCHIVE"
   scp -q -i "$KEY" -P "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$STINT_R2_ENV_FILE" "root@$HOST:$ROOT/config/r2.env"
-  "${SSH[@]}" "chmod 0700 '$REMOTE_R2_SYNC' '$ROOT/config/r2.env'"
+  "${SSH[@]}" "chmod 0700 '$REMOTE_R2_SYNC' '$REMOTE_R2_ARCHIVE' '$ROOT/config/r2.env' && python3 -c 'import boto3' 2>/dev/null || python3 -m pip install --quiet --user boto3"
 fi
 
 args=(--mission "$REMOTE_MISSION" --repo "$REMOTE_REPO" --deadline "$STINT_DEADLINE" \
@@ -87,7 +91,7 @@ echo "starting detached on-box supervisor"
 remote_env=("STINT_ONBOX_BIN=$REMOTE_BIN" "STINT_ONBOX_ROOT=$ROOT" \
   "STINT_ONBOX_READY_FILE=$REMOTE_READY" "STINT_ONBOX_INSTANCE_ID=$STINT_INSTANCE_ID" \
   "STINT_ONBOX_DEADLINE=$STINT_DEADLINE" "STINT_ONBOX_CLIENTS=$CLIENTS")
-[ -n "${STINT_R2_ENV_FILE:-}" ] && remote_env+=("STINT_ONBOX_R2_SYNC=$REMOTE_R2_SYNC" "STINT_R2_ENV_FILE=$ROOT/config/r2.env")
+[ -n "${STINT_R2_ENV_FILE:-}" ] && remote_env+=("STINT_ONBOX_R2_SYNC=$REMOTE_R2_SYNC" "STINT_ONBOX_R2_ARCHIVE=$REMOTE_R2_ARCHIVE" "STINT_R2_ENV_FILE=$ROOT/config/r2.env")
 [ -n "${STINT_ONBOX_SKIP_WATCHDOG:-}" ] && remote_env+=("STINT_ONBOX_SKIP_WATCHDOG=$STINT_ONBOX_SKIP_WATCHDOG")
 remote_start=(env "${remote_env[@]}" "$REMOTE_SUPERVISOR" start -- "${args[@]}")
 remote_start_cmd="$(printf '%q ' "${remote_start[@]}")"
