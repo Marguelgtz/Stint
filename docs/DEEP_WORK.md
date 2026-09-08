@@ -7,6 +7,13 @@ invocation ends, **Stint — not the worker — decides what happened next**, us
 repository evidence. A partially completed mission that lands with an honest handoff is a
 successful Deep Work run.
 
+**Production topology decision (2026-09-08):** the CP1 run must use the on-box
+supervisor mode. The rented instance owns the coordinator, Hermes, worktree,
+verification, checkpoints, handoff, durable state, and deadline destroy path. The
+operator machine may disconnect immediately after launch. The local-coordinator flow
+described below remains a development and recovery fixture until that mode is landed;
+do not use it for CP1.
+
 ```
 You            Stint (coordinator)                    Cline CLI (worker)
  │  stint deep start ──────────► │
