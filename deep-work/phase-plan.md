@@ -96,8 +96,13 @@ xhigh and medium route traffic recorded and no failures.
       `deep-work/phase-plan.md` with decisions, risks, next steps, and
       evidence pointers. Verify: `test -s 'deep-work/phase-plan.md'` —
       exit 0 (recorded below once the coordinator verifies).
-- [ ] PHASE-001 (medium): marker written and verify command passed.
-      Evidence: `phase-lane-smoke/medium-ready.txt` on disk.
+- [x] PHASE-001 (medium): marker written and verify command passed.
+      Evidence: `phase-lane-smoke/medium-ready.txt` on disk, exactly
+      `medium execution ready` + one trailing newline (23 bytes, confirmed
+      via `od -c`). Verify command
+      `test -f phase-lane-smoke/medium-ready.txt && grep -Fqx 'medium execution ready' phase-lane-smoke/medium-ready.txt`
+      exit 0 (re-run by the executor). PHASE-001 may now be checkpointed;
+      PHASE-002 is cleared to read this marker before writing `final.txt`.
 - [ ] PHASE-002 (medium): marker written and verify command passed.
       Evidence: `phase-lane-smoke/final.txt` on disk.
 
