@@ -1,7 +1,7 @@
 # Deep Work dashboard — action plan
 
-**Status:** implementation in progress — P0–P3 are implemented on the feature
-branch; P4 has a dedicated fixture and fresh-box setup ready for its GPU smoke.
+**Status:** P0–P4 are implemented and the isolated GPU acceptance smoke passed;
+the result is recorded in `docs/DEEP_WORK_DASHBOARD_SMOKE_RESULT.md`.
 **Owner:** Stint Deep Work.
 **Scope:** a terminal dashboard that lets an operator judge whether a Deep Work
 session is progressing safely while Hermes executes on the GPU box.

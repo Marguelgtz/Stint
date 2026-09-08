@@ -39,7 +39,18 @@ capture_remote_evidence() {
   [ "$REMOTE_READY" = 1 ] || return 0
   say "capturing sanitized GPU observer and smoke artifact"
   timeout 30s "${SSH[@]}" '/root/stint-phasing/deep-observe' >"$ARTIFACT_DIR/deep-observe.json" 2>>"$LOG" || true
-  timeout 30s "${SSH[@]}" 'cd /root/stint-deep-dashboard-smoke && test -f compression-smoke.ok && cat compression-smoke.ok && git status --short' \
+  deep_id=""
+  if [ -r "$STATE_DIR/deep/latest" ]; then
+    deep_id="$(tr -d '[:space:]' < "$STATE_DIR/deep/latest")"
+  fi
+  case "$deep_id" in
+    ''|*[!A-Za-z0-9_-]*)
+      say "WARN no safe Deep Work session id for remote artifact capture"
+      return 0
+      ;;
+  esac
+  remote_worktree="/root/stint-deep-dashboard-smoke/.stint-deep/$deep_id"
+  timeout 30s "${SSH[@]}" "cd '$remote_worktree' && test -f compression-smoke.ok && cat compression-smoke.ok && git status --short" \
     >"$ARTIFACT_DIR/remote-artifact.txt" 2>>"$LOG" || true
 }
 
