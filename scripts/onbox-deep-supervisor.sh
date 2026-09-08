@@ -21,6 +21,10 @@ READY_FILE="${STINT_ONBOX_READY_FILE:-$RUNTIME_DIR/RUNNING.json}"
 HEARTBEAT_FILE="$RUNTIME_DIR/heartbeat.json"
 LOG_FILE="$ROOT/supervisor.log"
 STINT_BIN="${STINT_ONBOX_BIN:-/usr/local/bin/stint}"
+# Keep the heartbeat child PID at script scope. `run_supervisor` installs the
+# EXIT trap that reaps it, but function-local variables are out of scope by
+# the time that trap runs after the coordinator returns.
+HEARTBEAT_PID=""
 
 export XDG_STATE_HOME="$STATE_HOME"
 
@@ -128,6 +132,21 @@ heartbeat_loop() {
   done
 }
 
+cleanup_supervisor() {
+  local rc=$?
+  # A TERM/INT trap exits through EXIT so the heartbeat child is always
+  # stopped, including an explicit `stop` while the coordinator is running.
+  trap - EXIT TERM INT
+  if [ -n "${HEARTBEAT_PID:-}" ]; then
+    kill "$HEARTBEAT_PID" 2>/dev/null || true
+    wait "$HEARTBEAT_PID" 2>/dev/null || true
+    HEARTBEAT_PID=""
+  fi
+  snapshot || true
+  archive_final || true
+  return "$rc"
+}
+
 archive_final() {
   [ -x "${STINT_ONBOX_R2_ARCHIVE:-}" ] || return 0
   latest="$STATE_HOME/stint/deep/latest"
@@ -143,11 +162,10 @@ run_supervisor() {
   local -a onbox_args=("$@")
   mkdir -p "$ROOT" "$RUNTIME_DIR" "$CONFIG_HOME/stint" "$STATE_HOME"
   start_watchdog
+  trap cleanup_supervisor EXIT
+  trap 'exit 143' TERM INT
   heartbeat_loop &
-  local heartbeat_pid=$!
-  # The trap runs after run_supervisor returns, so its local heartbeat_pid may
-  # already be out of scope under `set -u`.
-  trap 'kill "${heartbeat_pid:-}" 2>/dev/null || true; snapshot || true; archive_final' EXIT
+  HEARTBEAT_PID=$!
 
   local first=1
   while :; do

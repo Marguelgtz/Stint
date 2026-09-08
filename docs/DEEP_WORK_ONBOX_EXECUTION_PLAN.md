@@ -65,6 +65,14 @@ the final phase `landed`, one verified task, and the `hermes-onbox` worker. This
 proves the local supervisor/restart and R2-hook seams without claiming a GPU
 disconnect proof.
 
+An R2 audit on 2026-09-08 found that this fixture prefix contained 1,237 objects,
+including 1,232 heartbeat snapshots uploaded between 04:05 and 05:26 BST. The
+coordinator had already landed; the heartbeat child survived because the EXIT trap
+could not see a function-local PID after `run_supervisor` returned. The supervisor
+now keeps that PID at script scope, reaps it on EXIT, and routes TERM/INT through
+the same cleanup path. The fixture objects are test data, not evidence of a live
+GPU run, and are intentionally retained until an operator authorizes R2 cleanup.
+
 ## P6 implementation gates
 
 1. **Local-on-box worker.** **Implemented.** Add an on-box execution mode that uses the local Hermes
