@@ -183,10 +183,10 @@ func TestDeepLoopContinuation(t *testing.T) {
 	}
 }
 
-// A worker may commit its own verified changes before returning. In that case
-// commitAll has nothing to commit, but the accepted HEAD must still be recorded
-// explicitly so the on-box publisher never has to guess which revision to push.
-func TestVerifiedTaskRecordsWorkerCheckpointHead(t *testing.T) {
+// A worker may commit its own verified changes before returning. The coordinator
+// must add a distinct acceptance marker and record that exact SHA so every task
+// can become one unambiguous layer in the on-box PR stack.
+func TestVerifiedTaskRecordsCoordinatorCheckpointAfterWorkerCommit(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
 	env.state.Tasks = env.state.Tasks[:1]
 	var workerHead string
@@ -210,21 +210,32 @@ func TestVerifiedTaskRecordsWorkerCheckpointHead(t *testing.T) {
 	if err := env.coord.run(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if got := env.state.Tasks[0].CheckpointCommit; got != workerHead {
-		t.Fatalf("checkpointCommit = %q, want worker HEAD %q", got, workerHead)
+	checkpoint := env.state.Tasks[0].CheckpointCommit
+	if checkpoint == "" || checkpoint == workerHead {
+		t.Fatalf("checkpointCommit = %q, want a coordinator commit after worker HEAD %q", checkpoint, workerHead)
 	}
 	persisted, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
 	if err != nil {
 		t.Fatalf("load persisted state: %v", err)
 	}
-	if got := persisted.Tasks[0].CheckpointCommit; got != workerHead {
-		t.Fatalf("persisted checkpointCommit = %q, want %q", got, workerHead)
+	if got := persisted.Tasks[0].CheckpointCommit; got != checkpoint {
+		t.Fatalf("persisted checkpointCommit = %q, want %q", got, checkpoint)
+	}
+	cmd := exec.Command("git", "show", "-s", "--format=%P%x00%s", checkpoint)
+	cmd.Dir = env.wt
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("inspect checkpoint commit: %v (%s)", err, out)
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "\x00", 2)
+	if len(parts) != 2 || parts[0] != workerHead || parts[1] != "deep: "+env.state.SessionID+" T-001 verified" {
+		t.Fatalf("checkpoint marker = %q, want parent %s and coordinator subject", strings.TrimSpace(string(out)), workerHead)
 	}
 	finalHead, err := env.coord.git.headCommit(env.wt)
 	if err != nil {
 		t.Fatalf("final HEAD: %v", err)
 	}
-	if finalHead == workerHead {
+	if finalHead == checkpoint {
 		t.Fatal("landing handoff should be a later commit than the task checkpoint")
 	}
 }

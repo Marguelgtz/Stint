@@ -63,11 +63,11 @@ full two-lane gate still require a real qualifying GPU run.
   config or command arguments, creates draft stackable PRs, and records their
   branches, commit SHAs, numbers, and URLs in `publication.json`.
 - Each verified task persists its exact accepted `checkpointCommit` in `deep.json`
-  after checkpointing. If the worker already committed its changes and the
-  coordinator has nothing further to commit, that verified worker `HEAD` is still
-  recorded explicitly. The publisher validates this SHA as an ancestor of the
-  landing branch before pushing it; commit-subject discovery remains only for
-  sessions created before this field existed.
+  after checkpointing. The coordinator always creates a distinct acceptance marker
+  commit, including when the worker already committed its changes or verification
+  accepted a no-op. The publisher validates this SHA as an ancestor of the landing
+  branch before pushing it; commit-subject discovery remains only for sessions
+  created before this field existed.
 - The supervisor retries publication while the run is active and requires the final
   landing publication to converge before it reports a clean landed supervisor exit.
 - Heartbeats now include sanitized origin/publication fields. R2 heartbeat objects
