@@ -25,3 +25,8 @@ Deep Work worktree before reading the artifact.
 
 Evidence remains outside the repository in the isolated run artifact directory:
 `~/Documents/projects/Stint/deep-compression-smoke-20260908-001117/`.
+
+After the run, the operator-side uploader archived this evidence and the durable
+handoff in Cloudflare R2 at
+`s3://deep-work/vanta/dashboard-smoke/20260908-002648/` (11 objects, 111,010
+bytes). The GPU worker never received R2 credentials.

@@ -13,6 +13,13 @@ STINT_BIN="${STINT_BIN:-$REPO_ROOT/bin/stint-deep-dashboard-smoke}"
 RUN_ROOT="${STINT_SMOKE_RUN_ROOT:-$HOME/.local/state/stint-deep-dashboard-smoke-$RUN_ID}"
 CONFIG_ROOT="${STINT_SMOKE_CONFIG_ROOT:-$HOME/.config/stint-deep-dashboard-smoke-$RUN_ID}"
 ARTIFACT_DIR="${STINT_SMOKE_ARTIFACT_DIR:-$HOME/Documents/projects/Stint/deep-compression-smoke-$RUN_ID}"
+NINFER_CLIENTS="${STINT_SMOKE_CLIENTS:-1}"
+MISSION_PATH="${STINT_SMOKE_MISSION:-$REPO_ROOT/deep-work/COMPRESSION_SMOKE_MISSION.md}"
+ACTION_PLAN_PATH="${STINT_SMOKE_ACTION_PLAN:-}"
+LANE_SMOKE="${STINT_LANE_SMOKE:-0}"
+REQUIRE_COMPRESSION="${STINT_REQUIRE_COMPRESSION:-1}"
+EXPECTED_REMOTE_FILE="${STINT_EXPECTED_REMOTE_FILE:-compression-smoke.ok}"
+EXPECTED_REMOTE_TEXT="${STINT_EXPECTED_REMOTE_TEXT:-twelve chunks read after compression smoke}"
 
 export XDG_STATE_HOME="$RUN_ROOT"
 export XDG_CONFIG_HOME="$CONFIG_ROOT"
@@ -50,7 +57,10 @@ capture_remote_evidence() {
       ;;
   esac
   remote_worktree="/root/stint-deep-dashboard-smoke/.stint-deep/$deep_id"
-  timeout 30s "${SSH[@]}" "cd '$remote_worktree' && test -f compression-smoke.ok && cat compression-smoke.ok && git status --short" \
+  case "$EXPECTED_REMOTE_FILE" in
+    /*|*..*|*[!A-Za-z0-9_./-]*) say "WARN unsafe expected artifact path"; return 0 ;;
+  esac
+  timeout 30s "${SSH[@]}" "cd '$remote_worktree' && test -f '$EXPECTED_REMOTE_FILE' && cat '$EXPECTED_REMOTE_FILE' && git status --short" \
     >"$ARTIFACT_DIR/remote-artifact.txt" 2>>"$LOG" || true
 }
 
@@ -81,7 +91,7 @@ chmod 600 "$XDG_CONFIG_HOME/stint/ssh/id_ed25519"
 
 say "starting isolated 90-minute native-NInfer smoke session"
 setsid "$STINT_BIN" start interactive --hours 1.5 --tunnel-port 8413 \
-  --runtime ninfer --ninfer-config native \
+  --runtime ninfer --ninfer-config native --clients "$NINFER_CLIENTS" \
   --min-measured-download-mbps 30 --min-network-mbps 300 \
   --network-candidate-attempts 5 --max-cost-usd 2 --yes >>"$LOG" 2>&1 < /dev/null &
 START_PID=$!
@@ -102,6 +112,7 @@ done
 
 mapfile -t BOX < <(python3 - "$SESSION_JSON" <<'PY'
 import json
+import os
 import sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 print(state.get("sshHost", ""))
@@ -124,11 +135,16 @@ rsync -a -e "$SSH_RSYNC" \
   "$REPO_ROOT/scripts/box-phase-setup.sh" \
   "$REPO_ROOT/scripts/deep-observe.sh" \
   "$REPO_ROOT/scripts/deep-compression-smoke-box-setup.sh" \
+  "$REPO_ROOT/scripts/phase-lane-concurrency-smoke.sh" \
   "root@$B_HOST:/root/" >>"$LOG" 2>&1
-"${SSH[@]}" 'chmod +x /root/phaseproxy.py /root/box-phase-setup.sh /root/deep-observe.sh /root/deep-compression-smoke-box-setup.sh && PHASE_PROXY=/root/phaseproxy.py /root/box-phase-setup.sh' >>"$LOG" 2>&1
+"${SSH[@]}" 'chmod +x /root/phaseproxy.py /root/box-phase-setup.sh /root/deep-observe.sh /root/deep-compression-smoke-box-setup.sh /root/phase-lane-concurrency-smoke.sh && PHASE_PROXY=/root/phaseproxy.py /root/box-phase-setup.sh' >>"$LOG" 2>&1
 
 say "running normal phased box smoke"
 timeout 12m "${SSH[@]}" 'STINT_PHASED=1 PHASING_DIR=/root/stint-phasing bash -s' < "$REPO_ROOT/scripts/box-smoke.sh" >>"$LOG" 2>&1
+if [ "$LANE_SMOKE" = 1 ]; then
+  say "running concurrent xhigh/medium two-lane smoke"
+  timeout 6m "${SSH[@]}" 'PHASING_DIR=/root/stint-phasing /root/phase-lane-concurrency-smoke.sh' >>"$LOG" 2>&1
+fi
 "${SSH[@]}" 'hermes config set compression.threshold_tokens 20000 && hermes config get compression.threshold_tokens' >>"$LOG" 2>&1
 "${SSH[@]}" '/root/deep-compression-smoke-box-setup.sh' >>"$LOG" 2>&1
 "${SSH[@]}" 'git config --global --add safe.directory /root/stint-deep-dashboard-smoke' >>"$LOG" 2>&1
@@ -142,13 +158,18 @@ dashboard_recorder() {
 dashboard_recorder &
 DASHBOARD_PID=$!
 
-say "running one 30-minute Deep Work compression task"
+say "running bounded Deep Work task"
+DEEP_ACTION_ARGS=()
+if [ -n "$ACTION_PLAN_PATH" ]; then
+  DEEP_ACTION_ARGS=(--action-plan "$ACTION_PLAN_PATH")
+fi
 set +e
 "$STINT_BIN" deep start \
-  --mission "$REPO_ROOT/deep-work/COMPRESSION_SMOKE_MISSION.md" \
+  --mission "$MISSION_PATH" \
   --repo /root/stint-deep-dashboard-smoke \
   --worker hermes --provider custom:qwen-stint-medium --model qwen3.8-27b \
   --reasoning medium --task-timeout 15m --max-attempts 1 --hours 0.5 \
+  "${DEEP_ACTION_ARGS[@]}" \
   >>"$COORDINATOR_LOG" 2>&1
 COORDINATOR_STATUS=$?
 set -e
@@ -166,11 +187,12 @@ observer_path, artifact_path, coordinator_path = sys.argv[1:]
 observer = json.load(open(observer_path, encoding="utf-8"))
 compression = observer.get("compression", {})
 routes = observer.get("phaseRoutes", {})
-if compression.get("state") != "completed" or compression.get("truncated", 0) != 0:
+if os.environ.get("STINT_REQUIRE_COMPRESSION", "1") == "1" and (compression.get("state") != "completed" or compression.get("truncated", 0) != 0):
     raise SystemExit(f"compression acceptance failed: {compression}")
 if routes.get("mediumRequests", 0) < 1:
     raise SystemExit(f"medium route acceptance failed: {routes}")
-if "twelve chunks read after compression smoke" not in open(artifact_path, encoding="utf-8").read():
+expected = os.environ.get("STINT_EXPECTED_REMOTE_TEXT", "twelve chunks read after compression smoke")
+if expected not in open(artifact_path, encoding="utf-8").read():
     raise SystemExit("remote verified artifact was not captured")
 coordinator = open(coordinator_path, encoding="utf-8", errors="replace").read().lower()
 for marker in ("context compression summary was truncated", "context window overflow"):
