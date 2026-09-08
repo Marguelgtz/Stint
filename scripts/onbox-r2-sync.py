@@ -8,6 +8,7 @@ the Deep Work state directory.
 import datetime
 import json
 import os
+import socket
 import sys
 
 
@@ -23,6 +24,18 @@ def load_env(path):
             key, value = line.split("=", 1)
             values[key] = value.strip().strip('"').strip("'")
     return values
+
+
+def provenance_metadata(snapshot):
+    provenance = snapshot.get("provenance") or {}
+    values = {
+        "stint-origin": str(provenance.get("origin") or os.environ.get("STINT_ONBOX_ORIGIN", "unknown")),
+        "stint-instance-id": str(provenance.get("instanceId") or os.environ.get("STINT_ONBOX_INSTANCE_ID", "")),
+        "stint-hostname": str(provenance.get("hostname") or socket.gethostname()),
+        "stint-uploader": "onbox-r2-sync",
+        "machine": str(provenance.get("hostname") or socket.gethostname()),
+    }
+    return {key: value[:256] for key, value in values.items() if value}
 
 
 def main():
@@ -60,9 +73,10 @@ def main():
         config=Config(signature_version="s3v4"),
     )
     prefix = os.environ.get("STINT_R2_PREFIX", f"vanta/onbox/{session}").strip("/")
-    client.upload_file(snapshot_path, bucket, f"{prefix}/latest.json", ExtraArgs={"ContentType": "application/json"})
+    extra = {"ContentType": "application/json", "Metadata": provenance_metadata(snapshot)}
+    client.upload_file(snapshot_path, bucket, f"{prefix}/latest.json", ExtraArgs=extra)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    client.upload_file(snapshot_path, bucket, f"{prefix}/heartbeats/{stamp}.json", ExtraArgs={"ContentType": "application/json"})
+    client.upload_file(snapshot_path, bucket, f"{prefix}/heartbeats/{stamp}.json", ExtraArgs=extra)
     print(f"R2_HEARTBEAT_OK s3://{bucket}/{prefix}/latest.json")
     return 0
 
