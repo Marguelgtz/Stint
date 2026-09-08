@@ -74,9 +74,11 @@ PY
 HOST="${box[0]:-}"; PORT="${box[1]:-}"; INSTANCE="${box[2]:-}"; DEADLINE="${box[3]:-}"
 [ -n "$HOST" ] && [ -n "$PORT" ] && [ -n "$INSTANCE" ] && [ -n "$DEADLINE" ] || die "READY session lacks remote identity"
 KEY="$CONFIG_ROOT/stint/ssh/id_ed25519"
-mkdir -p "$CONFIG_ROOT/stint/ssh"
-cp "$HOME/.config/stint-dryrun/stint/ssh/id_ed25519" "$KEY"
-cp "$HOME/.config/stint-dryrun/stint/ssh/id_ed25519.pub" "$KEY.pub"
+# `stint start` generates (and attaches) the keypair selected by its own
+# XDG_CONFIG_HOME. Keep that private key intact: replacing it with a key
+# from another config root after the rental is created makes SSH fail with
+# `Permission denied (publickey)`.
+[ -r "$KEY" ] || die "lifecycle READY without its generated SSH private key"
 chmod 600 "$KEY"
 SSH=(ssh -i "$KEY" -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "root@$HOST")
 
