@@ -103,8 +103,14 @@ xhigh and medium route traffic recorded and no failures.
       `test -f phase-lane-smoke/medium-ready.txt && grep -Fqx 'medium execution ready' phase-lane-smoke/medium-ready.txt`
       exit 0 (re-run by the executor). PHASE-001 may now be checkpointed;
       PHASE-002 is cleared to read this marker before writing `final.txt`.
-- [ ] PHASE-002 (medium): marker written and verify command passed.
-      Evidence: `phase-lane-smoke/final.txt` on disk.
+- [x] PHASE-002 (medium): completed (attempt 1). Read
+      `phase-lane-smoke/medium-ready.txt` first (confirmed exactly
+      `medium execution ready` on disk from PHASE-001), then wrote
+      `phase-lane-smoke/final.txt` with exactly `phase lane e2e complete`
+      + one trailing newline (24 bytes, confirmed via `od -c`).
+      Verify command
+      `test -f phase-lane-smoke/final.txt && grep -Fqx 'phase lane e2e complete' phase-lane-smoke/final.txt`
+      exit 0 (re-run by the executor).
 
 ## Unresolved issues
 
