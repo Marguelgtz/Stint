@@ -4,6 +4,10 @@ This is the required topology for the first unattended CP1 run. The rented insta
 must continue the mission after the operator machine disconnects or powers off. A
 local Stint coordinator is a development fixture only.
 
+After the launch handshake, the operator machine is limited to optional read-only
+inspection. It must not coordinate tasks, upload run evidence, create commits, or
+publish GitHub changes. The GPU instance owns those actions until landing.
+
 **Live status (2026-09-08):** P6.1 local-on-box Hermes execution, P6.2 detached
 supervisor/restart loop, and P6.5 reconnectable sanitized heartbeat are implemented
 on the dashboard branch. The R2 credentials and object contract pass an isolated
@@ -17,6 +21,11 @@ model-transfer throughput.
 - [x] Add a detached supervisor with PID/heartbeat and restart-from-state behavior.
 - [x] Add a launch helper that exits after the remote `RUNNING` handshake.
 - [x] Add sanitized heartbeat and final-state R2 upload hooks.
+- [ ] Make the GPU publish checkpoint commits and stackable GitHub PRs; the current
+  on-box git runner is intentionally local-only and this gate is still open.
+- [ ] Pass a least-privilege GitHub publish credential to the GPU at launch and
+  persist branch/PR URLs in the on-box state; fail closed when unattended publish
+  is requested without usable origin/authentication.
 - [ ] Make NInfer bootstrap resumable after launch SSH loss (the model marker loop
   is now safe against a completed download and PID reuse; a dropped-SSH live proof
   is still required).
@@ -43,6 +52,20 @@ model-transfer throughput.
   the remote supervisor reports `RUNNING`.
 - Sanitized heartbeat and final-state R2 helpers are available when an explicit,
   root-only R2 credential file is supplied.
+
+The `dashboard-smoke` prefix is from the legacy operator-side `cp1-upload.sh`
+path: it retrieves local state first and records `machine: MGR-PC` in
+`meta-upload.json`. That path is suitable for local dashboard/compression fixtures
+only. It is not the Deep Work topology and must not be used after an on-box launch
+handshake. The on-box launcher instead transfers `onbox-r2-sync.py`,
+`onbox-r2-archive.py`, and the R2 credential file to the GPU; the detached
+supervisor executes those helpers on the instance.
+
+Checkpoint commits currently remain only in the GPU repository. Before CP1, the
+instance must authenticate to the repository's origin, push each verified
+checkpoint, and create the requested stackable PR chain from the living action plan.
+The laptop may later inspect those PRs, but it cannot be required to fetch, push,
+or open them.
 
 The failed phase/lane retry stopped before Deep Work because the foreground NInfer
 bootstrap lost SSH at 83% model transfer. It produced no task evidence and did not
