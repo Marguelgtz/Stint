@@ -1,7 +1,7 @@
 # Deep Work dashboard compression smoke result
 
-**Run:** `20260908-001117`  
-**Deep Work session:** `20260908-002648`  
+**Run:** `20260908-001117`
+**Deep Work session:** `20260908-002648`
 **Date:** 2026-09-08
 
 The isolated GPU smoke completed the normal phased box smoke and one Hermes
