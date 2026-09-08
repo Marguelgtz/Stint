@@ -25,6 +25,7 @@ GITHUB_TOKEN_LOCAL="${STINT_GITHUB_TOKEN_FILE:-}"
 GITHUB_REPOSITORY="${STINT_GITHUB_REPOSITORY:-}"
 GITHUB_BASE="${STINT_GITHUB_BASE:-}"
 ACTION_PLAN_LOCAL="${STINT_ONBOX_ACTION_PLAN:-}"
+ACTION_PLAN_TARGET="${STINT_ONBOX_ACTION_PLAN_PATH:-}"
 REMOTE_BIN="$ROOT/bin/stint"
 REMOTE_SUPERVISOR="$ROOT/onbox-deep-supervisor.sh"
 REMOTE_R2_SYNC="$ROOT/onbox-r2-sync.py"
@@ -32,7 +33,7 @@ REMOTE_R2_ARCHIVE="$ROOT/onbox-r2-archive.py"
 REMOTE_GITHUB_PUBLISH="$ROOT/onbox-github-publish.py"
 REMOTE_GITHUB_TOKEN="$ROOT/config/github.token"
 REMOTE_MISSION="$ROOT/mission.md"
-REMOTE_ACTION_PLAN="$ROOT/action-plan.md"
+REMOTE_ACTION_PLAN_SEED="$ROOT/action-plan.seed.md"
 REMOTE_REPO="$ROOT/repo"
 REMOTE_READY="$ROOT/runtime/RUNNING.json"
 TOKEN_TMP=""
@@ -58,6 +59,18 @@ if [ -n "$ACTION_PLAN_LOCAL" ]; then
     *) ACTION_PLAN_SOURCE="$REPO_LOCAL/$ACTION_PLAN_LOCAL" ;;
   esac
   [ -r "$ACTION_PLAN_SOURCE" ] || die "STINT_ONBOX_ACTION_PLAN must name a readable file"
+  if [ -z "$ACTION_PLAN_TARGET" ]; then
+    case "$ACTION_PLAN_LOCAL" in
+      /*) ACTION_PLAN_TARGET="deep-work/action-plan.md" ;;
+      *) ACTION_PLAN_TARGET="$ACTION_PLAN_LOCAL" ;;
+    esac
+  fi
+  case "/$ACTION_PLAN_TARGET/" in
+    */../*|*/./*|//*|/*$'\n'*|/*$'\r'*) die "STINT_ONBOX_ACTION_PLAN_PATH must stay inside the worktree" ;;
+  esac
+  case "$ACTION_PLAN_TARGET" in
+    ''|/*|.) die "STINT_ONBOX_ACTION_PLAN_PATH must be a non-empty relative path" ;;
+  esac
 fi
 [ -x "$BIN" ] || die "stint binary is missing or not executable: $BIN"
 [ -x "$SUPERVISOR_LOCAL" ] || die "supervisor script is missing or not executable: $SUPERVISOR_LOCAL"
@@ -139,7 +152,7 @@ scp -q -i "$KEY" -P "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new
 "${SSH[@]}" "rm -rf '$REMOTE_REPO' && mkdir -p '$REMOTE_REPO'"
 rsync -a --delete -e "$RSYNC_SSH" "$REPO_STAGE/" "root@$HOST:$REMOTE_REPO/"
 if [ -n "$ACTION_PLAN_LOCAL" ]; then
-  scp -q -i "$KEY" -P "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$ACTION_PLAN_SOURCE" "root@$HOST:$REMOTE_ACTION_PLAN"
+  scp -q -i "$KEY" -P "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$ACTION_PLAN_SOURCE" "root@$HOST:$REMOTE_ACTION_PLAN_SEED"
 fi
 
 if [ "$SKIP_GITHUB" != 1 ]; then
@@ -182,7 +195,7 @@ args=(--mission "$REMOTE_MISSION" --repo "$REMOTE_REPO" --deadline "$STINT_DEADL
   --task-timeout "${STINT_ONBOX_TASK_TIMEOUT:-15m}" \
   --max-attempts "${STINT_ONBOX_MAX_ATTEMPTS:-2}" \
   --ready-file "$REMOTE_READY")
-[ -n "$ACTION_PLAN_LOCAL" ] && args+=(--action-plan "$REMOTE_ACTION_PLAN")
+[ -n "$ACTION_PLAN_LOCAL" ] && args+=(--action-plan "$ACTION_PLAN_TARGET" --action-plan-seed "$REMOTE_ACTION_PLAN_SEED")
 
 echo "starting detached on-box supervisor"
 remote_env=("STINT_ONBOX_BIN=$REMOTE_BIN" "STINT_ONBOX_ROOT=$ROOT" \

@@ -55,7 +55,9 @@ full two-lane gate still require a real qualifying GPU run.
 - `scripts/launch-onbox-deep.sh` transfers a pinned Stint runtime, mission, explicit
   action-plan input, and a standalone repository clone at the exact source `HEAD`.
   It works when the source is a linked git worktree and deliberately excludes dirty
-  and untracked operator files from the GPU repository baseline.
+  and untracked operator files from the GPU repository baseline. The action-plan
+  input is transferred as an on-box seed and copied by the GPU coordinator to the
+  requested worktree-relative path before the xhigh planning task starts.
 - Sanitized heartbeat and final-state R2 helpers are available when an explicit,
   root-only R2 credential file is supplied.
 - `scripts/onbox-github-publish.py` runs on the GPU only. It reads the root-only
@@ -143,6 +145,17 @@ The token is not persisted into `.git/config`, a remote URL, a PR body, R2 state
 a command argument. Git push uses an ephemeral askpass helper on the instance. The
 only supported no-GitHub path is `STINT_ONBOX_SKIP_GITHUB=1`, which is explicitly a
 fixture mode and is not valid evidence for CP1 readiness.
+
+An optional living action plan uses two distinct inputs:
+
+```sh
+export STINT_ONBOX_ACTION_PLAN=/path/to/action-plan-seed.md
+export STINT_ONBOX_ACTION_PLAN_PATH=deep-work/action-plan.md
+```
+
+The first is the operator-selected seed transferred during launch. The second must
+stay inside the Deep Work worktree. The GPU coordinator copies the seed there before
+creating `PLAN-001`; the laptop does not edit or commit the plan after handoff.
 
 ## P6 implementation gates
 

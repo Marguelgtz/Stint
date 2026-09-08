@@ -10,6 +10,11 @@ RUN_ROOT="${STINT_ONBOX_RUN_ROOT:-$HOME/.local/state/stint-onbox-smoke-$RUN_ID}"
 CONFIG_ROOT="${STINT_ONBOX_CONFIG_ROOT:-$HOME/.config/stint-onbox-smoke-$RUN_ID}"
 ARTIFACT_DIR="${STINT_ONBOX_ARTIFACT_DIR:-$REPO_ROOT/onbox-deep-smoke-$RUN_ID}"
 MISSION_PATH="${STINT_ONBOX_MISSION:-$REPO_ROOT/deep-work/PHASE_LANE_E2E_MISSION.md}"
+ACTION_PLAN_SOURCE="${STINT_ONBOX_ACTION_PLAN:-$REPO_ROOT/deep-work/PHASE_LANE_E2E_PLAN_SEED.md}"
+ACTION_PLAN_PATH="${STINT_ONBOX_ACTION_PLAN_PATH:-deep-work/phase-plan.md}"
+GITHUB_TOKEN_FILE="${STINT_GITHUB_TOKEN_FILE:-}"
+GITHUB_REPOSITORY="${STINT_GITHUB_REPOSITORY:-}"
+GITHUB_BASE="${STINT_GITHUB_BASE:-}"
 REMOTE_ROOT="${STINT_REMOTE_ROOT:-/var/lib/stint-onbox}"
 LOG="$ARTIFACT_DIR/launcher.log"
 
@@ -41,6 +46,10 @@ trap cleanup EXIT
 [ -x "$STINT_BIN" ] || die "missing Stint binary: $STINT_BIN"
 [ -r "$HOME/.config/stint-dryrun/stint/credentials.json" ] || die "missing Vast credentials"
 [ -r "$HOME/.config/vanta-r2.env" ] || die "missing R2 environment file"
+[ -r "$ACTION_PLAN_SOURCE" ] || die "missing action-plan seed: $ACTION_PLAN_SOURCE"
+[ -n "$GITHUB_TOKEN_FILE" ] && [ -r "$GITHUB_TOKEN_FILE" ] || die "STINT_GITHUB_TOKEN_FILE must name a readable token file"
+[ -n "$GITHUB_REPOSITORY" ] || die "STINT_GITHUB_REPOSITORY is required"
+[ -n "$GITHUB_BASE" ] || die "STINT_GITHUB_BASE is required"
 
 cp "$HOME/.config/stint-dryrun/stint/credentials.json" "$CONFIG_ROOT/stint/credentials.json"
 chmod 600 "$CONFIG_ROOT/stint/credentials.json"
@@ -98,7 +107,9 @@ STINT_BOX_HOST="$HOST" STINT_BOX_PORT="$PORT" STINT_BOX_KEY="$KEY" \
   STINT_BIN="$STINT_BIN" STINT_REMOTE_ROOT="$REMOTE_ROOT" \
   STINT_VAST_CREDENTIALS="$CONFIG_ROOT/stint/credentials.json" \
   STINT_R2_ENV_FILE="$HOME/.config/vanta-r2.env" STINT_ONBOX_CLIENTS=2 \
-  STINT_ONBOX_ACTION_PLAN=deep-work/phase-plan.md \
+  STINT_GITHUB_TOKEN_FILE="$GITHUB_TOKEN_FILE" \
+  STINT_GITHUB_REPOSITORY="$GITHUB_REPOSITORY" STINT_GITHUB_BASE="$GITHUB_BASE" \
+  STINT_ONBOX_ACTION_PLAN="$ACTION_PLAN_SOURCE" STINT_ONBOX_ACTION_PLAN_PATH="$ACTION_PLAN_PATH" \
   STINT_ONBOX_TASK_TIMEOUT=15m STINT_ONBOX_MAX_ATTEMPTS=1 \
   "$REPO_ROOT/scripts/launch-onbox-deep.sh" >>"$LOG" 2>&1
 REMOTE_STARTED=1
@@ -122,7 +133,9 @@ for _ in $(seq 1 90); do
   status="$(${SSH[@]} "STINT_ONBOX_ROOT='$REMOTE_ROOT' '$REMOTE_ROOT/onbox-deep-supervisor.sh' status" 2>>"$LOG" || true)"
   printf '%s\n' "$status" >"$ARTIFACT_DIR/remote-status.txt"
   printf '%s\n' "$status" | sed -n '1,3p'
-  if printf '%s\n' "$status" | grep -Eq '"phase":"(landed|stopped)"'; then
+  if printf '%s\n' "$status" | grep -q '^ONBOX_SUPERVISOR_STOPPED' && \
+     printf '%s\n' "$status" | grep -Eq '"phase":"(landed|stopped)"' && \
+     printf '%s\n' "$status" | grep -Eq '"handoffUrl":"https://github.com/'; then
     break
   fi
   sleep 10
@@ -132,21 +145,24 @@ say "capturing sanitized observer and on-box state"
 : >"$ARTIFACT_DIR/deep-observe.json"
 : >"$ARTIFACT_DIR/remote-state.json"
 : >"$ARTIFACT_DIR/remote-handoff.md"
+: >"$ARTIFACT_DIR/publication.json"
 "${SSH[@]}" '/root/deep-observe.sh' >"$ARTIFACT_DIR/deep-observe.json" 2>>"$LOG" || true
 session_id="$(${SSH[@]} "cat '$REMOTE_ROOT/state/stint/deep/latest'" 2>/dev/null | tr -d '[:space:]' || true)"
 case "$session_id" in
   ''|*[!A-Za-z0-9_-]*) die "no safe remote deep session id" ;;
 esac
 "${SSH[@]}" "cat '$REMOTE_ROOT/state/stint/deep/$session_id/deep.json'" >"$ARTIFACT_DIR/remote-state.json"
+"${SSH[@]}" "cat '$REMOTE_ROOT/state/stint/deep/$session_id/publication.json'" >"$ARTIFACT_DIR/publication.json"
 worktree="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("worktreePath", ""))' "$ARTIFACT_DIR/remote-state.json" 2>/dev/null || true)"
 if [ -n "$worktree" ]; then
   "${SSH[@]}" "cat '$worktree/DEEP_WORK_HANDOFF.md'" >"$ARTIFACT_DIR/remote-handoff.md" 2>>"$LOG" || true
 fi
 "${SSH[@]}" "cat '$REMOTE_ROOT/state/stint/deep/$session_id/incidents.jsonl'" >"$ARTIFACT_DIR/incidents.jsonl" 2>>"$LOG" || true
 
-python3 - "$ARTIFACT_DIR/remote-state.json" "$ARTIFACT_DIR/remote-handoff.md" <<'PY'
+python3 - "$ARTIFACT_DIR/remote-state.json" "$ARTIFACT_DIR/remote-handoff.md" "$ARTIFACT_DIR/publication.json" <<'PY'
 import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
+publication = json.load(open(sys.argv[3], encoding="utf-8"))
 tasks = {task.get("id"): task.get("status") for task in state.get("tasks", [])}
 if state.get("phase") != "landed":
     raise SystemExit(f"on-box session did not land: {state.get('phase')}")
@@ -154,6 +170,15 @@ if tasks.get("PLAN-001") != "verified" or tasks.get("PHASE-001") != "verified" o
     raise SystemExit(f"on-box tasks not verified: {tasks}")
 if not open(sys.argv[2], encoding="utf-8", errors="replace").read().strip():
     raise SystemExit("on-box handoff missing")
-print("ONBOX_DEEP_SMOKE_PASS", state.get("sessionId"), tasks)
+if any(not task.get("checkpointCommit") for task in state.get("tasks", []) if task.get("status") == "verified"):
+    raise SystemExit("verified task lacks checkpointCommit")
+checkpoints = publication.get("checkpoints") or []
+handoff = publication.get("handoff") or {}
+if len(checkpoints) != 3 or not handoff.get("prUrl"):
+    raise SystemExit(f"GitHub publication stack incomplete: checkpoints={len(checkpoints)} handoff={handoff}")
+urls = [entry.get("prUrl", "") for entry in checkpoints] + [handoff.get("prUrl", "")]
+if any(not url.startswith("https://github.com/") for url in urls):
+    raise SystemExit(f"invalid GitHub PR URL in publication: {urls}")
+print("ONBOX_DEEP_SMOKE_PASS", state.get("sessionId"), tasks, urls)
 PY
-say "PASS on-box supervisor, disconnect survival, two-lane phases, verification, and handoff"
+say "PASS on-box supervisor, disconnect survival, two-lane phases, verification, GPU publication stack, and handoff"

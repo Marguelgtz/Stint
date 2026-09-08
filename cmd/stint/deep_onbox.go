@@ -19,20 +19,21 @@ import (
 // session flags. The on-box supervisor already owns a live NInfer process and
 // does not need a local session.json, tunnel, or SSH key.
 type deepOnBoxFlags struct {
-	missionPath   string
-	repoPath      string
-	actionPlan    string
-	provider      string
-	model         string
-	reasoning     string
-	hours         float64
-	deadline      string
-	taskTimeout   time.Duration
-	maxAttempts   int
-	autoApprove   bool
-	allowCommands stringSlice
-	readyFile     string
-	resume        bool
+	missionPath    string
+	repoPath       string
+	actionPlan     string
+	actionPlanSeed string
+	provider       string
+	model          string
+	reasoning      string
+	hours          float64
+	deadline       string
+	taskTimeout    time.Duration
+	maxAttempts    int
+	autoApprove    bool
+	allowCommands  stringSlice
+	readyFile      string
+	resume         bool
 }
 
 // runDeepOnBox starts (or resumes) the coordinator in the same instance as
@@ -46,6 +47,7 @@ func runDeepOnBox(args []string) error {
 	fs.StringVar(&f.missionPath, "mission", "", "mission Markdown file (required for a new session)")
 	fs.StringVar(&f.repoPath, "repo", "", "target git repository on this instance (required for a new session)")
 	fs.StringVar(&f.actionPlan, "action-plan", "", "optional worktree-relative living action plan")
+	fs.StringVar(&f.actionPlanSeed, "action-plan-seed", "", "optional on-box seed file copied to --action-plan before execution")
 	fs.StringVar(&f.provider, "provider", "custom:qwen-stint-{reasoning}", "Hermes provider id or reasoning template")
 	fs.StringVar(&f.model, "model", "", "model id (default: first model served by 127.0.0.1:8080)")
 	fs.StringVar(&f.reasoning, "reasoning", deep.ReasoningMedium, "reasoning effort: none, low, medium, or xhigh")
@@ -73,6 +75,9 @@ func runDeepOnBox(args []string) error {
 		if err != nil {
 			return err
 		}
+	}
+	if f.actionPlanSeed != "" && f.actionPlan == "" {
+		return errors.New("--action-plan-seed requires --action-plan")
 	}
 
 	paths, err := config.DefaultPaths()
@@ -127,6 +132,11 @@ func runDeepOnBox(args []string) error {
 	if err := git.worktreeAdd(f.repoPath, worktree, deep.BranchName(sessionID)); err != nil {
 		return fmt.Errorf("create on-box deep worktree: %w", err)
 	}
+	if f.actionPlanSeed != "" {
+		if err := seedOnBoxActionPlan(f.actionPlanSeed, worktree, f.actionPlan); err != nil {
+			return err
+		}
+	}
 	baseCommit, _ := git.repoHead(worktree)
 	state := deep.NewState(sessionID, mission, f.repoPath, worktree, deadline, landBefore, f.maxAttempts, now)
 	state.BaseCommit = baseCommit
@@ -174,6 +184,25 @@ func runDeepOnBox(args []string) error {
 		taskCount:       len(mission.Tasks),
 		paths:           paths,
 	}, git, false)
+}
+
+func seedOnBoxActionPlan(seedPath, worktree, relativePath string) error {
+	clean, err := actionPlanPath(relativePath)
+	if err != nil {
+		return fmt.Errorf("on-box action-plan destination: %w", err)
+	}
+	data, err := os.ReadFile(seedPath)
+	if err != nil {
+		return fmt.Errorf("read on-box action-plan seed: %w", err)
+	}
+	destination := filepath.Join(worktree, filepath.FromSlash(clean))
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return fmt.Errorf("create on-box action-plan directory: %w", err)
+	}
+	if err := os.WriteFile(destination, data, 0o644); err != nil {
+		return fmt.Errorf("write on-box action-plan seed: %w", err)
+	}
+	return nil
 }
 
 func onBoxDeadline(raw string, hours float64, now time.Time) (time.Time, error) {
