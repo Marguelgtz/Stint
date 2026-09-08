@@ -145,7 +145,9 @@ run_supervisor() {
   start_watchdog
   heartbeat_loop &
   local heartbeat_pid=$!
-  trap 'kill "$heartbeat_pid" 2>/dev/null || true; snapshot || true; archive_final' EXIT
+  # The trap runs after run_supervisor returns, so its local heartbeat_pid may
+  # already be out of scope under `set -u`.
+  trap 'kill "${heartbeat_pid:-}" 2>/dev/null || true; snapshot || true; archive_final' EXIT
 
   local first=1
   while :; do
