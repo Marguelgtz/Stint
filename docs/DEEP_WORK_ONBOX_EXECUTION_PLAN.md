@@ -9,6 +9,19 @@ supervisor/restart loop, and P6.5 reconnectable sanitized heartbeat are implemen
 on the dashboard branch. P6.3 disconnect proof, P6.4 production R2 credentials and
 archive proof, and the full two-lane gate remain to be run on a fresh GPU instance.
 
+## Living checklist
+
+- [x] Add a local Hermes executor with no SSH loopback.
+- [x] Add a detached supervisor with PID/heartbeat and restart-from-state behavior.
+- [x] Add a launch helper that exits after the remote `RUNNING` handshake.
+- [x] Add sanitized heartbeat and final-state R2 upload hooks.
+- [ ] Make NInfer bootstrap resumable after launch SSH loss.
+- [ ] Prove the supervisor survives launch-process termination and operator disconnect.
+- [ ] Prove the on-box deadline watchdog destroys the instance after a provider/DNS retry.
+- [ ] Verify R2 heartbeat and final archive objects on a live run.
+- [ ] Repeat the two-lane xhigh/medium phase smoke through the on-box supervisor.
+- [ ] Unlock the real CP1 mission only after all gates above pass.
+
 ## What is already complete
 
 - Hermes can execute file and shell work on the GPU box through the existing remote
@@ -79,3 +92,17 @@ the terminal can close. Optional monitoring is either a reconnecting read-only s
 command or an R2 poller; neither process is the coordinator. The first CP1 launch must
 record the remote session id, R2 prefix, deadline, and reconnect command before the
 operator disconnects.
+
+The reconnect command is intentionally read-only:
+
+```sh
+ssh -i "$STINT_BOX_KEY" -p "$STINT_BOX_PORT" root@"$STINT_BOX_HOST" \
+  "STINT_ONBOX_ROOT=/var/lib/stint-onbox /var/lib/stint-onbox/onbox-deep-supervisor.sh status"
+
+ssh -i "$STINT_BOX_KEY" -p "$STINT_BOX_PORT" root@"$STINT_BOX_HOST" \
+  "XDG_STATE_HOME=/var/lib/stint-onbox/state /var/lib/stint-onbox/bin/stint deep status --json"
+```
+
+When the instance is no longer reachable, the same sanitized heartbeat and final
+archive are read from the recorded R2 prefix. The local dashboard may later consume
+those objects, but it is never needed for the worker to continue.

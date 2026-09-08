@@ -16,6 +16,10 @@ launch requires a *dedicated* compute box:
 the first P2 box later became this session's inference host and must not be re-provisioned.
 Supersedes the Cline-local-worker assumption for the first real (Vanta CP1) run.
 
+P6 implementation is in progress on this branch: `stint deep onbox`, the detached
+supervisor, launch helper, and sanitized R2 hooks are present. Live disconnect,
+deadline-destroy, R2, and two-lane acceptance gates remain open.
+
 **Goal:** run Deep Work as an on-box service. The rented instance owns the coordinator,
 Hermes worker, target repo/worktree, S0 implementations, verification, checkpoints,
 handoff, durable state, and deadline watchdog. After launch, the operator machine may
