@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -30,6 +31,32 @@ type deepDashboardSnapshot struct {
 	Coordinator string
 	ActiveSince *time.Time
 	Events      []deepdash.Event
+}
+
+func recordedTunnelPort(state sessionstate.State) int {
+	if state.TunnelPID <= 0 {
+		return 0
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", state.TunnelPID))
+	if err != nil {
+		return 0
+	}
+	args := strings.Split(string(data), "\x00")
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] != "-L" {
+			continue
+		}
+		forward := args[i+1]
+		parts := strings.SplitN(forward, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		port, err := strconv.Atoi(parts[1])
+		if err == nil && port > 0 && port <= 65535 {
+			return port
+		}
+	}
+	return 0
 }
 
 type deepDashboardRemoteResult struct {
@@ -289,6 +316,13 @@ func (c *deepDashboardController) startRefresh() {
 			return
 		}
 		result.ComputeAvailable = true
+		// Dashboard is a separate process from `start`, so it cannot rely on
+		// the package default (8409) when a session uses an isolated tunnel.
+		// The lifecycle records the tunnel PID; recover its loopback port before
+		// probing the endpoint.
+		if tunnelPort := recordedTunnelPort(ssn); tunnelPort > 0 {
+			clinePort = tunnelPort
+		}
 		workerCh := make(chan deepdash.Worker, 1)
 		if state.Exec != nil && state.Exec.Worker == workerHermes {
 			go func() {
