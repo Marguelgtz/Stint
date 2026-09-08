@@ -173,6 +173,10 @@ retry_step "transfer mission" "${SCP[@]}" "$MISSION_LOCAL" "root@$HOST:$REMOTE_M
 retry_step "install remote executables" "${SSH[@]}" "chmod 0755 '$REMOTE_BIN' '$REMOTE_SUPERVISOR'"
 retry_step "prepare remote repository" "${SSH[@]}" "rm -rf '$REMOTE_REPO' && mkdir -p '$REMOTE_REPO'"
 retry_step "transfer repository" rsync -a --delete -e "$RSYNC_SSH" "$REPO_STAGE/" "root@$HOST:$REMOTE_REPO/"
+# The staged tree preserves the operator UID during rsync. Register the exact
+# validated path for root-side Git commands instead of weakening ownership
+# checks globally or changing the copied repository contents.
+retry_step "register remote repository" "${SSH[@]}" "git config --global --add safe.directory '$REMOTE_REPO'"
 if [ -n "$ACTION_PLAN_LOCAL" ]; then
   retry_step "transfer action-plan seed" "${SCP[@]}" "$ACTION_PLAN_SOURCE" "root@$HOST:$REMOTE_ACTION_PLAN_SEED"
 fi
