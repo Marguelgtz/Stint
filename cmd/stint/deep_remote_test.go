@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -163,6 +164,57 @@ func TestHermesExecutorSSHFailure(t *testing.T) {
 	}
 	if res.exitCode != -1 {
 		t.Errorf("exitCode=%d, want -1 on SSH failure", res.exitCode)
+	}
+}
+
+func TestLocalHermesExecutorSuccess(t *testing.T) {
+	dir := t.TempDir()
+	hermes := dir + "/hermes"
+	if err := os.WriteFile(hermes, []byte("#!/bin/sh\nprintf 'on-box worker output\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e := newLocalHermesExecutor(hermes)
+	res, err := e.run(context.Background(), execInput{
+		workdir: dir, prompt: "continue locally", timeout: time.Minute,
+		provider: "custom:qwen-stint-{reasoning}", model: "qwen3.8-27b", reasoning: "medium",
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !res.completed || res.exitCode != 0 {
+		t.Fatalf("completed=%v exit=%d, want completed/0", res.completed, res.exitCode)
+	}
+	if !strings.Contains(res.outputText, "on-box worker output") {
+		t.Errorf("outputText = %q", res.outputText)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".stint-hermes-prompt-") {
+			t.Fatalf("temporary prompt was not removed: %s", entry.Name())
+		}
+	}
+}
+
+func TestLocalHermesExecutorFailure(t *testing.T) {
+	dir := t.TempDir()
+	hermes := dir + "/hermes"
+	if err := os.WriteFile(hermes, []byte("#!/bin/sh\necho failed >&2\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	res, err := newLocalHermesExecutor(hermes).run(context.Background(), execInput{
+		workdir: dir, prompt: "fail", timeout: time.Minute,
+	})
+	if err == nil {
+		t.Fatal("expected a local Hermes error")
+	}
+	if res.exitCode != 7 || res.completed {
+		t.Errorf("result = %+v, want exit 7 and incomplete", res)
+	}
+	if !strings.Contains(res.stderrTail, "failed") {
+		t.Errorf("stderr tail = %q", res.stderrTail)
 	}
 }
 

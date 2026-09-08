@@ -52,8 +52,9 @@ type DeepState struct {
 // policy (command prefixes the worker may run); it is named in every worker
 // prompt and, with auto-approval off, commands outside it are denied by the
 // CLI. Worker selects the execution target: "cline" (worker on the operator
-// machine, the original design) or "hermes" (Hermes agent plus all file and
-// shell work on the compute box, talking to the box's local model endpoint).
+// machine, the original design), "hermes" (Hermes plus file/shell work on the
+// compute box through the launcher's SSH seam), or "hermes-onbox" (the
+// coordinator and Hermes are co-located on the compute box with no SSH loopback).
 type ExecSettings struct {
 	Worker          string   `json:"worker,omitempty"`
 	AutoApprove     bool     `json:"autoApprove"`

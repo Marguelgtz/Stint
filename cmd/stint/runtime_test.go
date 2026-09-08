@@ -77,6 +77,7 @@ func TestNInferBootstrapIsPinnedAndPrefetchesInParallel(t *testing.T) {
 		"--retry-all-errors",
 		"-C -",
 		"waiting for the parallel Qwen model transfer",
+		`while [ -e "$model_pid" ] && kill -0 "$prefetch_pid"`,
 		"18210531328",
 	} {
 		if !strings.Contains(command, required) {

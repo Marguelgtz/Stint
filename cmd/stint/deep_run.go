@@ -20,8 +20,9 @@ import (
 // plus all of its file and shell work — on the compute box, talking to the
 // box's local model endpoint directly.
 const (
-	workerCline  = "cline"
-	workerHermes = "hermes"
+	workerCline       = "cline"
+	workerHermes      = "hermes"
+	workerHermesOnBox = "hermes-onbox"
 )
 
 // deepRunConfig carries the per-session invocation settings from the CLI.
@@ -38,8 +39,8 @@ type deepRunConfig struct {
 	taskTimeout     time.Duration
 	missionName     string
 	taskCount       int
-	// remote is the box SSH seam, set for the hermes worker (all file and
-	// shell work and verification run on the compute box); nil for cline.
+	// remote is the box SSH seam, set for the remote hermes worker; nil for
+	// cline and the on-box hermes worker.
 	remote remoteCmd
 	paths  config.Paths
 }
@@ -51,9 +52,9 @@ func lookPath(name string) (string, error) { return exec.LookPath(name) }
 // resumed selects the banner verb: `start` reports "started", `resume`
 // reports "resumed" for the same coordinator.
 func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, git gitOps, resumed bool) error {
-	// The worker selects how a task is executed and where verification and
-	// git run: the cline worker is local (operator machine); the hermes
-	// worker runs everything on the compute box. Everything else — the loop,
+	// The worker selects how a task is executed and where verification and git
+	// run. The remote Hermes worker uses SSH; the on-box Hermes worker uses
+	// local subprocesses on the compute instance. Everything else — the loop,
 	// acceptance, parking, checkpoint cadence, state, handoff — is shared.
 	var exec executor
 	verifyFn := func(ctx context.Context, command, workdir string) (string, bool, error) {
@@ -64,6 +65,8 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 		verifyFn = func(ctx context.Context, command, workdir string) (string, bool, error) {
 			return runVerifyCmdRemote(ctx, cfg.remote, command, workdir)
 		}
+	} else if cfg.worker == workerHermesOnBox {
+		exec = newLocalHermesExecutor("hermes")
 	} else {
 		exec = newClineExecutor("cline")
 	}
@@ -116,12 +119,18 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 	fmt.Printf("  mission:   %s (%d tasks)\n", cfg.missionName, cfg.taskCount)
 	if cfg.worker == workerHermes {
 		fmt.Printf("  worker:    hermes on the compute box (model %s via http://127.0.0.1:8080/v1 on the box)\n", cfg.model)
+	} else if cfg.worker == workerHermesOnBox {
+		fmt.Printf("  worker:    hermes local to the compute box (model %s via http://127.0.0.1:8080/v1)\n", cfg.model)
 	} else {
 		fmt.Printf("  model:     %s via http://127.0.0.1:8409/v1\n", cfg.model)
 	}
 	fmt.Printf("  worktree:  %s (branch %s)\n", state.WorktreePath, state.Branch)
 	fmt.Printf("  deadline:  %s  (lands from %s)\n", state.Deadline.Format(time.RFC3339), state.LandBefore.Format(time.RFC3339))
-	fmt.Println("  the coordinator runs in this process; keep this machine awake.")
+	if cfg.worker == workerHermesOnBox {
+		fmt.Println("  the on-box supervisor owns this process; the operator machine may disconnect.")
+	} else {
+		fmt.Println("  the coordinator runs in this process; keep this machine awake.")
+	}
 
 	// Record the execution policy this coordinator runs under: the incident
 	// log starts with what the operator permitted, so the audit trail is

@@ -1,6 +1,6 @@
 # Deep Work on the GPU with Hermes — Implementation Plan
 
-**Status:** P0–P3 done. **P1** implemented and tested — the `--worker hermes` executor,
+**Status:** P0–P4 are complete for the remote-over-SSH prototype. **P1** implemented and tested — the `--worker hermes` executor,
 the remote git/verify seam over Stint's SSH channel, and the on-box worktree are in
 `cmd/stint/deep_remote.go` + `deep_start.go`/`deep_resume.go`/`deep_run.go` (branch
 `feat/deep-work-hermes-worker`, on top of `feat/deep-work-with-dashboard`), gated by
@@ -10,22 +10,29 @@ configured; provider smoke + headless-approval probes passed — §4.1) and is r
 via `scripts/provision-box.sh` + `scripts/box-smoke.sh` on any fresh Vast instance.
 **P3** Vanta prep landed: per-task `verify:` for all 7 tasks, verified against the real
 Stint parser, LENIENT pass / STRICT expected-fail on the pristine repo, baseline commit
-`de47058`. **P4** (synthetic dry run on a dedicated box) and **P5** (real CP1 launch,
-operator-driven) are prepared. The Vanta CP1 launch requires a *dedicated* compute box:
+`de47058`. **P4** (synthetic dry run on a dedicated box) is complete. **P5** (real CP1
+launch) is blocked until the on-box coordinator work in P6 is complete. The Vanta CP1
+launch requires a *dedicated* compute box:
 the first P2 box later became this session's inference host and must not be re-provisioned.
 Supersedes the Cline-local-worker assumption for the first real (Vanta CP1) run.
 
-**Goal:** run Deep Work so that the *heavy work executes on the rented GPU box* —
-the agent worker, the target repo/worktree, the S0 implementations, and all
-verification run **on the box** — while the Stint coordinator, durable state,
-watchdog, and handoff remain on the operator's machine. The model is served on the
-box by NInfer at `http://127.0.0.1:8080/v1`; the worker is **Hermes**, not Cline.
+P6 implementation is in progress on this branch: `stint deep onbox`, the detached
+supervisor, launch helper, and sanitized R2 hooks are present. The R2 helpers pass an
+isolated bucket smoke, while live disconnect, deadline-destroy, and two-lane
+acceptance gates remain open because the latest bounded host search found no usable
+GPU endpoint.
 
-> If you literally want the *coordinator process itself* to run on the box (fully
-> remote), that is Option C below. It is **not** recommended and not what this plan
-> implements: the coordinator is a lightweight local loop whose value is its durable
-> local state + resume/watchdog integration. The GPU box is for inference + agent
-> tool execution, which is where all the compute is.
+**Goal:** run Deep Work as an on-box service. The rented instance owns the coordinator,
+Hermes worker, target repo/worktree, S0 implementations, verification, checkpoints,
+handoff, durable state, and deadline watchdog. After launch, the operator machine may
+disconnect or power off. The model is served on the box by NInfer at
+`http://127.0.0.1:8080/v1`; the worker is **Hermes**, not Cline.
+
+> **Mandatory topology decision (2026-09-08):** Option C is required. The coordinator
+> itself must run on the compute box; a local coordinator is test-only and is not an
+> acceptable CP1 launch shape. The operator machine may be used for launch, status,
+> and later retrieval, but the run must continue if it disappears immediately after
+> the remote supervisor is confirmed healthy.
 
 > **Dry Run mode (added 2026-09-03):** for the one-off P4 validation the
 > operator machine is itself a Vast box (this session's inference host, which
@@ -35,36 +42,36 @@ box by NInfer at `http://127.0.0.1:8080/v1`; the worker is **Hermes**, not Cline
 > `XDG_STATE_HOME` pointed at a fresh directory — can rent box B and tunnel to
 > a port other than 8409. The coordinator then runs on box A against box B's
 > session state, exactly the Mode-A topology in
-> `docs/CP1_DRYRUN_MISSION.md`. The production shape is unchanged: for the
-> real CP1 run the coordinator runs on the operator machine (or, per the
-> owner's stated preference for unattended operation, *inside* the Vast
-> instance — Option C: a `stint deep` that owns the session it works on,
-> with `deep.json` + git as the durable pair that must survive restarts).
+> `docs/CP1_DRYRUN_MISSION.md`. For the real CP1 run, Option C is mandatory: a
+> detached `stint deep` supervisor owns the session inside the Vast instance, with
+> `deep.json` + git as the durable pair that must survive restarts. The local
+> coordinator shape remains only as a development fixture.
 
 ---
 
 ## 1. Architecture
 
 ```
-Operator machine (local)                              Rented GPU box (Vast, e.g. RTX 4090)
-──────────────────────────────                        ─────────────────────────────────────
-stint deep start  (coordinator, foreground)
-  ├─ parses mission (local file)                       NInfer  →  127.0.0.1:8080/v1  (model)
-  ├─ durable state  ~/.local/state/stint/deep/        Hermes worker (installed on box)
-  ├─ watchdog (existing)                                 └─ terminal/tool commands run HERE
-  └─ per attempt, over SSH (Stint key, root@host:port):        └─ Vanta worktree  /root/stint-deep/<id>/
-        1. push reconstructed prompt → <box>/.stint-prompt-<task>.md   git, checkpoints, verify all HERE
-        2. ssh root@host:port 'cd <worktree> && hermes chat \
-             --query-file <prompt> --oneshot --quiet --provider custom'  ← model via 127.0.0.1:8080
-        3. ssh root@host:port 'cd <worktree> && <per-task|mission verify cmd>'
-        4. ssh root@host:port 'git -C <worktree> add -A && git commit …'  (checkpoint)
-  └─ landing: handoff written locally AND to box worktree; final verify over SSH
+Launch/control connection (operator)                 Rented GPU box (Vast, e.g. RTX 4090)
+────────────────────────────────────                 ─────────────────────────────────────
+stint deep launch --detach  ── SSH/API ───────────►  on-box stint supervisor (detached)
+                                                     ├─ owns deep.json, pid/lock, logs
+                                                     ├─ owns deadline watchdog + destroy
+                                                     ├─ parses mission/action plan
+                                                     ├─ runs Hermes locally
+                                                     ├─ owns /root/stint-deep/<id> worktree
+                                                     ├─ runs verify + git checkpoints locally
+                                                     └─ NInfer → 127.0.0.1:8080/v1
+
+After the supervisor reports RUNNING, the operator machine may power off. A later
+operator session reconnects through SSH or reads the R2 evidence bundle; neither path
+is required for the mission to continue.
 ```
 
-Why the coordinator stays local: it owns `deep.json` (resume truth), `coordinator.pid`
-(single-coordinator guard), the compute watchdog relationship, and the handoff. All of
-that is cheap and local. Everything that needs the GPU — model inference and the
-agent's actual file/shell work — moves to the box.
+The current remote-over-SSH executor remains a useful test seam, but it is not the
+production topology. In production, SSH is only a bounded launch/reconnect channel;
+it must not carry the lifetime of the coordinator, worker, verification, or checkpoint
+loop.
 
 ---
 
@@ -386,19 +393,35 @@ shape of the mission. Confirmed against the current parser + verifier:
   Vanta baseline commit `de47058`.
 - **P4 — Dry run on a tiny synthetic mission** (1–2 tasks, e.g. "write a file +
   per-task verify", plus the mission-level command), end-to-end over SSH with a
-  **dedicated** box + Hermes: provision (scripts), transfer Vanta, run
-  `stint deep start --worker hermes` for a bounded window. *Gate: task VERIFIED by
-  its own per-task command over the box channel, checkpoint commit on the box branch,
-  `DEEP_WORK_HANDOFF.md` written on the box, honest handoff locally. (Cannot run on
-  the current box — it hosts this session's inference and must not be disturbed.)*
-- **P5 — Launch the real CP1 mission** (see §8). Do not auto-start; operator launches.
+  **dedicated** box + Hermes. *DONE for the prototype:* task verification,
+  checkpointing, handoff, phase routing, compression observation, and the two-lane
+  preflight all passed where the box remained reachable. This does not satisfy the
+  unattended topology gate because the coordinator was local.
+- **P6 — On-box supervisor** (required). Package a pinned Stint runtime and mission
+  into the instance, launch a detached supervisor, and prove the operator-side
+  process can exit while the mission continues. The supervisor must use local
+  Hermes/git/verify execution, persist `deep.json` and logs on durable instance
+  storage, checkpoint continuously, publish sanitized status/evidence to R2, and
+  destroy the instance at its deadline without a local watchdog. Gate: power-off or
+  network-isolation simulation after launch, then reconnect and recover the same
+  session without replaying verified tasks. The detached restart fixture and R2
+  object read-back pass; the latest five-candidate GPU attempt was blocked before
+  Deep Work by SSH/throughput failures, so this gate remains open.
+- **P5 — Launch the real CP1 mission** (see §8), only after P6 passes. Do not
+  auto-start; operator launches.
 
 ---
 
-## 8. Recommended first-run launch (once P0–P4 pass)
+## 8. Recommended first-run launch (once P0–P6 pass)
 
-Compute: the box is the GPU session; Deep Work rides it. Use the `deep` profile runway
-(default 8 h) or extend the live session, then:
+The production launch will rent the box, provision it, transfer the mission and
+baseline repository, and start a detached on-box supervisor. The local command must
+wait only until the supervisor has persisted its session and reported `RUNNING`; it
+must then be safe for the operator machine to power off. The exact command is part of
+P6 and is intentionally not presented as ready yet.
+
+The current sequence below is the **prototype-only** launch used for P4 evidence. It
+keeps the coordinator and watchdog local and must not be used for CP1:
 
 ```
 # 0. dedicated box: provision + smoke (re-run the P2 scripts)
@@ -432,13 +455,21 @@ flag names as finalized in P1.)
 2. **Hermes on the box.** **Decided: full box install each run** (faithful to
    "everything on the GPU"; Hermes cannot cleanly run only its shell remotely).
    Cost: ~2 min per fresh instance, scripted.
-3. **Coordinator local vs on-box.** **Decided: coordinator local** (Option A) — it
-   owns `deep.json`, the pid guard, the watchdog relationship, and the handoff.
-4. **`--worker hermes` Stint capability.** **Done (P1)** on
+3. **Coordinator local vs on-box.** **Decided: coordinator on-box** (Option C). The
+   detached supervisor owns `deep.json`, the pid guard, the deadline watchdog, the
+   handoff, and the full task loop. The operator machine is only a launch, reconnect,
+   and retrieval client.
+4. **On-box supervisor and self-destroy path.** **Required before P5.** The launch
+   command must transfer a pinned Stint runtime plus mission/repository, start a
+   detached supervisor, and prove that it remains alive after the launch SSH exits.
+   The deadline destroy path must run without a local process. The Vast API
+   credential handling and a reconnectable status/evidence protocol are part of this
+   gate.
+5. **`--worker hermes` Stint capability.** **Done (P1)** on
    `feat/deep-work-hermes-worker`, stacked on `feat/deep-work-with-dashboard`.
    Remaining launch dependency: a dedicated box (the first P2 box became this
    session's inference host and is out of scope for re-provisioning).
-5. **Model quality on a 27B local model for autonomous multi-task agentic work** (two
+6. **Model quality on a 27B local model for autonomous multi-task agentic work** (two
    independent cryptographic implementations + cross-language byte-identity). This is a
    real capability risk independent of architecture; the per-task `verify:` + attempt
    caps + honest handoff are the mitigations. *Note only — not an architecture blocker.*

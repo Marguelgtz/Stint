@@ -68,6 +68,17 @@ if [ "$STINT_PHASED" = 1 ]; then
   printf '%s' "$ninfer_cmd" | grep -Fq -- "--default-max-tokens 262144" \
     || fail "NInfer is still using the historical completion cap"
   echo "SMOKE NInfer launch: native context/KV and uncapped summary budget observed"
+  OBSERVER="${PHASING_DIR:-/root/stint-phasing}/deep-observe"
+  [ -x "$OBSERVER" ] || fail "Deep Work worker observer is missing"
+  "$OBSERVER" >/tmp/stint-deep-observe.json || fail "Deep Work worker observer failed"
+  python3 - /tmp/stint-deep-observe.json <<'PY' || fail "Deep Work worker observer emitted invalid JSON"
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    data = json.load(stream)
+assert data.get("ninfer", {}).get("running") is True
+assert "compression" in data and "phaseRoutes" in data
+PY
+  echo "SMOKE worker observer: sanitized NInfer, phase, and compression telemetry available"
 fi
 
 # A setup rerun may leave the forwarders alive. Clear their append-only wire

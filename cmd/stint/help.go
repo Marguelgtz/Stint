@@ -242,19 +242,21 @@ var (
 		name:    "deep",
 		section: "deepwork",
 		summary: "run a bounded, unattended engineering mission (Deep Work)",
-		detail: `Deep Work hands Stint an engineering mission and a bounded amount of time, then Stint supervises execution continuity: the coding agent (Cline CLI, pointed at the Stint endpoint) works in an isolated git worktree, and when an invocation ends Stint inspects repository evidence — not the worker's word — before continuing, parking, or landing.
+		detail: `Deep Work hands Stint an engineering mission and a bounded amount of time, then Stint supervises execution continuity: the coding agent works in an isolated git worktree, and when an invocation ends Stint inspects repository evidence — not the worker's word — before continuing, parking, or landing.
 
-Slice-1 sessions ride an existing READY compute session (run ` + "`stint start interactive`" + ` first); Deep Work never rents, destroys, or extends compute. The coordinator lands before the session deadline and writes a truthful handoff. The machine must stay awake; the existing watchdog remains the hard-deadline authority.
+The production onbox subcommand runs the coordinator, Hermes worker, worktree, verification, checkpoints, handoff, and deadline handling inside the compute instance. The operator machine may disconnect after the supervisor reports RUNNING. The prototype start path still rides an existing READY session and keeps its coordinator local.
 
 After a crash, a lapsed machine, or a deadline landing: restore compute with ` + "`stint resume`" + ` or ` + "`stint start interactive`" + `, then ` + "`stint deep resume`" + ` continues the session in the same worktree and branch from durable state — verified work is never redone, and the deadline re-anchors to the current compute session.
 
 Subcommands:
   start   run a mission to landing (foreground)
   status  show session phase, deadline, and task table
+  dash    open the Deep Work execution cockpit (dashboard alias accepted)
   stop    land the latest session now (works from durable state)
-  resume  continue the latest (or given) session after a crash, sleep, or compute loss`,
-		usage: "stint deep <start|status|stop|resume> [flags]",
-		args:  []cliArg{{name: "<subcommand>", purpose: "start, status, stop, or resume"}},
+  resume  continue the latest (or given) session after a crash, sleep, or compute loss
+  onbox   start or resume a coordinator inside the compute instance`,
+		usage: "stint deep <start|status|dash|stop|resume|onbox> [flags]",
+		args:  []cliArg{{name: "<subcommand>", purpose: "start, status, dash, stop, resume, or onbox"}},
 		flags: []cliFlag{
 			{name: "--mission", argument: "<file>", purpose: "mission Markdown file (start, required)"},
 			{name: "--repo", argument: "<path>", purpose: "target git repository (start, required)"},
@@ -272,11 +274,15 @@ Subcommands:
 			{name: "--cline-config", argument: "<dir>", defaultVal: "~/.cline", purpose: "Cline config directory"},
 			{name: "--json", defaultVal: "false", purpose: "status: print machine-readable state"},
 			{name: "--session", argument: "<id>", defaultVal: "latest", purpose: "status: session to inspect"},
+			{name: "--refresh", defaultVal: "false", purpose: "dash: in non-interactive mode, add one passive compute/GPU-worker observation"},
+			{name: "--ready-file", argument: "<path>", purpose: "onbox: write RUNNING after state is durable"},
+			{name: "--resume", defaultVal: "false", purpose: "onbox: resume the latest on-box session"},
 		},
 		examples: []string{
 			"stint start interactive --hours 2",
 			"stint deep start --mission mission.md --repo /path/to/repo",
 			"stint deep status --json",
+			"stint deep dash",
 			"stint deep stop",
 		},
 		notes: []string{
@@ -285,6 +291,7 @@ Subcommands:
 			"Safety: auto-approval is off by default; grant the commands a mission needs with repeatable --allow-command prefixes, and every invocation, verification run, and state event is recorded in incidents.jsonl (recent tail: `stint deep status`).",
 			"The mission file must have an Objective and at least one task ('- [ ] ID: objective'); see docs/DEEP_WORK.md (DWX-011) for the full skeleton.",
 			"Host sleep matters: if the machine sleeps, wall-clock deadlines keep advancing.",
+			"Production CP1 uses `stint deep onbox`: after the detached supervisor reports RUNNING, the operator machine may power off.",
 		},
 	}
 

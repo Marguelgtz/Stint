@@ -205,7 +205,10 @@ prefetch_pid="$(cat "$model_pid" 2>/dev/null || true)"
 if [ -n "$prefetch_pid" ] && kill -0 "$prefetch_pid" 2>/dev/null; then
   echo "NInfer build is ready; waiting for the parallel Qwen model transfer..."
   last_pct=-1
-  while kill -0 "$prefetch_pid" 2>/dev/null; do
+  # The downloader removes model_pid after a successful checksum. Check that
+  # marker as well as the process so a reused PID cannot keep SSH bootstrap
+  # alive after the model is already complete.
+  while [ -e "$model_pid" ] && kill -0 "$prefetch_pid" 2>/dev/null; do
     bytes="$(stat -c %%s "$model" 2>/dev/null || echo 0)"
     pct=$((bytes * 100 / 18210531328))
     if [ "$pct" -ne "$last_pct" ]; then
@@ -215,6 +218,9 @@ if [ -n "$prefetch_pid" ] && kill -0 "$prefetch_pid" 2>/dev/null; then
     fi
     sleep 5
   done
+  if [ -e "$model_pid" ]; then
+    wait "$prefetch_pid" 2>/dev/null || true
+  fi
 fi
 rm -f "$model_pid"
 

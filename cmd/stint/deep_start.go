@@ -15,22 +15,26 @@ import (
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
-// runDeep dispatches the Deep Work command group: start | status | stop | resume.
+// runDeep dispatches the Deep Work command group.
 func runDeep(args []string) error {
 	if len(args) == 0 {
-		return errors.New("deep requires a subcommand: start, status, stop, or resume")
+		return errors.New("deep requires a subcommand: start, status, dash, stop, resume, or onbox")
 	}
 	switch args[0] {
 	case "start":
 		return runDeepStart(args[1:])
 	case "status":
 		return runDeepStatus(args[1:])
+	case "dash", "dashboard":
+		return runDeepDashboard(args[1:])
 	case "stop":
 		return runDeepStop(args[1:])
 	case "resume":
 		return runDeepResume(args[1:])
+	case "onbox":
+		return runDeepOnBox(args[1:])
 	default:
-		return fmt.Errorf("unknown deep subcommand %q (stint deep <start|status|stop|resume>)", args[0])
+		return fmt.Errorf("unknown deep subcommand %q (stint deep <start|status|dash|stop|resume|onbox>)", args[0])
 	}
 }
 
