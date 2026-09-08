@@ -17,8 +17,10 @@ the first P2 box later became this session's inference host and must not be re-p
 Supersedes the Cline-local-worker assumption for the first real (Vanta CP1) run.
 
 P6 implementation is in progress on this branch: `stint deep onbox`, the detached
-supervisor, launch helper, and sanitized R2 hooks are present. Live disconnect,
-deadline-destroy, R2, and two-lane acceptance gates remain open.
+supervisor, launch helper, and sanitized R2 hooks are present. The R2 helpers pass an
+isolated bucket smoke, while live disconnect, deadline-destroy, and two-lane
+acceptance gates remain open because the latest bounded host search found no usable
+GPU endpoint.
 
 **Goal:** run Deep Work as an on-box service. The rented instance owns the coordinator,
 Hermes worker, target repo/worktree, S0 implementations, verification, checkpoints,
@@ -40,11 +42,9 @@ disconnect or power off. The model is served on the box by NInfer at
 > `XDG_STATE_HOME` pointed at a fresh directory — can rent box B and tunnel to
 > a port other than 8409. The coordinator then runs on box A against box B's
 > session state, exactly the Mode-A topology in
-> `docs/CP1_DRYRUN_MISSION.md`. The production shape is unchanged: for the
-> real CP1 run the coordinator runs on the operator machine (or, per the
-> owner's stated preference for unattended operation, *inside* the Vast
-> instance — Option C: a detached `stint deep` supervisor owns the session it works on,
-> with `deep.json` + git as the durable pair that must survive restarts. The local
+> `docs/CP1_DRYRUN_MISSION.md`. For the real CP1 run, Option C is mandatory: a
+> detached `stint deep` supervisor owns the session inside the Vast instance, with
+> `deep.json` + git as the durable pair that must survive restarts. The local
 > coordinator shape remains only as a development fixture.
 
 ---
@@ -404,7 +404,9 @@ shape of the mission. Confirmed against the current parser + verifier:
   storage, checkpoint continuously, publish sanitized status/evidence to R2, and
   destroy the instance at its deadline without a local watchdog. Gate: power-off or
   network-isolation simulation after launch, then reconnect and recover the same
-  session without replaying verified tasks.
+  session without replaying verified tasks. The detached restart fixture and R2
+  object read-back pass; the latest five-candidate GPU attempt was blocked before
+  Deep Work by SSH/throughput failures, so this gate remains open.
 - **P5 — Launch the real CP1 mission** (see §8), only after P6 passes. Do not
   auto-start; operator launches.
 
