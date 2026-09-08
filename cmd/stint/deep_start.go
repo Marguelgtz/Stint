@@ -18,7 +18,7 @@ import (
 // runDeep dispatches the Deep Work command group.
 func runDeep(args []string) error {
 	if len(args) == 0 {
-		return errors.New("deep requires a subcommand: start, status, dash, stop, or resume")
+		return errors.New("deep requires a subcommand: start, status, dash, stop, resume, or onbox")
 	}
 	switch args[0] {
 	case "start":
@@ -31,8 +31,10 @@ func runDeep(args []string) error {
 		return runDeepStop(args[1:])
 	case "resume":
 		return runDeepResume(args[1:])
+	case "onbox":
+		return runDeepOnBox(args[1:])
 	default:
-		return fmt.Errorf("unknown deep subcommand %q (stint deep <start|status|dash|stop|resume>)", args[0])
+		return fmt.Errorf("unknown deep subcommand %q (stint deep <start|status|dash|stop|resume|onbox>)", args[0])
 	}
 }
 

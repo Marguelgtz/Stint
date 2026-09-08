@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
@@ -282,4 +286,82 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 		return res, fmt.Errorf("hermes invocation over SSH: %w", err)
 	}
 	return res, nil
+}
+
+// localHermesExecutor runs Hermes in the same instance as the coordinator. It
+// is the production on-box path: the coordinator, worker, verification, and
+// git all share the box's filesystem and localhost NInfer endpoint. Keeping a
+// separate executor makes it impossible for this mode to accidentally create
+// an SSH dependency back to the same machine.
+type localHermesExecutor struct {
+	binary string
+}
+
+func newLocalHermesExecutor(binary string) *localHermesExecutor {
+	if strings.TrimSpace(binary) == "" {
+		binary = "hermes"
+	}
+	return &localHermesExecutor{binary: binary}
+}
+
+func (e *localHermesExecutor) run(ctx context.Context, in execInput) (execResult, error) {
+	if in.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, in.timeout)
+		defer cancel()
+	}
+	start := time.Now()
+	promptFile, err := os.CreateTemp(in.workdir, ".stint-hermes-prompt-*")
+	if err != nil {
+		return execResult{exitCode: -1, duration: time.Since(start)}, err
+	}
+	promptPath := promptFile.Name()
+	defer os.Remove(promptPath)
+	if err := promptFile.Chmod(0o600); err != nil {
+		_ = promptFile.Close()
+		return execResult{exitCode: -1, duration: time.Since(start)}, err
+	}
+	if _, err := promptFile.WriteString(in.prompt); err != nil {
+		_ = promptFile.Close()
+		return execResult{exitCode: -1, duration: time.Since(start)}, err
+	}
+	if err := promptFile.Close(); err != nil {
+		return execResult{exitCode: -1, duration: time.Since(start)}, err
+	}
+
+	provider := in.provider
+	if provider == "" {
+		provider = "custom"
+	}
+	provider = strings.ReplaceAll(provider, "{reasoning}", in.reasoning)
+	argv := []string{"chat", "--query-file", promptPath, "--oneshot", "-Q", "--provider", provider}
+	if in.model != "" {
+		argv = append(argv, "-m", in.model)
+	}
+	if in.reasoning != "" {
+		argv = append(argv, "--reasoning", in.reasoning)
+	}
+
+	cmd := exec.CommandContext(ctx, e.binary, argv...)
+	cmd.Dir = in.workdir
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	err = cmd.Run()
+	res := execResult{
+		duration:   time.Since(start),
+		exitCode:   processExitCode(cmd),
+		outputText: strings.TrimSpace(out.String()),
+		stderrTail: tailLine(errb.String(), 5),
+	}
+	if err == nil {
+		res.completed = true
+		res.finishReason = "completed"
+		return res, nil
+	}
+	if ctx.Err() != nil {
+		res.finishReason = ctx.Err().Error()
+	}
+	return res, fmt.Errorf("local hermes invocation: %w", err)
 }
