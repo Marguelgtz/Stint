@@ -9,11 +9,11 @@ inspection. It must not coordinate tasks, upload run evidence, create commits, o
 publish GitHub changes. The GPU instance owns those actions until landing.
 
 **Live status (2026-09-08):** P6.1 local-on-box Hermes execution, P6.2 detached
-supervisor/restart loop, and P6.5 reconnectable sanitized heartbeat are implemented
-on the dashboard branch. The R2 credentials and object contract pass an isolated
-bucket smoke. The live GPU handoff, disconnect proof, and full two-lane gate remain
-blocked on obtaining a host with both reachable SSH and at least 30 MB/s measured
-model-transfer throughput.
+supervisor/restart loop, P6.5 reconnectable sanitized heartbeat, GPU-side GitHub
+checkpoint/PR publishing, and explicit R2 uploader provenance are implemented on
+the publishing branch. The R2 credentials and object contract pass an isolated
+bucket smoke. The live GPU handoff, disconnect proof, GitHub publish proof, and
+full two-lane gate still require a real qualifying GPU run.
 
 ## Living checklist
 
@@ -21,19 +21,23 @@ model-transfer throughput.
 - [x] Add a detached supervisor with PID/heartbeat and restart-from-state behavior.
 - [x] Add a launch helper that exits after the remote `RUNNING` handshake.
 - [x] Add sanitized heartbeat and final-state R2 upload hooks.
-- [ ] Make the GPU publish checkpoint commits and stackable GitHub PRs; the current
-  on-box git runner is intentionally local-only and this gate is still open.
-- [ ] Pass a least-privilege GitHub publish credential to the GPU at launch and
-  persist branch/PR URLs in the on-box state; fail closed when unattended publish
-  is requested without usable origin/authentication.
+- [x] Make the GPU publish verified checkpoint commits and stackable GitHub PRs.
+  The publisher creates one remote checkpoint branch per verified task, stacks each
+  PR on the previous checkpoint branch, persists `publication.json`, and adds a
+  final handoff layer at landing. Live GPU proof is still pending.
+- [x] Pass a least-privilege GitHub publish credential to the GPU at launch and
+  persist branch/PR URLs in the on-box state. Production launch fails closed when
+  the token file, repository, base branch, origin match, or repository push access
+  is unusable. `STINT_ONBOX_SKIP_GITHUB=1` is an explicit fixture-only bypass.
 - [ ] Make NInfer bootstrap resumable after launch SSH loss (the model marker loop
   is now safe against a completed download and PID reuse; a dropped-SSH live proof
   is still required).
 - [ ] Prove the supervisor survives launch-process termination and operator disconnect
   on a real GPU (the detached restart/landing fixture passes locally).
 - [ ] Prove the on-box deadline watchdog destroys the instance after a provider/DNS retry.
-- [ ] Verify R2 heartbeat and final archive objects on a live run (the helpers,
-  bucket access, and detached fixture pass; a real GPU archive is still required).
+- [ ] Verify R2 heartbeat and final archive objects on a live run, including
+  `provenance.origin=gpu-instance`, the Vast instance id, GPU hostname, GitHub
+  publication state, and the final `provenance.json` object.
 - [ ] Repeat the two-lane xhigh/medium phase smoke through the on-box supervisor.
 - [ ] Unlock the real CP1 mission only after all gates above pass.
 
@@ -48,10 +52,22 @@ model-transfer throughput.
 - A completed prototype smoke was archived to Cloudflare R2 manually.
 - `stint deep onbox` runs the coordinator and Hermes as co-located local processes;
   `scripts/onbox-deep-supervisor.sh` detaches and restarts it from `deep.json`.
-- `scripts/launch-onbox-deep.sh` transfers a pinned binary/repository and exits after
-  the remote supervisor reports `RUNNING`.
+- `scripts/launch-onbox-deep.sh` transfers a pinned Stint runtime, mission, explicit
+  action-plan input, and a standalone repository clone at the exact source `HEAD`.
+  It works when the source is a linked git worktree and deliberately excludes dirty
+  and untracked operator files from the GPU repository baseline.
 - Sanitized heartbeat and final-state R2 helpers are available when an explicit,
   root-only R2 credential file is supplied.
+- `scripts/onbox-github-publish.py` runs on the GPU only. It reads the root-only
+  GitHub token file, pushes verified checkpoints without writing the token into git
+  config or command arguments, creates draft stackable PRs, and records their
+  branches, commit SHAs, numbers, and URLs in `publication.json`.
+- The supervisor retries publication while the run is active and requires the final
+  landing publication to converge before it reports a clean landed supervisor exit.
+- Heartbeats now include sanitized origin/publication fields. R2 heartbeat objects
+  also carry object metadata identifying origin, instance id, hostname, uploader,
+  and machine. The final archive includes `publication.json` when present plus a
+  generated `provenance.json` object.
 
 The `dashboard-smoke` prefix is from the legacy operator-side `cp1-upload.sh`
 path: it retrieves local state first and records `machine: MGR-PC` in
@@ -59,13 +75,15 @@ path: it retrieves local state first and records `machine: MGR-PC` in
 only. It is not the Deep Work topology and must not be used after an on-box launch
 handshake. The on-box launcher instead transfers `onbox-r2-sync.py`,
 `onbox-r2-archive.py`, and the R2 credential file to the GPU; the detached
-supervisor executes those helpers on the instance.
+supervisor executes those helpers on the instance. Existing fixture objects are
+retained until an operator explicitly authorizes deletion.
 
-Checkpoint commits currently remain only in the GPU repository. Before CP1, the
-instance must authenticate to the repository's origin, push each verified
-checkpoint, and create the requested stackable PR chain from the living action plan.
-The laptop may later inspect those PRs, but it cannot be required to fetch, push,
-or open them.
+Verified checkpoint publication is now owned by the instance. For every task that
+reaches coordinator-verified state, the publisher resolves its checkpoint commit,
+pushes a stable session/task branch, and opens a draft PR. The first PR targets the
+configured `STINT_GITHUB_BASE`; each later PR targets the previous checkpoint branch.
+At landing, the generated handoff is pushed as a final stack layer. The laptop may
+later inspect those PRs, but it is neither a publisher nor a fallback.
 
 The failed phase/lane retry stopped before Deep Work because the foreground NInfer
 bootstrap lost SSH at 83% model transfer. It produced no task evidence and did not
@@ -86,7 +104,8 @@ heartbeats and a final four-file archive at
 `s3://deep-work/vanta/onbox/fixture-supervisor-20260908T030515Z/`; read-back showed
 the final phase `landed`, one verified task, and the `hermes-onbox` worker. This
 proves the local supervisor/restart and R2-hook seams without claiming a GPU
-disconnect proof.
+disconnect proof. That historical fixture predates GitHub publication and the new
+R2 provenance object contract.
 
 An R2 audit on 2026-09-08 found that this fixture prefix contained 1,237 objects,
 including 1,232 heartbeat snapshots uploaded between 04:05 and 05:26 BST. The
@@ -95,6 +114,29 @@ could not see a function-local PID after `run_supervisor` returned. The supervis
 now keeps that PID at script scope, reaps it on EXIT, and routes TERM/INT through
 the same cleanup path. The fixture objects are test data, not evidence of a live
 GPU run, and are intentionally retained until an operator authorizes R2 cleanup.
+
+## GPU GitHub credential contract
+
+A production on-box launch requires these inputs before the `RUNNING` handshake:
+
+```sh
+export STINT_GITHUB_TOKEN_FILE=/path/to/root-readable-github-token
+export STINT_GITHUB_REPOSITORY=Marguelgtz/Stint
+export STINT_GITHUB_BASE=<remote-base-branch>
+```
+
+The credential should be least privilege for the target repository: repository
+contents read/write and pull requests read/write. The launcher normalizes either a
+single-token file or a `GITHUB_TOKEN=` / `GH_TOKEN=` env-style file to a root-only
+one-line secret on the GPU. It then executes a GPU-side preflight that validates the
+repository origin, token repository access, push permission when GitHub exposes it,
+and existence of the configured base branch. The operator-side temporary normalized
+file is removed when the launcher exits.
+
+The token is not persisted into `.git/config`, a remote URL, a PR body, R2 state, or
+a command argument. Git push uses an ephemeral askpass helper on the instance. The
+only supported no-GitHub path is `STINT_ONBOX_SKIP_GITHUB=1`, which is explicitly a
+fixture mode and is not valid evidence for CP1 readiness.
 
 ## P6 implementation gates
 
@@ -113,12 +155,13 @@ GPU run, and are intentionally retained until an operator authorizes R2 cleanup.
    destroy its own Vast instance after the landing window. Prefer a provider-native
    lease/TTL. If Vast requires an API call, use a narrowly scoped root-only credential
    or an equivalent remote control token; never depend on a laptop process.
-5. **Remote evidence publishing.** **Helpers implemented; live R2 proof pending.** Every heartbeat and state transition writes a
+5. **Remote evidence publishing.** **GitHub/R2 implementation complete; live proof pending.** Every heartbeat and state transition writes a
    sanitized snapshot containing session phase, active task, verified/blocked counts,
-   last checkpoint commit, model/phase counters, compression counters, error domain,
-   and deadline. Upload snapshots and final artifacts to an R2 prefix owned by this
-   session. Do not upload prompts, raw Hermes output, credentials, or arbitrary shell
-   output.
+   last checkpoint commit, publication summary, origin provenance, model/phase
+   counters, compression counters, error domain, and deadline. Upload snapshots and
+   final artifacts to an R2 prefix owned by this session. GitHub checkpoint branches
+   and stack PRs are created by the instance. Do not upload prompts, raw Hermes
+   output, credentials, or arbitrary shell output.
 6. **Reconnectable inspection.** **Supervisor status implemented; CLI/R2 reconnect test pending.** Add a read-only remote status command. When online,
    it reads the instance state over SSH; when the instance is gone, it reads the last
    R2 snapshot and final handoff. Inspection must never be required for execution.
@@ -127,13 +170,20 @@ GPU run, and are intentionally retained until an operator authorizes R2 cleanup.
 
 Use a one- or two-task synthetic mission and run the following gates in order:
 
-1. Start the supervisor and verify `RUNNING` plus a remote heartbeat.
-2. Terminate the launch process and block or close the operator SSH connection.
-3. Wait for one task to execute, verify, and checkpoint on the instance.
-4. Reconnect and confirm the same `deep.json`, branch, task status, and checkpoint;
-   verified work must not be replayed.
-5. Read the sanitized progress from R2 while the instance is still running.
-6. Let the supervisor land and confirm the handoff and final artifact are in R2.
+1. Start the supervisor and verify `RUNNING` plus a remote heartbeat. Record the
+   source `HEAD`, GitHub repository/base, instance id, R2 prefix, and deadline.
+2. Terminate the launch process and close the operator SSH connection. Do not run a
+   local coordinator, uploader, git push, or PR creator during the disconnected
+   window.
+3. Wait for one task to execute, verify, checkpoint, push from the GPU, and create
+   its first draft PR.
+4. Reconnect and confirm the same `deep.json`, `publication.json`, branch, task
+   status, checkpoint SHA, and PR URL; verified work must not be replayed.
+5. Read sanitized progress from R2 while the instance is still running. Confirm
+   `provenance.origin` is `gpu-instance`, the instance id matches the rental, and
+   object metadata names the on-box uploader/hostname rather than `MGR-PC`.
+6. Let the supervisor land and confirm the handoff, final stacked handoff PR,
+   `publication.json`, final archive, and `provenance.json` are in remote evidence.
 7. Confirm the remote deadline watchdog destroys the instance after the configured
    deadline, including retry after a temporary Vast API/DNS failure.
 8. Repeat the phase/lane smoke with two NInfer clients, concurrent xhigh/medium
@@ -141,11 +191,13 @@ Use a one- or two-task synthetic mission and run the following gates in order:
 
 ## Operator experience
 
-The operator runs one launch command and waits for the `RUNNING` handshake. After that,
-the terminal can close. Optional monitoring is either a reconnecting read-only status
-command or an R2 poller; neither process is the coordinator. The first CP1 launch must
-record the remote session id, R2 prefix, deadline, and reconnect command before the
-operator disconnects.
+The operator runs one launch command and waits for the `RUNNING` handshake. Before
+launch, the operator provides the GPU-bound GitHub token file/repository/base and,
+when R2 evidence is required, the R2 credential file. After `RUNNING`, the terminal
+can close. Optional monitoring is either a reconnecting read-only status command or
+an R2 poller; neither process is the coordinator or publisher. The first CP1 launch
+must record the remote session id, R2 prefix, deadline, GitHub base, and reconnect
+command before the operator disconnects.
 
 The reconnect command is intentionally read-only:
 
@@ -157,6 +209,6 @@ ssh -i "$STINT_BOX_KEY" -p "$STINT_BOX_PORT" root@"$STINT_BOX_HOST" \
   "XDG_STATE_HOME=/var/lib/stint-onbox/state /var/lib/stint-onbox/bin/stint deep status --json"
 ```
 
-When the instance is no longer reachable, the same sanitized heartbeat and final
-archive are read from the recorded R2 prefix. The local dashboard may later consume
-those objects, but it is never needed for the worker to continue.
+When the instance is no longer reachable, the same sanitized heartbeat, publication
+summary, and final archive are read from the recorded R2 prefix. The local dashboard
+may later consume those objects, but it is never needed for the worker to continue.
