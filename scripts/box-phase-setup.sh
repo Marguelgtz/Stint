@@ -19,7 +19,9 @@ command -v python3 >/dev/null 2>&1 || fail "python3 not on PATH"
 mkdir -p "$PHASING_DIR"
 install -m 0755 "$DEEP_OBSERVE" "$PHASING_DIR/deep-observe"
 start_proxy() {
-  local port="$1" level="$2" pidfile="$PHASING_DIR/proxy-${level}.pid"
+  local port="$1"
+  local level="$2"
+  local pidfile="$PHASING_DIR/proxy-${level}.pid"
   if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
     return
   fi
