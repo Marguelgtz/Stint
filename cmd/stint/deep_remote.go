@@ -154,17 +154,14 @@ func (g *remoteGit) worktreeReattach(repo, worktree, branch string) error {
 	return err
 }
 
-// commitAll checkpoints the on-box worktree. "Nothing to commit" is not an
-// error for Deep Work: evidence may already be committed by the worker.
+// commitAll checkpoints the on-box worktree with a distinct coordinator
+// marker, including when the worker already committed its changes.
 func (g *remoteGit) commitAll(dir, message string) (string, error) {
 	if _, err := g.run(dir, "add", "-A"); err != nil {
 		return "", err
 	}
-	out, err := g.run(dir, "commit", "-m", message,
+	out, err := g.run(dir, "commit", "--allow-empty", "-m", message,
 		"--author", "Stint Deep Work <deep@stint.local>")
-	if err != nil && strings.Contains(err.Error(), "nothing to commit") {
-		return "nothing to commit", nil
-	}
 	if err != nil {
 		return strings.TrimSpace(out), err
 	}

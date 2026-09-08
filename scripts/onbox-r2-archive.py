@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Archive safe final Deep Work state and handoff files to R2."""
+import datetime
 import json
 import os
+import socket
 import sys
 
 
@@ -17,6 +19,28 @@ def load_env(path):
             key, value = line.split("=", 1)
             values[key] = value.strip().strip('"').strip("'")
     return values
+
+
+def provenance(session):
+    return {
+        "session": session,
+        "origin": os.environ.get("STINT_ONBOX_ORIGIN", "unknown"),
+        "instanceId": os.environ.get("STINT_ONBOX_INSTANCE_ID", ""),
+        "hostname": socket.gethostname(),
+        "uploader": "onbox-r2-archive",
+        "uploadedAt": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def provenance_metadata(payload):
+    values = {
+        "stint-origin": str(payload.get("origin", "unknown")),
+        "stint-instance-id": str(payload.get("instanceId", "")),
+        "stint-hostname": str(payload.get("hostname", "")),
+        "stint-uploader": "onbox-r2-archive",
+        "machine": str(payload.get("hostname", "")),
+    }
+    return {key: value[:256] for key, value in values.items() if value}
 
 
 def main():
@@ -53,13 +77,25 @@ def main():
         config=Config(signature_version="s3v4"),
     )
     prefix = os.environ.get("STINT_R2_PREFIX", f"vanta/onbox/{session}").strip("/")
-    allowed = {"deep.json", "mission.md", "handoff.md", "incidents.jsonl"}
+    proof = provenance(session)
+    metadata = provenance_metadata(proof)
+    allowed = {"deep.json", "mission.md", "handoff.md", "incidents.jsonl", "publication.json"}
     uploaded = 0
     for name in sorted(allowed):
         path = os.path.join(state_dir, name)
         if os.path.isfile(path):
-            client.upload_file(path, bucket, f"{prefix}/{name}", ExtraArgs={"ContentType": "application/octet-stream"})
+            content_type = "application/json" if name.endswith(".json") else "application/octet-stream"
+            client.upload_file(path, bucket, f"{prefix}/{name}", ExtraArgs={"ContentType": content_type, "Metadata": metadata})
             uploaded += 1
+    body = (json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    client.put_object(
+        Bucket=bucket,
+        Key=f"{prefix}/provenance.json",
+        Body=body,
+        ContentType="application/json",
+        Metadata=metadata,
+    )
+    uploaded += 1
     print(f"R2_ARCHIVE_OK objects={uploaded} s3://{bucket}/{prefix}")
     return 0
 
