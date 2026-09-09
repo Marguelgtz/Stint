@@ -352,7 +352,7 @@ policy: report-and-destroy
 	if err != nil {
 		t.Fatalf("ParseMission: %v", err)
 	}
-	if m.GitHub.Mode != GitHubMaintenance || m.GitHub.Repository != "Marguelgtz/Stint" || m.GitHub.Base != "main" {
+	if !m.GitHubConfigured || m.GitHub.Mode != GitHubMaintenance || m.GitHub.Repository != "Marguelgtz/Stint" || m.GitHub.Base != "main" {
 		t.Errorf("github policy = %+v", m.GitHub)
 	}
 	if len(m.GitHub.AllowedAuthors) != 2 || m.GitHub.AllowedAuthors[1] != "release-bot" {
@@ -360,6 +360,16 @@ policy: report-and-destroy
 	}
 	if m.Completion != CompletionReportAndDestroy || m.Tasks[0].Phase != PhasePlan || m.Tasks[1].Phase != PhaseWork {
 		t.Errorf("completion/phases = %q/%q/%q", m.Completion, m.Tasks[0].Phase, m.Tasks[1].Phase)
+	}
+}
+
+func TestParseMissionExplicitNoneIsConfigured(t *testing.T) {
+	m, err := ParseMission("# x\n\n## Objective\no\n\n## GitHub\nmode: none\n\n## Tasks\n- [ ] T1: work\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.GitHubConfigured || m.GitHub.Mode != GitHubNone {
+		t.Fatalf("github policy = %+v configured=%v", m.GitHub, m.GitHubConfigured)
 	}
 }
 

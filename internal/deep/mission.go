@@ -33,14 +33,15 @@ import (
 // Unknown sections are ignored so the format can grow. Objective and a
 // non-empty task list are required; anything else is optional.
 type Mission struct {
-	Name        string
-	Objective   string
-	Success     []string
-	Constraints []string
-	Verify      string
-	GitHub      GitHubPolicy
-	Completion  CompletionPolicy
-	Tasks       []Task
+	Name             string
+	Objective        string
+	Success          []string
+	Constraints      []string
+	Verify           string
+	GitHub           GitHubPolicy
+	GitHubConfigured bool
+	Completion       CompletionPolicy
+	Tasks            []Task
 }
 
 // ParseMission parses mission Markdown content into a Mission.
@@ -59,6 +60,9 @@ func ParseMission(content string) (Mission, error) {
 
 		if strings.HasPrefix(trimmed, "## ") {
 			section = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(trimmed, "## ")))
+			if section == "github" {
+				m.GitHubConfigured = true
+			}
 			continue
 		}
 		if strings.HasPrefix(trimmed, "# ") && section == "" && m.Name == "" {

@@ -101,7 +101,7 @@ func runDeepOnBox(args []string) error {
 	if err != nil {
 		return err
 	}
-	if os.Getenv("STINT_ONBOX_UNATTENDED") == "1" && os.Getenv("STINT_ONBOX_SKIP_GITHUB") != "1" && mission.GitHub.Mode == deep.GitHubNone {
+	if os.Getenv("STINT_ONBOX_UNATTENDED") == "1" && os.Getenv("STINT_ONBOX_SKIP_GITHUB") != "1" && !mission.GitHubConfigured {
 		return errors.New("unattended on-box missions must explicitly select a GitHub mode in ## GitHub (use mode: none only with the fixture bypass)")
 	}
 	if _, err := os.Stat(f.repoPath); err != nil {
