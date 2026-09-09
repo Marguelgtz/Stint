@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Fixture tests for the deterministic on-box GitHub merge gate."""
 import importlib.util
+import json
 import pathlib
+import os
+import tempfile
 import unittest
 
 
@@ -73,6 +76,27 @@ class MergeGateFixture(unittest.TestCase):
         self.assertIn("unresolved", joined)
         self.assertIn("changed", joined)
         self.assertIn("in_progress", joined)
+
+    def test_duplicate_merge_retry_is_idempotent(self):
+        old_config = PUBLISH.config
+        old_fetch = PUBLISH.fetch_pull_request
+        old_append = PUBLISH.append_ledger
+        try:
+            PUBLISH.config = lambda: {**self.cfg, "token_file": "unused", "token": "unused"}
+            PUBLISH.fetch_pull_request = lambda _cfg, _number: {**self.pr, "state": "closed", "merged_at": "2026-09-09T00:00:00Z"}
+            entries = []
+            PUBLISH.append_ledger = lambda *args, **kwargs: entries.append((args, kwargs))
+            with tempfile.TemporaryDirectory() as directory:
+                pathlib.Path(directory, "deep.json").write_text(json.dumps({"sessionId": "s1"}))
+                approval = pathlib.Path(directory, "approval.json")
+                approval.write_text(json.dumps(self.approval()))
+                os.environ["STINT_ONBOX_GATEKEEPER"] = "1"
+                result = PUBLISH.merge_pull_request(directory, 7, str(approval))
+            self.assertEqual(result["result"], "already-merged")
+            self.assertEqual(entries[0][1]["result"], "already-merged")
+        finally:
+            os.environ.pop("STINT_ONBOX_GATEKEEPER", None)
+            PUBLISH.config, PUBLISH.fetch_pull_request, PUBLISH.append_ledger = old_config, old_fetch, old_append
 
 
 if __name__ == "__main__":
