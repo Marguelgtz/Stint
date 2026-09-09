@@ -85,7 +85,7 @@ func bootstrapSelectedRuntime(ctx context.Context, paths config.Paths, state ses
 			}
 			return "", err
 		} else {
-			fmt.Printf("NInfer bootstrap unavailable on this host (%v). Falling back to llama.cpp.\n", err)
+			fmt.Println(ui.warn(fmt.Sprintf("NInfer bootstrap unavailable on this host (%v). Falling back to llama.cpp.", err)))
 			if fallbackErr := bootstrapRemoteRuntime(ctx, paths, state); fallbackErr != nil {
 				return "", fmt.Errorf("ninfer bootstrap failed (%v); llama.cpp fallback also failed: %w", err, fallbackErr)
 			}
@@ -100,12 +100,12 @@ func bootstrapSelectedRuntime(ctx context.Context, paths config.Paths, state ses
 }
 
 func bootstrapNInfer(ctx context.Context, paths config.Paths, state sessionstate.State) error {
-	fmt.Printf("Preparing NInfer for RTX 4090 at pinned commit %.12s...\n", ninferSourceCommit)
-	fmt.Println("Stint overlaps the Qwen model transfer with the native NInfer build so cold-start time is bounded by the slower stage instead of their sum.")
+	fmt.Println(ui.accent(fmt.Sprintf("Preparing NInfer for RTX 4090 at pinned commit %.12s...", ninferSourceCommit)))
+	fmt.Println(ui.muted("Stint overlaps the Qwen model transfer with the native NInfer build so cold-start time is bounded by the slower stage instead of their sum."))
 	if err := runSSHStreaming(ctx, paths, state, ninferBootstrapCommand()); err != nil {
 		return fmt.Errorf("bootstrap remote ninfer runtime: %w", err)
 	}
-	fmt.Println("NInfer runtime ready.")
+	fmt.Println(ui.success("NInfer runtime ready."))
 	return nil
 }
 

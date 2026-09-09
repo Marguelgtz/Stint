@@ -42,7 +42,7 @@ type planOutput struct {
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "stint:", err)
+		fmt.Fprintf(os.Stderr, "stint: %s\n", ui.errDanger(err.Error()))
 		os.Exit(1)
 	}
 }
@@ -142,7 +142,7 @@ func runPlan(args []string) error {
 			return errors.New("Vast credentials are not configured; run: stint auth vast")
 		}
 		if !*jsonOutput {
-			fmt.Fprintln(os.Stderr, "Searching Vast for interactive compute...")
+			fmt.Fprintln(os.Stderr, ui.errAccent("Searching Vast for interactive compute..."))
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
@@ -235,29 +235,29 @@ func summarizeEvaluations(evaluations []core.OfferEvaluation) planDiagnostics {
 
 func printDiagnostics(d planDiagnostics) {
 	fmt.Println()
-	fmt.Println("MARKETPLACE DIAGNOSTICS")
-	fmt.Printf("Candidates inspected  %d\n", d.Candidates)
-	fmt.Printf("Hard qualified        %d\n", d.Qualified)
+	fmt.Println(ui.accent("MARKETPLACE DIAGNOSTICS"))
+	fmt.Printf("%s  %d\n", ui.muted("Candidates inspected"), d.Candidates)
+	fmt.Printf("%s        %d\n", ui.muted("Hard qualified"), d.Qualified)
 	if len(d.RejectedBy) > 0 {
-		fmt.Println("\nRejected by hard constraint:")
+		fmt.Println("\n" + ui.bold("Rejected by hard constraint:"))
 		reasons := make([]string, 0, len(d.RejectedBy))
 		for reason := range d.RejectedBy {
 			reasons = append(reasons, string(reason))
 		}
 		sort.Strings(reasons)
 		for _, reason := range reasons {
-			fmt.Printf("  %-18s %d\n", reason, d.RejectedBy[core.RejectionReason(reason)])
+			fmt.Printf("  %s %d\n", ui.pad(ui.muted(reason), 18), d.RejectedBy[core.RejectionReason(reason)])
 		}
 	}
 	if len(d.ClosestRejected) > 0 {
-		fmt.Println("\nClosest rejected candidates:")
+		fmt.Println("\n" + ui.bold("Closest rejected candidates:"))
 		for _, evaluation := range d.ClosestRejected {
 			o := evaluation.Offer
 			fmt.Printf("  %s  $%.3f/hr  rel %.2f%%  DLPerf %.1f  %.0f MB/s  %.0f W  fails=%v\n",
 				valueOr(o.Geolocation, "unknown"), o.HourlyUSD, o.Reliability*100, o.DLPerf, o.InetDownMBps, o.GPUMaxPowerW, evaluation.Rejections)
 		}
 	}
-	fmt.Println("\nNO COMPUTE HAS BEEN RENTED.")
+	fmt.Println("\n" + ui.muted("NO COMPUTE HAS BEEN RENTED."))
 }
 
 func runAuth(args []string) error {
@@ -285,7 +285,7 @@ func runAuth(args []string) error {
 		}
 	}
 
-	fmt.Fprintln(os.Stderr, "Verifying Vast instance-read and marketplace-search access...")
+	fmt.Fprintln(os.Stderr, ui.errAccent("Verifying Vast instance-read and marketplace-search access..."))
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	client := vast.NewClient(apiKey)
@@ -304,8 +304,8 @@ func runAuth(args []string) error {
 	if err := config.SaveCredentials(paths, credentials); err != nil {
 		return err
 	}
-	fmt.Println("Vast provider authentication verified.")
-	fmt.Println("Credentials:", paths.CredentialsFile)
+	fmt.Println(ui.success("Vast provider authentication verified."))
+	fmt.Printf("%s %s\n", ui.muted("Credentials:"), paths.CredentialsFile)
 	return nil
 }
 
@@ -322,14 +322,14 @@ func runSetup(args []string) error {
 		return err
 	}
 	if created {
-		fmt.Println("Created dedicated Stint SSH keypair.")
+		fmt.Println(ui.success("Created dedicated Stint SSH keypair."))
 	} else {
-		fmt.Println("Using existing Stint SSH keypair.")
+		fmt.Println(ui.success("Using existing Stint SSH keypair."))
 	}
-	fmt.Println("Private key:", paths.SSHPrivateKey)
-	fmt.Println("\nPublic key (safe to add to Vast):")
+	fmt.Printf("%s %s\n", ui.muted("Private key:"), paths.SSHPrivateKey)
+	fmt.Println("\n" + ui.bold("Public key (safe to add to Vast):"))
 	fmt.Println(publicKey)
-	fmt.Println("\nLocal key is ready. `stint start` attaches it to the rented instance automatically.")
+	fmt.Println("\n" + ui.muted("Local key is ready. `stint start` attaches it to the rented instance automatically."))
 	return nil
 }
 
@@ -338,7 +338,7 @@ func runDoctor() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("Stint pre-v0 doctor")
+	fmt.Println(ui.accent("Stint pre-v0 doctor"))
 	fmt.Println()
 	ready := true
 
@@ -390,12 +390,12 @@ func runDoctor() error {
 	}
 
 	fmt.Println()
-	fmt.Printf("Cline endpoint      http://127.0.0.1:%d/v1\n", clinePort)
-	fmt.Println("Compute lifecycle   enabled; paid start requires explicit confirmation")
+	fmt.Printf("%s      http://127.0.0.1:%d/v1\n", ui.muted("Cline endpoint"), clinePort)
+	fmt.Printf("%s   %s\n", ui.muted("Compute lifecycle"), "enabled; paid start requires explicit confirmation")
 	if !ready {
 		return errors.New("doctor found setup issues")
 	}
-	fmt.Println("\nReady for live marketplace planning and paid start.")
+	fmt.Println("\n" + ui.success("Ready for live marketplace planning and paid start."))
 	return nil
 }
 
@@ -405,14 +405,14 @@ func runStatus() error {
 		return err
 	}
 	_, credentialsErr := config.LoadCredentials(paths)
-	fmt.Println("Stint local status")
-	fmt.Printf("Vast provider      %s\n", yesNo(credentialsErr == nil))
-	fmt.Printf("Stint SSH key      %s\n", yesNo(localenv.SSHKeyExists(paths)))
-	fmt.Printf("Cline endpoint     http://127.0.0.1:%d/v1\n", clinePort)
-	fmt.Println("Product identity   GitHub (same model as Spark; hosted login not needed for local pre-v0)")
+	fmt.Println(ui.accent("Stint local status"))
+	fmt.Printf("%s      %s\n", ui.muted("Vast provider"), yesNo(credentialsErr == nil))
+	fmt.Printf("%s      %s\n", ui.muted("Stint SSH key"), yesNo(localenv.SSHKeyExists(paths)))
+	fmt.Printf("%s     http://127.0.0.1:%d/v1\n", ui.muted("Cline endpoint"), clinePort)
+	fmt.Printf("%s   %s\n", ui.muted("Product identity"), "GitHub (same model as Spark; hosted login not needed for local pre-v0)")
 	state, stateErr := sessionstate.Load(paths)
 	if errors.Is(stateErr, os.ErrNotExist) {
-		fmt.Println("Active compute     none")
+		fmt.Printf("%s     %s\n", ui.muted("Active compute"), "none")
 		return nil
 	}
 	if stateErr != nil {
@@ -433,12 +433,12 @@ func runOnboard(args []string) error {
 	}
 
 	plan := spark.CreateOnboardingPlan(*dashboard)
-	fmt.Println("Spark onboarding")
+	fmt.Println(ui.accent("Spark onboarding"))
 	fmt.Println()
-	fmt.Println("Profile:", plan.ProfilePath)
-	fmt.Println("Dashboard:", plan.DashboardURL)
-	fmt.Printf("Expected GitHub evidence: %v\n", plan.ExpectedEvidence)
-	fmt.Println("\nSteps:")
+	fmt.Printf("%s %s\n", ui.muted("Profile:"), plan.ProfilePath)
+	fmt.Printf("%s %s\n", ui.muted("Dashboard:"), plan.DashboardURL)
+	fmt.Printf("%s %s\n", ui.muted("Expected GitHub evidence:"), fmt.Sprintf("%v", plan.ExpectedEvidence))
+	fmt.Println("\n" + ui.bold("Steps:"))
 	for i, step := range plan.Steps {
 		fmt.Printf("%d. %s\n", i+1, step)
 	}
@@ -458,35 +458,35 @@ func plannedRuntimeForOffer(gpuModel string) string {
 func printHumanPlan(result planOutput) {
 	selected := result.Plan.Workers[0].Offer
 	fmt.Println()
-	fmt.Println("SELECTED")
-	fmt.Printf("%-14s %s\n", "GPU", selected.GPUModel)
-	fmt.Printf("%-14s %s\n", "Location", valueOr(selected.Geolocation, "unknown"))
-	fmt.Printf("%-14s $%.3f/hr\n", "Price", selected.HourlyUSD)
-	fmt.Printf("%-14s %.2f%%\n", "Reliability", selected.Reliability*100)
-	fmt.Printf("%-14s %.1f\n", "DLPerf", selected.DLPerf)
-	fmt.Printf("%-14s %.0f MB/s down\n", "Network", selected.InetDownMBps)
-	fmt.Printf("%-14s %d\n", "Direct ports", selected.DirectPortCount)
-	fmt.Printf("%-14s %.0f W\n", "GPU power", selected.GPUMaxPowerW)
+	fmt.Println(ui.accent("SELECTED"))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("GPU"), 14), selected.GPUModel)
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("Location"), 14), valueOr(selected.Geolocation, "unknown"))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("Price"), 14), ui.accent(fmt.Sprintf("$%.3f/hr", selected.HourlyUSD)))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("Reliability"), 14), fmt.Sprintf("%.2f%%", selected.Reliability*100))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("DLPerf"), 14), fmt.Sprintf("%.1f", selected.DLPerf))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("Network"), 14), fmt.Sprintf("%.0f MB/s down", selected.InetDownMBps))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("Direct ports"), 14), fmt.Sprintf("%d", selected.DirectPortCount))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("GPU power"), 14), fmt.Sprintf("%.0f W", selected.GPUMaxPowerW))
 
 	if len(result.Alternatives) > 0 {
-		fmt.Println("\nALTERNATIVES")
+		fmt.Println("\n" + ui.accent("ALTERNATIVES"))
 		for i, offer := range result.Alternatives {
 			fmt.Printf("%d. %-10s %-18s $%.3f/hr  DLPerf %.1f  rel %.2f%%\n", i+1, offer.GPUModel, valueOr(offer.Geolocation, "unknown"), offer.HourlyUSD, offer.DLPerf, offer.Reliability*100)
 		}
 	}
 
-	fmt.Println("\nSESSION")
-	fmt.Printf("%-20s %s\n", "Runtime (auto)", plannedRuntimeForOffer(selected.GPUModel))
-	fmt.Printf("%-20s %.2fh\n", "Duration", result.Plan.Hours)
-	fmt.Printf("%-20s $%.2f\n", "Estimated compute", result.Plan.EstimatedTotalUSD)
-	fmt.Printf("%-20s $%.2f/hr\n", "Hourly ceiling", result.Plan.Profile.GPU.MaxHourlyUSD)
-	fmt.Printf("%-20s $%.2f\n", "Session ceiling", result.Plan.Profile.Session.MaxCostUSD)
-	fmt.Printf("%-20s %.0f GB\n", "Planned storage", result.Plan.Profile.Session.StorageGB)
-	fmt.Printf("%-20s %d / %d candidates\n", "Marketplace", result.Diagnostics.Qualified, result.Diagnostics.Candidates)
+	fmt.Println("\n" + ui.accent("SESSION"))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("Runtime (auto)"), 20), plannedRuntimeForOffer(selected.GPUModel))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("Duration"), 20), fmt.Sprintf("%.2fh", result.Plan.Hours))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("Estimated compute"), 20), ui.accent(fmt.Sprintf("$%.2f", result.Plan.EstimatedTotalUSD)))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("Hourly ceiling"), 20), fmt.Sprintf("$%.2f/hr", result.Plan.Profile.GPU.MaxHourlyUSD))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("Session ceiling"), 20), fmt.Sprintf("$%.2f", result.Plan.Profile.Session.MaxCostUSD))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("Planned storage"), 20), fmt.Sprintf("%.0f GB", result.Plan.Profile.Session.StorageGB))
+	fmt.Printf("%s %s\n", ui.pad(ui.muted("Marketplace"), 20), fmt.Sprintf("%d / %d candidates", result.Diagnostics.Qualified, result.Diagnostics.Candidates))
 	if selected.InetDownCostPerGB > 0 {
-		fmt.Printf("%-20s $%.4f/GB\n", "Download traffic", selected.InetDownCostPerGB)
+		fmt.Printf("%s %s\n", ui.pad(ui.muted("Download traffic"), 20), fmt.Sprintf("$%.4f/GB", selected.InetDownCostPerGB))
 	}
-	fmt.Println("\nNO COMPUTE HAS BEEN RENTED.")
+	fmt.Println("\n" + ui.muted("NO COMPUTE HAS BEEN RENTED."))
 }
 
 func printCheck(name string, ok bool, detail string) {
@@ -494,14 +494,18 @@ func printCheck(name string, ok bool, detail string) {
 	if ok {
 		mark = "✓"
 	}
-	fmt.Printf("%-20s %s %s\n", name, mark, detail)
+	colorMark := ui.danger(mark)
+	if ok {
+		colorMark = ui.success(mark)
+	}
+	fmt.Printf("%s %s %s\n", ui.pad(ui.muted(name), 20), colorMark, detail)
 }
 
 func yesNo(ok bool) string {
 	if ok {
-		return "configured"
+		return ui.success("configured")
 	}
-	return "not configured"
+	return ui.danger("not configured")
 }
 
 func valueOr(value, fallback string) string {
