@@ -128,7 +128,7 @@ func GitHubPolicySection(policy GitHubPolicy) string {
 	if mode == GitHubMaintenance {
 		b.WriteString("Maintenance mode also permits narrowly scoped repairs on explicitly selected existing PR heads and submitting merge requests.\n")
 		b.WriteString("You propose repairs and merge decisions; a deterministic GPU-side gatekeeper performs the actual merge only after every merge gate passes.\n")
-		b.WriteString("Use the on-box publisher commands `inventory`, `context <pr>`, `reply <pr> <body>`, `record <state-dir> <operation> <result> <reason>`, `gate <pr> --approval <file>`, and `request-merge <state-dir> <pr> --approval <file>`; the supervisor gatekeeper performs the actual merge after approval evidence is recorded.\n")
+		b.WriteString("Use the on-box publisher commands `inventory`, `context <pr>`, `reply <pr> <body>`, `push <state-dir> <branch> <commit>`, `update-pr <state-dir> <pr>`, `record <state-dir> <operation> <result> <reason>`, `gate <pr> --approval <file>`, and `request-merge <state-dir> <pr> --approval <file>`; the supervisor gatekeeper performs the actual merge after approval evidence is recorded.\n")
 	}
 	b.WriteString("\n")
 	return b.String()

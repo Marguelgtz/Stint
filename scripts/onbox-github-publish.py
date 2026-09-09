@@ -278,6 +278,53 @@ def push_commit(cfg: dict, worktree: str, commit: str, branch: str) -> None:
             pass
 
 
+def push_branch(state_dir: str, branch: str, commit: str, task: str = "") -> dict:
+    cfg = config()
+    if cfg.get("mode") == "none":
+        raise RuntimeError("push operation requires an explicit engineering or maintenance GitHub mode")
+    state_path = Path(state_dir) / "deep.json"
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
+    if state.get("githubLedger"):
+        cfg["ledger"] = str(state["githubLedger"])
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", branch) or branch.startswith("-"):
+        raise RuntimeError("invalid branch name")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise RuntimeError("push commit must be a full SHA")
+    worktree = state.get("worktreePath", "")
+    if not worktree or not os.path.isdir(worktree):
+        raise RuntimeError("Deep Work worktree is unavailable")
+    git(worktree, "cat-file", "-e", commit + "^{commit}")
+    push_commit(cfg, worktree, commit, branch)
+    append_ledger(cfg, "push", session=state.get("sessionId", ""), task=task,
+                  head_sha=commit, base=cfg["base"], result="pushed",
+                  reason="worker-authorized branch update", state_dir=state_dir)
+    return {"branch": branch, "commit": commit, "result": "pushed"}
+
+
+def update_pull_request(state_dir: str, number: int, title: str = "", body: str = "", task: str = "") -> dict:
+    cfg = config()
+    if cfg.get("mode") == "none":
+        raise RuntimeError("PR updates require an explicit engineering or maintenance GitHub mode")
+    state_path = Path(state_dir) / "deep.json"
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
+    if state.get("githubLedger"):
+        cfg["ledger"] = str(state["githubLedger"])
+    pr = fetch_pull_request(cfg, number)
+    if not pr or pr.get("state") != "open":
+        raise RuntimeError(f"pull request #{number} is not open")
+    payload = {}
+    if title.strip():
+        payload["title"] = title.strip()
+    if body.strip():
+        payload["body"] = body
+    if not payload:
+        raise RuntimeError("PR update requires a title or body")
+    api_request(cfg, "PATCH", f"/repos/{cfg['repository']}/pulls/{int(number)}", payload)
+    append_ledger(cfg, "pull-request-update", session=state.get("sessionId", ""), task=task,
+                  pr=pr, result="updated", reason="worker review repair", state_dir=state_dir)
+    return {"number": number, "result": "updated"}
+
+
 def existing_pr(cfg: dict, branch: str):
     owner = cfg["repository"].split("/", 1)[0]
     query = urllib.parse.urlencode({"state": "all", "head": f"{owner}:{branch}", "per_page": 10})
@@ -569,6 +616,9 @@ def record_action(state_dir: str, operation: str, result: str, reason: str, task
 
 def request_merge(state_dir: str, number: int, approval_path: str) -> dict:
     """Persist a merge request for the supervisor's deterministic gatekeeper."""
+    cfg = config()
+    if cfg.get("mode") != "maintenance":
+        raise RuntimeError("merge requests require STINT_GITHUB_MODE=maintenance")
     approval = json.loads(Path(approval_path).read_text(encoding="utf-8"))
     if not isinstance(approval, dict):
         raise RuntimeError("merge approval must be a JSON object")
@@ -578,7 +628,6 @@ def request_merge(state_dir: str, number: int, approval_path: str) -> dict:
     requests.mkdir(parents=True, exist_ok=True)
     path = requests / f"{int(number)}.json"
     atomic_json(path, approval)
-    cfg = config()
     state_path = Path(state_dir) / "deep.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
     if state.get("githubLedger"):
@@ -781,6 +830,17 @@ def main() -> int:
     req.add_argument("state_dir")
     req.add_argument("pr", type=int)
     req.add_argument("--approval", required=True)
+    push = sub.add_parser("push")
+    push.add_argument("state_dir")
+    push.add_argument("branch")
+    push.add_argument("commit")
+    push.add_argument("--task", default="")
+    upd = sub.add_parser("update-pr")
+    upd.add_argument("state_dir")
+    upd.add_argument("pr", type=int)
+    upd.add_argument("--title", default="")
+    upd.add_argument("--body", default="")
+    upd.add_argument("--task", default="")
     args = parser.parse_args()
     try:
         if args.command == "preflight":
@@ -815,6 +875,8 @@ def main() -> int:
                 print(json.dumps(payload, indent=2, sort_keys=True))
         elif args.command == "reply":
             cfg = config()
+            if cfg.get("mode") == "none":
+                raise RuntimeError("comment replies require an explicit engineering or maintenance GitHub mode")
             try:
                 result = reply_to_comment(cfg, args.pr, args.body, args.comment_id)
             except Exception as exc:
@@ -845,6 +907,10 @@ def main() -> int:
                                            args.task, args.pr, args.head_sha, args.base), sort_keys=True))
         elif args.command == "request-merge":
             print(json.dumps(request_merge(args.state_dir, args.pr, args.approval), sort_keys=True))
+        elif args.command == "push":
+            print(json.dumps(push_branch(args.state_dir, args.branch, args.commit, args.task), sort_keys=True))
+        elif args.command == "update-pr":
+            print(json.dumps(update_pull_request(args.state_dir, args.pr, args.title, args.body, args.task), sort_keys=True))
     except Exception as exc:
         print(f"GITHUB_PUBLISH_FAIL {exc}", file=sys.stderr)
         return 1
