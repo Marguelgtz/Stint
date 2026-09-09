@@ -346,7 +346,9 @@ exec /workspace/stint/llama.cpp/build/bin/llama-server \
   -c %d \
   -ctk q8_0 \
   -ctv q8_0 \
-  --flash-attn on
+  --flash-attn on \
+  --metrics \
+  --slots
 ' > "$log_file" 2>&1 < /dev/null &
 new_pid=$!
 printf '%%s\n' "$new_pid" > "$pid_file"

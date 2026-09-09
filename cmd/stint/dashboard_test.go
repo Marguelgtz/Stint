@@ -168,3 +168,49 @@ func TestDashboardProjectionPreservesSnapshotIdentity(t *testing.T) {
 		t.Fatalf("projection changed session identity: %+v", controller.model.Session)
 	}
 }
+
+func TestDashboardProjectionProjectsInferenceDomain(t *testing.T) {
+	decode, prefill, reuse, spec := 63.25, 1204.5, 0.87, 0.71
+	controller := dashboardController{
+		snapshot: sessionSnapshot{
+			Session: sessionInfo{InstanceID: 42, Status: "READY", Runtime: "ninfer"},
+			Inference: inferenceTelemetry{
+				Refreshed: true, Available: true, Processing: 1, Deferred: 2, Agents: 2, ResidentDepth: 45000,
+				DecodeTokensSec: &decode, PrefillTokensSec: &prefill, CacheReuseRatio: &reuse, SpecAcceptRatio: &spec,
+				Lanes: []inferenceLane{{ID: 0, NCTX: 172032, Processing: true, NPrompt: 45000}},
+			},
+		},
+	}
+	controller.projectSnapshot()
+	got := controller.model.Inference
+	if !got.Refreshed || !got.Available || got.Agents != 2 || got.Depth != 45000 {
+		t.Fatalf("inference projection = %+v", got)
+	}
+	if got.Decode != "63.2 tok/s" || got.Prefill != "1204.5 tok/s" || got.Queue != "2 queued" {
+		t.Fatalf("inference strings = %+v", got)
+	}
+	if got.CacheReuse != "87%" || got.Speculative != "71% accepted" {
+		t.Fatalf("inference ratios = %+v", got)
+	}
+	if got.Lanes != "0: 45000 tok" {
+		t.Fatalf("inference lanes = %q", got.Lanes)
+	}
+}
+
+func TestDashboardProjectionInferenceUnavailable(t *testing.T) {
+	controller := dashboardController{
+		snapshot: sessionSnapshot{
+			Session:   sessionInfo{InstanceID: 42, Status: "READY", Runtime: "llama.cpp"},
+			Inference: inferenceTelemetry{Refreshed: true, UnavailableReason: "runtime serves neither /metrics nor /slots (start llama.cpp with --metrics --slots)"},
+		},
+	}
+	controller.projectSnapshot()
+	got := controller.model.Inference
+	// Refreshed stays true: the probe ran, the engine merely served neither endpoint.
+	if !got.Refreshed || got.Available || got.Agents != 0 {
+		t.Fatalf("unavailable inference must project as idle: %+v", got)
+	}
+	if !strings.Contains(got.Error, "--metrics --slots") {
+		t.Fatalf("unavailable reason not projected: %+v", got)
+	}
+}
