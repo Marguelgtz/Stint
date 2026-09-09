@@ -269,8 +269,10 @@ if [ -n "${STINT_R2_ENV_FILE:-}" ]; then
   retry_step "prepare R2 uploader" "${SSH[@]}" "chmod 0700 '$REMOTE_R2_SYNC' '$REMOTE_R2_ARCHIVE' '$ROOT/config/r2.env' && python3 -c 'import boto3' 2>/dev/null || python3 -m pip install --quiet --user boto3"
 fi
 
+DEFAULT_PROVIDER='custom:qwen-stint-{reasoning}'
+PROVIDER="${STINT_ONBOX_PROVIDER:-$DEFAULT_PROVIDER}"
 args=(--mission "$REMOTE_MISSION" --repo "$REMOTE_REPO" --deadline "$STINT_DEADLINE" \
-  --provider "${STINT_ONBOX_PROVIDER:-custom:qwen-stint-{reasoning}}" \
+  --provider "$PROVIDER" \
   --model "${STINT_ONBOX_MODEL:-qwen3.8-27b}" \
   --reasoning "${STINT_ONBOX_REASONING:-medium}" \
   --task-timeout "${STINT_ONBOX_TASK_TIMEOUT:-15m}" \
