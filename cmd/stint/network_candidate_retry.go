@@ -21,31 +21,119 @@ func validateNetworkCandidateAttempts(attempts int) error {
 	return nil
 }
 
-// selectNetworkCandidates keeps the core interactive ranking, but limits the
-// paid qualification loop to distinct Vast machines. A single host can expose
-// multiple offers; retrying another offer from the same machine would not give
-// us an independent network path and would only burn another startup cycle.
+// startupCandidatePool separates marketplace candidates from the paid-attempt
+// budget. Offers may disappear between search and rental, so a stale ask must
+// not consume one of the user's configured machine attempts. Once Vast creates
+// an instance, recordPaidAttempt advances the budget even if provider startup,
+// SSH, or measured-network qualification later rejects that machine.
+type startupCandidatePool struct {
+	profile      core.Profile
+	limit        int
+	paidAttempts int
+	queue        []core.Offer
+	seen         map[string]struct{}
+}
+
+func newStartupCandidatePool(profile core.Profile, offers []core.Offer, limit int) *startupCandidatePool {
+	pool := &startupCandidatePool{
+		profile: profile,
+		limit:   limit,
+		seen:    make(map[string]struct{}),
+	}
+	pool.add(offers)
+	return pool
+}
+
+func networkCandidateKey(offer core.Offer) string {
+	if offer.MachineID > 0 {
+		return fmt.Sprintf("machine:%d", offer.MachineID)
+	}
+	return "offer:" + offer.ID
+}
+
+// add ranks fresh marketplace offers and fills only the currently missing
+// candidate slots. Every queued or previously rejected machine stays in seen,
+// preventing a refresh from cycling back to a host Stint already considered.
+func (p *startupCandidatePool) add(offers []core.Offer) []core.Offer {
+	missing := p.missingSlots()
+	if missing <= 0 {
+		return nil
+	}
+
+	ranked := core.RankOffers(p.profile, offers)
+	added := make([]core.Offer, 0, missing)
+	for _, offer := range ranked {
+		key := networkCandidateKey(offer)
+		if _, exists := p.seen[key]; exists {
+			continue
+		}
+		p.seen[key] = struct{}{}
+		p.queue = append(p.queue, offer)
+		added = append(added, offer)
+		if len(added) == missing {
+			break
+		}
+	}
+	return added
+}
+
+func (p *startupCandidatePool) next() (core.Offer, bool) {
+	if len(p.queue) == 0 {
+		return core.Offer{}, false
+	}
+	offer := p.queue[0]
+	p.queue = p.queue[1:]
+	return offer, true
+}
+
+func (p *startupCandidatePool) peek() (core.Offer, bool) {
+	if len(p.queue) == 0 {
+		return core.Offer{}, false
+	}
+	return p.queue[0], true
+}
+
+func (p *startupCandidatePool) recordPaidAttempt() {
+	if p.paidAttempts < p.limit {
+		p.paidAttempts++
+	}
+}
+
+func (p *startupCandidatePool) canTryPaid() bool {
+	return p.paidAttempts < p.limit
+}
+
+func (p *startupCandidatePool) nextAttemptNumber() int {
+	return p.paidAttempts + 1
+}
+
+func (p *startupCandidatePool) attemptsUsed() int {
+	return p.paidAttempts
+}
+
+func (p *startupCandidatePool) attemptLimit() int {
+	return p.limit
+}
+
+func (p *startupCandidatePool) queued() int {
+	return len(p.queue)
+}
+
+func (p *startupCandidatePool) missingSlots() int {
+	remainingAttempts := p.limit - p.paidAttempts
+	if remainingAttempts <= len(p.queue) {
+		return 0
+	}
+	return remainingAttempts - len(p.queue)
+}
+
+// selectNetworkCandidates retains the existing pure selection helper for plan
+// and unit-test callers. The paid start path uses startupCandidatePool directly
+// so later marketplace refreshes can add unseen replacement machines.
 func selectNetworkCandidates(profile core.Profile, offers []core.Offer, attempts int) []core.Offer {
 	if attempts <= 0 {
 		return nil
 	}
-
-	ranked := core.RankOffers(profile, offers)
-	selected := make([]core.Offer, 0, attempts)
-	seen := make(map[string]struct{}, attempts)
-	for _, offer := range ranked {
-		key := fmt.Sprintf("machine:%d", offer.MachineID)
-		if offer.MachineID <= 0 {
-			key = "offer:" + offer.ID
-		}
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		selected = append(selected, offer)
-		if len(selected) == attempts {
-			break
-		}
-	}
-	return selected
+	pool := newStartupCandidatePool(profile, offers, attempts)
+	return append([]core.Offer(nil), pool.queue...)
 }

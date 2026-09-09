@@ -300,33 +300,31 @@ func runHelp(args []string) error {
 
 func printUsage() {
 	var b strings.Builder
-	b.WriteString("STINT — elastic compute for coding agents\n\n")
-	b.WriteString("Stint rents a remote GPU, boots a model runtime, and tunnels it to a\n")
-	b.WriteString("stable local OpenAI-compatible endpoint so coding agents keep working:\n\n")
-	b.WriteString("    http://127.0.0.1:8409/v1   (model: qwen3.8-27b)\n\n")
-	b.WriteString("QUICK START\n")
-	b.WriteString("  stint auth vast                   store + verify your Vast API key\n")
-	b.WriteString("  stint setup ssh                   create the dedicated Stint SSH keypair\n")
-	b.WriteString("  stint doctor                      verify credentials, SSH key, OpenSSH, port 8409\n")
-	b.WriteString("  stint plan interactive --hours 5  read-only plan; never rents\n")
-	b.WriteString("  stint start interactive           rent, boot, tunnel; READY when live\n")
-	b.WriteString("  stint down                        destroy compute and clear the session\n\n")
+	b.WriteString(ui.accent("STINT — elastic compute for coding agents") + "\n\n")
+	b.WriteString(ui.muted("Stint rents a remote GPU, boots a model runtime, and tunnels it to a\nstable local OpenAI-compatible endpoint so coding agents keep working:"))
+	b.WriteString("\n\n")
+	b.WriteString("    " + ui.muted("http://127.0.0.1:8409/v1   (model: qwen3.8-27b)") + "\n\n")
+	b.WriteString(ui.bold("QUICK START") + "\n")
+	b.WriteString("  " + ui.accent("stint auth vast") + "                   store + verify your Vast API key\n")
+	b.WriteString("  " + ui.accent("stint setup ssh") + "                   create the dedicated Stint SSH keypair\n")
+	b.WriteString("  " + ui.accent("stint doctor") + "                      verify credentials, SSH key, OpenSSH, port 8409\n")
+	b.WriteString("  " + ui.accent("stint plan interactive --hours 5") + "  read-only plan; never rents\n")
+	b.WriteString("  " + ui.accent("stint start interactive") + "           rent, boot, tunnel; READY when live\n")
+	b.WriteString("  " + ui.accent("stint down") + "                        destroy compute and clear the session\n\n")
 	for _, section := range helpSections {
-		b.WriteString(section.title + "\n")
+		b.WriteString(ui.bold(section.title) + "\n")
 		for _, cmd := range section.commands {
-			fmt.Fprintf(&b, "  %-8s  %s\n", cmd.name, cmd.summary)
+			fmt.Fprintf(&b, "  %s  %s\n", ui.pad(ui.bold(cmd.name), 8), ui.muted(cmd.summary))
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("EXAMPLES\n")
-	b.WriteString("  stint start interactive --hours 2 --runtime ninfer\n")
-	b.WriteString("  stint start interactive --runtime ninfer --ninfer-config native --clients 2\n")
-	b.WriteString("  stint start interactive --yes --min-measured-download-mbps 50\n")
-	b.WriteString("  stint plan interactive --hours 5 --json\n")
-	b.WriteString("  stint status && stint perf --runs 5\n\n")
-	b.WriteString("Run `stint help <command>` or `stint <command> --help` for full flags.\n")
-	b.WriteString("Safety: plan never rents; start confirms cost before paying; compute is\n")
-	b.WriteString("destroyed automatically at the session deadline; credentials stay local.\n")
+	b.WriteString(ui.bold("EXAMPLES") + "\n")
+	b.WriteString("  " + ui.accent("stint start interactive --hours 2 --runtime ninfer") + "\n")
+	b.WriteString("  " + ui.accent("stint start interactive --runtime ninfer --ninfer-config native --clients 2") + "\n")
+	b.WriteString("  " + ui.accent("stint start interactive --yes --min-measured-download-mbps 50") + "\n")
+	b.WriteString("  " + ui.accent("stint plan interactive --hours 5 --json") + "\n")
+	b.WriteString("  " + ui.accent("stint status && stint perf --runs 5") + "\n\n")
+	b.WriteString(ui.muted("Run `stint help <command>` or `stint <command> --help` for full flags.\nSafety: plan never rents; start confirms cost before paying; compute is\ndestroyed automatically at the session deadline; credentials stay local.\n"))
 	fmt.Print(b.String())
 }
 
@@ -338,11 +336,11 @@ func printCommandHelp(name string) {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "STINT %s\n\n", strings.ToUpper(cmd.name))
-	b.WriteString(cmd.detail + "\n\n")
-	b.WriteString("USAGE\n  " + cmd.usage + "\n\n")
+	fmt.Fprintf(&b, "%s\n\n", ui.accent("STINT "+strings.ToUpper(cmd.name)))
+	b.WriteString(ui.muted(cmd.detail) + "\n\n")
+	b.WriteString(ui.bold("USAGE") + "\n  " + ui.accent(cmd.usage) + "\n\n")
 	if len(cmd.args) > 0 {
-		b.WriteString("ARGS\n")
+		b.WriteString(ui.bold("ARGS") + "\n")
 		width := 0
 		for _, arg := range cmd.args {
 			if len(arg.name) > width {
@@ -350,12 +348,12 @@ func printCommandHelp(name string) {
 			}
 		}
 		for _, arg := range cmd.args {
-			fmt.Fprintf(&b, "  %-*s  %s\n", width, arg.name, arg.purpose)
+			fmt.Fprintf(&b, "  %s  %s\n", ui.pad(ui.bold(arg.name), width), ui.muted(arg.purpose))
 		}
 		b.WriteString("\n")
 	}
 	if len(cmd.flags) > 0 {
-		b.WriteString("FLAGS\n")
+		b.WriteString(ui.bold("FLAGS") + "\n")
 		width := 0
 		for _, f := range cmd.flags {
 			if len(f.nameColumn()) > width {
@@ -368,18 +366,18 @@ func printCommandHelp(name string) {
 		b.WriteString("\n")
 	}
 	if len(cmd.examples) > 0 {
-		b.WriteString("EXAMPLES\n")
+		b.WriteString(ui.bold("EXAMPLES") + "\n")
 		for _, example := range cmd.examples {
-			b.WriteString("  " + example + "\n")
+			b.WriteString("  " + ui.accent(example) + "\n")
 		}
 		b.WriteString("\n")
 	}
 	if len(cmd.notes) > 0 {
-		b.WriteString("NOTES\n")
+		b.WriteString(ui.bold("NOTES") + "\n")
 		for _, note := range cmd.notes {
 			b.WriteString("  - " + note + "\n")
 		}
 	}
-	b.WriteString("\nRun `stint help` for the full command overview.\n")
+	b.WriteString("\n" + ui.muted("Run `stint help` for the full command overview.\n"))
 	fmt.Print(b.String())
 }

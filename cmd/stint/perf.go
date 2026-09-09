@@ -92,14 +92,14 @@ func runPerf(args []string) error {
 	}
 	prompt := buildPerfPrompt(*promptTokens)
 
-	fmt.Println("SESSION PERFORMANCE")
+	fmt.Println(ui.accent("SESSION PERFORMANCE"))
 	fmt.Println()
-	fmt.Printf("GPU             %s\n", state.GPUModel)
-	fmt.Printf("Runtime         %s\n", runtimeForState(state))
-	fmt.Printf("Context         %d\n", contextForState(state))
-	fmt.Printf("Instance        %d\n", state.InstanceID)
-	fmt.Printf("Prompt depth    %d tokens requested\n", *promptTokens)
-	fmt.Printf("Benchmark       %d runs x %d max tokens\n", *runs, *maxTokens)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("GPU"), 16), state.GPUModel)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Runtime"), 16), runtimeForState(state))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Context"), 16), fmt.Sprintf("%d", contextForState(state)))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Instance"), 16), fmt.Sprintf("%d", state.InstanceID))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Prompt depth"), 16), fmt.Sprintf("%d tokens requested", *promptTokens))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Benchmark"), 16), fmt.Sprintf("%d runs x %d max tokens", *runs, *maxTokens))
 	fmt.Println()
 
 	// llama.cpp may close an HTTP keep-alive connection between streamed POSTs.
@@ -130,30 +130,30 @@ func runPerf(args []string) error {
 
 	avg := averagePerf(samples)
 	fmt.Println()
-	fmt.Println("AVERAGE")
-	fmt.Printf("TTFT            %.2fs\n", avg.TTFT.Seconds())
-	fmt.Printf("Total latency   %.2fs\n", avg.Total.Seconds())
+	fmt.Println(ui.bold("AVERAGE"))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("TTFT"), 16), fmt.Sprintf("%.2fs", avg.TTFT.Seconds()))
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Total latency"), 16), fmt.Sprintf("%.2fs", avg.Total.Seconds()))
 	if avg.PromptTokens > 0 {
-		fmt.Printf("Prompt tokens   %d\n", avg.PromptTokens)
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Prompt tokens"), 16), fmt.Sprintf("%d", avg.PromptTokens))
 	}
 	if avg.CompletionTokens > 0 {
-		fmt.Printf("Output tokens   %d\n", avg.CompletionTokens)
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("Output tokens"), 16), fmt.Sprintf("%d", avg.CompletionTokens))
 	}
-	fmt.Printf("Decode speed    %.1f tok/s\n", avg.DecodeTokensSec)
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Decode speed"), 16), fmt.Sprintf("%.1f tok/s", avg.DecodeTokensSec))
 	if gpu, err := samplePerfGPU(context.Background(), paths, state); err == nil && gpu.MemoryUsedMiB != nil && gpu.MemoryTotalMiB != nil {
 		extra := ""
 		if gpu.UtilizationPercent != nil {
 			extra = fmt.Sprintf(" (utilization %.0f%%)", *gpu.UtilizationPercent)
 		}
-		fmt.Printf("VRAM at depth   %.1f / %.1f GB%s\n", *gpu.MemoryUsedMiB/1024, *gpu.MemoryTotalMiB/1024, extra)
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("VRAM at depth"), 16), fmt.Sprintf("%.1f / %.1f GB%s", *gpu.MemoryUsedMiB/1024, *gpu.MemoryTotalMiB/1024, extra))
 	} else if err != nil {
-		fmt.Printf("VRAM at depth   unavailable · %s\n", err)
+		fmt.Printf("%s%s\n", ui.pad(ui.muted("VRAM at depth"), 16), fmt.Sprintf("unavailable · %s", err))
 	}
 	if err := savePerformanceSample(paths, state, avg, time.Now().UTC()); err != nil {
 		return fmt.Errorf("benchmark completed but cache write failed: %w", err)
 	}
-	fmt.Println("Sample          cached for status/dashboard telemetry")
-	fmt.Println("\nUses the local OpenAI-compatible endpoint, so llama.cpp and NInfer are measured through the same path.")
+	fmt.Printf("%s%s\n", ui.pad(ui.muted("Sample"), 16), "cached for status/dashboard telemetry")
+	fmt.Println("\n" + ui.muted("Uses the local OpenAI-compatible endpoint, so llama.cpp and NInfer are measured through the same path."))
 	return nil
 }
 
