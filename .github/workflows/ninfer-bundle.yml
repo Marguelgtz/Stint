@@ -1,0 +1,69 @@
+name: NInfer runtime bundle
+
+on:
+  pull_request:
+    paths:
+      - images/ninfer/Bundle.Dockerfile
+      - .github/workflows/ninfer-bundle.yml
+      - docs/NINFER_BUNDLE.md
+  push:
+    branches:
+      - main
+    paths:
+      - images/ninfer/Bundle.Dockerfile
+      - .github/workflows/ninfer-bundle.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ninfer-runtime-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build clean-base runtime smoke target
+        run: |
+          docker build \
+            --file images/ninfer/Bundle.Dockerfile \
+            --target smoke \
+            images/ninfer
+
+      - name: Build compressed-artifact smoke target
+        run: |
+          docker build \
+            --file images/ninfer/Bundle.Dockerfile \
+            --target archive-smoke \
+            images/ninfer
+
+      - name: Export pinned runtime bundle
+        run: |
+          rm -rf dist
+          mkdir -p dist
+          docker buildx build \
+            --file images/ninfer/Bundle.Dockerfile \
+            --target bundle-artifact \
+            --output type=local,dest=dist \
+            images/ninfer
+          ls -lh dist
+          sha256sum -c dist/*.sha256
+          tar -tzf dist/*.tar.gz | sed -n '1,40p'
+
+      - name: Upload proof bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: stint-ninfer-runtime-981b685e-sm89
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30
