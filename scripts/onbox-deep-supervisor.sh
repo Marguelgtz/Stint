@@ -119,7 +119,7 @@ process_merge_requests() {
     case "$pr" in
       ''|*[!0-9]*) continue ;;
     esac
-    result="$("$publisher" merge "$state_dir" "$pr" --approval "$request" 2>>"$LOG_FILE" || true)"
+    result="$(STINT_ONBOX_GATEKEEPER=1 "$publisher" merge "$state_dir" "$pr" --approval "$request" 2>>"$LOG_FILE" || true)"
     printf '%s\n' "$result" >>"$LOG_FILE"
     if printf '%s\n' "$result" | grep -q '"result": "\(merged\|already-merged\)"'; then
       mv "$request" "$done_dir/$(basename "$request")" || true

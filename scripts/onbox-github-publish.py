@@ -517,6 +517,8 @@ def merge_gate(cfg: dict, number: int, approval: dict | None = None, expected_he
 
 def merge_pull_request(state_dir: str, number: int, approval_path: str) -> dict:
     cfg = config()
+    if os.environ.get("STINT_ONBOX_GATEKEEPER") != "1":
+        raise RuntimeError("merge execution is reserved for the GPU-side gatekeeper")
     if cfg.get("mode") != "maintenance":
         raise RuntimeError("merge operation requires STINT_GITHUB_MODE=maintenance")
     approval = json.loads(Path(approval_path).read_text(encoding="utf-8"))
