@@ -63,6 +63,8 @@ func run(args []string) error {
 		return runStartResumable(args[1:])
 	case "resume":
 		return runResume(args[1:])
+	case "ssh":
+		return runSSHAccess(args[1:])
 	case "down":
 		return runDown(args[1:])
 	case "_watchdog":
@@ -419,7 +421,7 @@ func runStatus() error {
 	case sessionstate.StatusRecoverable:
 		fmt.Println("Next action        stint resume")
 	case sessionstate.StatusReady:
-		fmt.Println("Next action        use Cline; stint down when finished")
+		fmt.Println("Next action        use Cline or stint ssh; stint down when finished")
 	default:
 		fmt.Println("Next action        wait for stint start")
 	}
@@ -522,6 +524,7 @@ Compute (paid):
   stint start interactive --hours 1
   stint start interactive --hours 1 --yes
   stint resume
+  stint ssh
   stint status
   stint down
 
