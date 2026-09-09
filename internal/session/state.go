@@ -43,6 +43,7 @@ type State struct {
 	RuntimeRequest string    `json:"runtimeRequest,omitempty"`
 	Runtime        string    `json:"runtime,omitempty"`
 	ContextTokens  int       `json:"contextTokens,omitempty"`
+	Clients        int       `json:"clients,omitempty"`
 	HourlyUSD      float64   `json:"hourlyUsd"`
 	Hours          float64   `json:"hours"`
 	StartedAt      time.Time `json:"startedAt"`
