@@ -445,6 +445,16 @@ func runOnboard(args []string) error {
 	return nil
 }
 
+// plannedRuntimeForOffer reports the runtime `stint start` would auto-select
+// for the offer's GPU so read-only plans stay consistent with paid starts.
+func plannedRuntimeForOffer(gpuModel string) string {
+	runtime, err := selectInteractiveRuntime(runtimeAuto, gpuModel)
+	if err != nil {
+		return "unknown"
+	}
+	return runtime
+}
+
 func printHumanPlan(result planOutput) {
 	selected := result.Plan.Workers[0].Offer
 	fmt.Println()
@@ -466,6 +476,7 @@ func printHumanPlan(result planOutput) {
 	}
 
 	fmt.Println("\nSESSION")
+	fmt.Printf("%-20s %s\n", "Runtime (auto)", plannedRuntimeForOffer(selected.GPUModel))
 	fmt.Printf("%-20s %.2fh\n", "Duration", result.Plan.Hours)
 	fmt.Printf("%-20s $%.2f\n", "Estimated compute", result.Plan.EstimatedTotalUSD)
 	fmt.Printf("%-20s $%.2f/hr\n", "Hourly ceiling", result.Plan.Profile.GPU.MaxHourlyUSD)

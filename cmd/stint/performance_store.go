@@ -15,16 +15,16 @@ import (
 const performanceSampleFileName = "performance.json"
 
 type performanceRecord struct {
-	Version          int       `json:"version"`
-	InstanceID       int64     `json:"instanceId"`
-	Runtime          string    `json:"runtime"`
-	ContextTokens    int       `json:"contextTokens"`
-	SampledAt        time.Time `json:"sampledAt"`
-	TTFTMilliseconds float64   `json:"ttftMilliseconds"`
-	TotalMilliseconds float64  `json:"totalMilliseconds"`
-	PromptTokens     int       `json:"promptTokens,omitempty"`
-	CompletionTokens int       `json:"completionTokens,omitempty"`
-	DecodeTokensSec  float64   `json:"decodeTokensSec"`
+	Version           int       `json:"version"`
+	InstanceID        int64     `json:"instanceId"`
+	Runtime           string    `json:"runtime"`
+	ContextTokens     int       `json:"contextTokens"`
+	SampledAt         time.Time `json:"sampledAt"`
+	TTFTMilliseconds  float64   `json:"ttftMilliseconds"`
+	TotalMilliseconds float64   `json:"totalMilliseconds"`
+	PromptTokens      int       `json:"promptTokens,omitempty"`
+	CompletionTokens  int       `json:"completionTokens,omitempty"`
+	DecodeTokensSec   float64   `json:"decodeTokensSec"`
 }
 
 func performanceSamplePath(paths config.Paths) string {

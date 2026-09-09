@@ -98,6 +98,9 @@ func printSessionSnapshotHuman(snapshot sessionSnapshot, refreshed bool) {
 	fmt.Printf("Active compute     instance %d (%s)\n", snapshot.Session.InstanceID, snapshot.Session.Status)
 	fmt.Printf("GPU                %s\n", snapshot.Session.GPUModel)
 	fmt.Printf("Runtime            %s\n", snapshot.Session.Runtime)
+	if snapshot.Session.Runtime == runtimeNInfer {
+		fmt.Printf("NInfer config      %s\n", ninferConfigForContext(snapshot.Session.ContextTokens).Name)
+	}
 	fmt.Printf("Model              %s\n", snapshot.Session.Model)
 	fmt.Printf("Context            %d tokens\n", snapshot.Session.ContextTokens)
 	fmt.Printf("Rate               $%.3f/hr\n", snapshot.Cost.HourlyUSD)
@@ -232,26 +235,26 @@ func snapshotJSON(snapshot sessionSnapshot) map[string]any {
 			"tunnel":   snapshot.Health.Tunnel,
 			"watchdog": snapshot.Health.Watchdog,
 			"endpoint": map[string]any{
-				"refreshed":          snapshot.Health.Endpoint.Refreshed,
-				"healthy":            snapshot.Health.Endpoint.Healthy,
-				"statusCode":         snapshot.Health.Endpoint.StatusCode,
+				"refreshed":           snapshot.Health.Endpoint.Refreshed,
+				"healthy":             snapshot.Health.Endpoint.Healthy,
+				"statusCode":          snapshot.Health.Endpoint.StatusCode,
 				"latencyMilliseconds": float64(snapshot.Health.Endpoint.Latency) / float64(time.Millisecond),
-				"modelVisible":       snapshot.Health.Endpoint.ModelVisible,
-				"sampledAt":          snapshot.Health.Endpoint.Meta.SampledAt,
-				"error":              snapshot.Health.Endpoint.Meta.Error,
+				"modelVisible":        snapshot.Health.Endpoint.ModelVisible,
+				"sampledAt":           snapshot.Health.Endpoint.Meta.SampledAt,
+				"error":               snapshot.Health.Endpoint.Meta.Error,
 			},
 			"runtime": snapshot.Health.Runtime,
 		},
 		"gpu": snapshot.GPU,
 		"performance": map[string]any{
-			"available":          snapshot.Performance.Available,
-			"ttftMilliseconds":   float64(snapshot.Performance.TTFT) / float64(time.Millisecond),
-			"totalMilliseconds":  float64(snapshot.Performance.TotalLatency) / float64(time.Millisecond),
-			"promptTokens":       snapshot.Performance.PromptTokens,
-			"completionTokens":   snapshot.Performance.CompletionTokens,
-			"decodeTokensSec":    snapshot.Performance.DecodeTokensSec,
-			"sampledAt":          snapshot.Performance.SampledAt,
-			"ageSeconds":         snapshot.Performance.Age.Seconds(),
+			"available":         snapshot.Performance.Available,
+			"ttftMilliseconds":  float64(snapshot.Performance.TTFT) / float64(time.Millisecond),
+			"totalMilliseconds": float64(snapshot.Performance.TotalLatency) / float64(time.Millisecond),
+			"promptTokens":      snapshot.Performance.PromptTokens,
+			"completionTokens":  snapshot.Performance.CompletionTokens,
+			"decodeTokensSec":   snapshot.Performance.DecodeTokensSec,
+			"sampledAt":         snapshot.Performance.SampledAt,
+			"ageSeconds":        snapshot.Performance.Age.Seconds(),
 			"unavailableReason": snapshot.Performance.UnavailableReason,
 		},
 	}
