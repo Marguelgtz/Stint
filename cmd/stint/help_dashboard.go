@@ -1,18 +1,20 @@
 package main
 
-var cmdDashboard = cliCommand{
-	name:     "dashboard",
+var cmdDash = cliCommand{
+	name:     "dash",
+	aliases:  []string{"dashboard"},
 	section:  "diagnostics",
 	summary:  "open the live session cockpit",
 	detail:   "Opens an interactive terminal dashboard over the existing session snapshot and telemetry layers. Local timing updates every second without I/O; endpoint/runtime/GPU telemetry refreshes passively about every 10 seconds. Exiting the dashboard never destroys compute.",
-	usage:    "stint dashboard [flags]",
+	usage:    "stint dash [flags]",
 	flags: []cliFlag{
 		{name: "--no-color", defaultVal: "false", purpose: "disable ANSI colors"},
 	},
-	examples: []string{"stint dashboard", "NO_COLOR=1 stint dashboard"},
+	examples: []string{"stint dash", "NO_COLOR=1 stint dash"},
 	notes: []string{
-		"Interactive mode requires a TTY; when stdout/stdin are piped, dashboard falls back to a static refreshed status snapshot.",
-		"Keys: 1 Home, 2 Performance, 3 Config, 4 Logs, r refresh, b benchmark, + extend, - shorten, d down, q exit.",
+		"`stint dashboard` remains a compatibility alias for `stint dash`.",
+		"Interactive mode requires a TTY; when stdout/stdin are piped, dash falls back to a static refreshed status snapshot.",
+		"Keys: 1 Home, 2 Performance, 3 Config, 4 Logs, arrows navigate, r refresh, b benchmark, + extend, - shorten, d down, q exit.",
 		"The dashboard never benchmarks automatically and never owns lifecycle authority.",
 		"q and Ctrl+C close only the dashboard; paid compute remains active until its deadline or an explicit down action.",
 	},
@@ -21,10 +23,10 @@ var cmdDashboard = cliCommand{
 var dashboardHelpRegistered = registerDashboardHelp()
 
 func registerDashboardHelp() bool {
-	cliCommands = append(cliCommands, cmdDashboard)
+	cliCommands = append(cliCommands, cmdDash)
 	for i := range helpSections {
 		if helpSections[i].title == "Diagnostics" {
-			helpSections[i].commands = append([]cliCommand{cmdDashboard}, helpSections[i].commands...)
+			helpSections[i].commands = append([]cliCommand{cmdDash}, helpSections[i].commands...)
 			break
 		}
 	}
