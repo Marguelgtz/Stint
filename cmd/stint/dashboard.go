@@ -749,6 +749,7 @@ func dashboardInference(value inferenceTelemetry) dash.Inference {
 	}
 	result.Agents = value.Agents
 	result.Depth = value.ResidentDepth
+	result.ContextUsed, result.Clients = dashboardClientContexts(value.Lanes)
 	if value.DecodeTokensSec != nil {
 		result.Decode = fmt.Sprintf("%.1f tok/s", *value.DecodeTokensSec)
 	}
