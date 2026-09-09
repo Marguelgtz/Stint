@@ -21,9 +21,10 @@ const discoveryPriceCeilingUSD = 0.60
 const vastOnDemandType = "on-demand"
 
 type SearchOptions struct {
-	Hours     float64
-	Limit     int
-	StorageGB float64
+	Hours          float64
+	Limit          int
+	StorageGB      float64
+	MinCUDAMaxGood float64
 }
 
 type DiscoveryStage struct {
@@ -142,6 +143,7 @@ func (c *Client) SearchOffers(ctx context.Context, profile core.Profile, options
 	}
 
 	payload := c.discoveryPayload(profile, options.Hours, limit, storageGB)
+	payload = applyMinCUDARequirement(options.MinCUDAMaxGood, payload)
 	raw, err := c.search(ctx, payload)
 	if err != nil {
 		return nil, classifySearchError(err)
@@ -150,6 +152,9 @@ func (c *Client) SearchOffers(ctx context.Context, profile core.Profile, options
 		stages, traceErr := c.traceDiscovery(ctx, profile, options.Hours, limit, storageGB)
 		if traceErr != nil {
 			return nil, traceErr
+		}
+		if options.MinCUDAMaxGood > 0 {
+			stages = append(stages, DiscoveryStage{Name: fmt.Sprintf("cuda>=%.1f", options.MinCUDAMaxGood), Count: 0})
 		}
 		return nil, &DiscoveryEmptyError{Stages: stages}
 	}
@@ -164,6 +169,9 @@ func (c *Client) SearchOffers(ctx context.Context, profile core.Profile, options
 func validateSearch(profile core.Profile, options SearchOptions) (int, float64, error) {
 	if options.Hours <= 0 || math.IsNaN(options.Hours) || math.IsInf(options.Hours, 0) {
 		return 0, 0, errors.New("search hours must be greater than zero")
+	}
+	if options.MinCUDAMaxGood < 0 || math.IsNaN(options.MinCUDAMaxGood) || math.IsInf(options.MinCUDAMaxGood, 0) {
+		return 0, 0, errors.New("minimum CUDA compatibility must be zero or greater")
 	}
 	if len(profile.GPU.PreferredModels) == 0 {
 		return 0, 0, errors.New("profile has no preferred GPU models")
