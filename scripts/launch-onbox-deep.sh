@@ -298,6 +298,7 @@ else
     "STINT_GITHUB_PR_DRAFT=${STINT_GITHUB_PR_DRAFT:-1}")
 fi
 [ -n "${STINT_R2_ENV_FILE:-}" ] && remote_env+=("STINT_ONBOX_R2_SYNC=$REMOTE_R2_SYNC" "STINT_ONBOX_R2_ARCHIVE=$REMOTE_R2_ARCHIVE" "STINT_R2_ENV_FILE=$ROOT/config/r2.env")
+[ -n "${STINT_R2_PREFIX:-}" ] && remote_env+=("STINT_R2_PREFIX=$STINT_R2_PREFIX")
 [ -n "${STINT_ONBOX_SKIP_WATCHDOG:-}" ] && remote_env+=("STINT_ONBOX_SKIP_WATCHDOG=$STINT_ONBOX_SKIP_WATCHDOG")
 remote_start=(env "${remote_env[@]}" "$REMOTE_SUPERVISOR" start -- "${args[@]}")
 remote_start_cmd="$(printf '%q ' "${remote_start[@]}")"
