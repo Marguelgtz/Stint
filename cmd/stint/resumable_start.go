@@ -47,12 +47,17 @@ func runStartResumable(args []string) (retErr error) {
 	runtimeValue := fs.String("runtime", runtimeAuto, "inference runtime: auto, ninfer, or llama.cpp")
 	contextValue := fs.String("context", "", "llama.cpp context tokens (1024-131072; default 16384)")
 	ninferConfigValue := fs.String("ninfer-config", ninferConfigCoding, "NInfer config: coding, precision, or native")
+	minNetworkMbps := fs.Float64("min-network-mbps", defaultMinAdvertisedNetworkMbps, "minimum Vast advertised download bandwidth in Mbps; 0 disables")
+	minMeasuredDownloadMBps := fs.Float64("min-measured-download-mbps", defaultMinMeasuredDownloadMBps, "minimum measured post-SSH download throughput in MB/s; 0 disables")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	hours, err := strconv.ParseFloat(*hoursValue, 64)
 	if err != nil || hours <= 0 {
 		return fmt.Errorf("invalid --hours value %q", *hoursValue)
+	}
+	if err := validateNetworkMinimums(*minNetworkMbps, *minMeasuredDownloadMBps); err != nil {
+		return err
 	}
 	runtimeRequest, err := normalizeRuntime(*runtimeValue)
 	if err != nil {
@@ -106,6 +111,10 @@ func runStartResumable(args []string) (retErr error) {
 			return err
 		}
 	}
+	offers = filterOffersByMinimumNetwork(offers, *minNetworkMbps)
+	if len(offers) == 0 {
+		return fmt.Errorf("no qualifying interactive offers meet the minimum advertised network %.0f Mbps; lower --min-network-mbps or retry the marketplace", *minNetworkMbps)
+	}
 	plan, err := core.CreateSessionPlan(profile, hours, offers)
 	if err != nil {
 		return err
@@ -134,6 +143,10 @@ func runStartResumable(args []string) (retErr error) {
 	fmt.Printf("GPU            %s\n", selected.GPUModel)
 	fmt.Printf("Location       %s\n", valueOr(selected.Geolocation, "unknown"))
 	fmt.Printf("Price          $%.3f/hr\n", selected.HourlyUSD)
+	fmt.Printf("Network        %.0f Mbps advertised (min %.0f)\n", selected.InetDownMBps, *minNetworkMbps)
+	if *minMeasuredDownloadMBps > 0 {
+		fmt.Printf("Probe minimum  %.1f MB/s measured\n", *minMeasuredDownloadMBps)
+	}
 	fmt.Printf("Duration cap   %.2fh\n", hours)
 	fmt.Printf("Compute cap    $%.2f\n", plan.EstimatedTotalUSD)
 	fmt.Printf("Model          %s\n", interactiveModelAlias)
@@ -200,9 +213,10 @@ func runStartResumable(args []string) (retErr error) {
 
 	fmt.Println("Renting selected offer...")
 	instanceID, err := client.CreateInstance(rootCtx, selected.ID, vast.CreateInstanceOptions{
-		Image:  vastImageForRuntime(selectedRuntime),
-		DiskGB: profile.Session.StorageGB,
-		Label:  "stint-interactive",
+		Image:   vastImageForRuntime(selectedRuntime),
+		DiskGB:  profile.Session.StorageGB,
+		Label:   "stint-interactive",
+		OnStart: vastOnStartForRuntime(selectedRuntime),
 	})
 	if err != nil {
 		return err
@@ -249,6 +263,26 @@ func runStartResumable(args []string) (retErr error) {
 	state.LastError = ""
 	if err := sessionstate.Save(paths, state); err != nil {
 		return err
+	}
+
+	if *minMeasuredDownloadMBps > 0 {
+		fmt.Println("Checking remote download throughput before model startup...")
+		measured, probeErr := measureRemoteDownloadMBps(rootCtx, paths, state)
+		if probeErr != nil {
+			if destroyErr := destroyNetworkRejectedInstance(client, paths, state); destroyErr != nil {
+				return fmt.Errorf("network qualification probe failed (%v), and cleanup of instance %d failed: %w", probeErr, state.InstanceID, destroyErr)
+			}
+			created = false
+			return fmt.Errorf("network qualification probe failed; destroyed instance %d before model download: %w", state.InstanceID, probeErr)
+		}
+		fmt.Printf("Network probe   %.1f MB/s measured (min %.1f)\n", measured, *minMeasuredDownloadMBps)
+		if measured < *minMeasuredDownloadMBps {
+			if destroyErr := destroyNetworkRejectedInstance(client, paths, state); destroyErr != nil {
+				return fmt.Errorf("instance %d measured %.1f MB/s below the %.1f MB/s minimum, and cleanup failed: %w", state.InstanceID, measured, *minMeasuredDownloadMBps, destroyErr)
+			}
+			created = false
+			return fmt.Errorf("instance %d measured %.1f MB/s below the %.1f MB/s minimum and was destroyed before model download; rerun stint start or lower --min-measured-download-mbps", state.InstanceID, measured, *minMeasuredDownloadMBps)
+		}
 	}
 
 	state.Status = sessionstate.StatusRuntimeBootstrap

@@ -31,7 +31,12 @@ func TestRemoteModelLaunchUsesPIDTracking(t *testing.T) {
 	if strings.Contains(command, "\npkill -f ") {
 		t.Fatal("remote model launch must not use pkill -f; it can kill the SSH shell that contains the pattern")
 	}
-	for _, required := range []string{"/workspace/stint/llama.pid", "pgrep -x llama-server", "nohup /workspace/stint/llama.cpp/build/bin/llama-server"} {
+	for _, required := range []string{
+		"/workspace/stint/llama.pid",
+		"pgrep -x llama-server",
+		"nohup bash -c",
+		"exec /workspace/stint/llama.cpp/build/bin/llama-server",
+	} {
 		if !strings.Contains(command, required) {
 			t.Fatalf("remote model launch missing %q", required)
 		}
