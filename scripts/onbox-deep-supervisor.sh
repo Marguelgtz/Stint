@@ -315,6 +315,10 @@ PY
 destroy_on_completion() {
   local policy="${STINT_ONBOX_COMPLETION_POLICY:-report-and-destroy}"
   [ "$policy" = "report-and-destroy" ] || return 0
+  if [ "${STINT_ONBOX_SKIP_WATCHDOG:-0}" = 1 ]; then
+    write_autodestroy_state skipped
+    return 0
+  fi
   write_autodestroy_state running
   # `down` owns the provider API destroy and clears the on-box session state.
   # The deadline watchdog remains the fallback if publication or this call
