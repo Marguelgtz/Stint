@@ -86,6 +86,12 @@ func runDeepResume(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := deep.ValidateResumePolicy(state.GitHub, state.GitHub); err != nil {
+		return fmt.Errorf("persisted GitHub policy: %w", err)
+	}
+	if err := deep.ValidateResumeCompletionPolicy(state.Completion, state.Completion); err != nil {
+		return fmt.Errorf("persisted completion policy: %w", err)
+	}
 
 	// 2. Never run two coordinators for one session.
 	if _, err := assertNoLiveCoordinator(paths.StateDir, state.SessionID); err != nil {
@@ -109,11 +115,11 @@ func runDeepResume(args []string) error {
 	//    (remote worker) must be reachable. The worker is session-level
 	//    policy, reconstructed from the persisted settings.
 	exec := resolveExecSettings(&state, execOverrides{
-		autoApprove: f.autoApproveValue(),
-		provider:    f.provider,
-		clineConfig: f.clineConfig,
-		taskTimeout: f.taskTimeout,
-		reasoning:  f.reasoning,
+		autoApprove:  f.autoApproveValue(),
+		provider:     f.provider,
+		clineConfig:  f.clineConfig,
+		taskTimeout:  f.taskTimeout,
+		reasoning:    f.reasoning,
 		reasoningSet: f.reasoningSet,
 	})
 	workerID := exec.Worker
@@ -259,11 +265,11 @@ func reanchorDeadline(state *deep.DeepState, sessionDeadline, now time.Time) (bo
 // execOverrides are the resume-time overrides on top of the session's
 // persisted executor settings.
 type execOverrides struct {
-	autoApprove *bool // nil = keep the session's value
-	provider    string
-	clineConfig string
-	taskTimeout time.Duration // zero = keep the session's value
-	reasoning  string
+	autoApprove  *bool // nil = keep the session's value
+	provider     string
+	clineConfig  string
+	taskTimeout  time.Duration // zero = keep the session's value
+	reasoning    string
 	reasoningSet bool
 }
 

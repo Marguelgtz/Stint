@@ -30,8 +30,11 @@ func BuildTaskPrompt(m Mission, t Task, attempt int, repo RepoSummary) string {
 func BuildTaskPromptWithActionPlan(m Mission, t Task, attempt int, repo RepoSummary, actionPlanPath string) string {
 	var b strings.Builder
 	b.WriteString("You are resuming a bounded Deep Work mission. Work only inside your working directory. ")
-	b.WriteString("Never push, open pull requests, or run destructive commands. ")
+	b.WriteString("Do not bypass the repository policy or run destructive commands. ")
 	b.WriteString("When you finish, state exactly which acceptance criteria you met, with the evidence you checked.\n\n")
+	if section := GitHubPolicySection(m.GitHub); section != "" {
+		b.WriteString(section)
+	}
 
 	fmt.Fprintf(&b, "MISSION: %s\n", m.Name)
 	fmt.Fprintf(&b, "OBJECTIVE: %s\n", strings.TrimSpace(m.Objective))
@@ -49,6 +52,11 @@ func BuildTaskPromptWithActionPlan(m Mission, t Task, attempt int, repo RepoSumm
 	}
 
 	fmt.Fprintf(&b, "\nCURRENT TASK: %s (attempt %d)\n", t.ID, attempt)
+	phase := t.Phase
+	if phase == "" {
+		phase = PhaseWork
+	}
+	fmt.Fprintf(&b, "TASK PHASE: %s\n", phase)
 	fmt.Fprintf(&b, "TASK OBJECTIVE: %s\n", t.Objective)
 	if t.Reasoning != "" {
 		fmt.Fprintf(&b, "TASK REASONING EFFORT: %s\n", t.Reasoning)
@@ -93,5 +101,35 @@ func BuildTaskPromptWithActionPlan(m Mission, t Task, attempt int, repo RepoSumm
 	b.WriteString("2. Keep changes minimal and confined to this working directory.\n")
 	b.WriteString("3. Verify the acceptance criteria yourself before claiming completion.\n")
 	b.WriteString("4. If you are blocked, state precisely what blocks you and what you already tried.\n")
+	return b.String()
+}
+
+// GitHubPolicySection describes the repository capabilities granted to the
+// worker. It is deliberately explicit because the executor is a fresh
+// process and must not infer authority from a prior conversation.
+func GitHubPolicySection(policy GitHubPolicy) string {
+	mode, _ := NormalizeGitHubMode(string(policy.Mode))
+	if mode == GitHubNone {
+		return "GITHUB POLICY (mode: none)\nGitHub side effects are disabled. You may inspect local repository state, but do not push, open or update pull requests, reply to comments, or merge.\n\n"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "GITHUB POLICY (mode: %s)\n", mode)
+	fmt.Fprintf(&b, "repository: %s\nbase: %s\napproval: %s\n", policy.Repository, policy.Base, policy.Approval)
+	if len(policy.AllowedAuthors) > 0 {
+		fmt.Fprintf(&b, "allowed PR authors: %s\n", strings.Join(policy.AllowedAuthors, ", "))
+	}
+	b.WriteString("You may inspect pull requests and review evidence. ")
+	b.WriteString("Use only the configured repository and preserve its declared base branch.\n")
+	b.WriteString("GPU-side GitHub operations are available through `$STINT_ONBOX_GITHUB_PUBLISH`; credentials are already provided through its protected environment and must never be printed or copied.\n")
+	b.WriteString("If STINT_OPERATOR_BOUNDARY_FILE is set, read it to preserve the operator checkout's dirty/untracked boundary in the action plan and handoff.\n")
+	b.WriteString("The detached supervisor stores the compact one-time PR inventory at the session state directory as `pr-inventory.json`; fetch detailed context only for the PR under review.\n")
+	b.WriteString("You may commit changes in the session worktree, push session-owned branches, open or update the session's pull requests, and reply to review comments.\n")
+	b.WriteString("Never force-push, delete branches, retarget or close pull requests, use administrator overrides, or expose credentials.\n")
+	if mode == GitHubMaintenance {
+		b.WriteString("Maintenance mode also permits narrowly scoped repairs on explicitly selected existing PR heads and submitting merge requests.\n")
+		b.WriteString("You propose repairs and merge decisions; a deterministic GPU-side gatekeeper performs the actual merge only after every merge gate passes.\n")
+		b.WriteString("Use the on-box publisher commands `inventory`, `context <pr>`, `reply <pr> <body>`, `record <state-dir> <operation> <result> <reason>`, `gate <pr> --approval <file>`, and `request-merge <state-dir> <pr> --approval <file>`; the supervisor gatekeeper performs the actual merge after approval evidence is recorded.\n")
+	}
+	b.WriteString("\n")
 	return b.String()
 }

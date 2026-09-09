@@ -3,7 +3,9 @@
 #
 # Required environment: STINT_BOX_HOST, STINT_BOX_PORT, STINT_BOX_KEY,
 # STINT_MISSION, STINT_REPO, STINT_GITHUB_TOKEN_FILE,
-# STINT_GITHUB_REPOSITORY, and STINT_GITHUB_BASE. The script exits after the
+# STINT_GITHUB_REPOSITORY, and STINT_GITHUB_BASE. Set STINT_BASELINE_REF to
+# pin a clean candidate branch (for example stint/provenance-easy-wins).
+# The script exits after the
 # remote supervisor reports RUNNING; it never starts a local Deep Work
 # coordinator, uploader, git publisher, or model tunnel.
 set -Eeuo pipefail
@@ -24,6 +26,10 @@ SKIP_GITHUB="${STINT_ONBOX_SKIP_GITHUB:-0}"
 GITHUB_TOKEN_LOCAL="${STINT_GITHUB_TOKEN_FILE:-}"
 GITHUB_REPOSITORY="${STINT_GITHUB_REPOSITORY:-}"
 GITHUB_BASE="${STINT_GITHUB_BASE:-}"
+GITHUB_MODE="${STINT_GITHUB_MODE:-}"
+GITHUB_ALLOWED_AUTHORS="${STINT_GITHUB_ALLOWED_AUTHORS:-}"
+GITHUB_APPROVAL="${STINT_GITHUB_APPROVAL:-}"
+COMPLETION_POLICY="${STINT_ONBOX_COMPLETION_POLICY:-}"
 ACTION_PLAN_LOCAL="${STINT_ONBOX_ACTION_PLAN:-}"
 ACTION_PLAN_TARGET="${STINT_ONBOX_ACTION_PLAN_PATH:-}"
 REMOTE_BIN="$ROOT/bin/stint"
@@ -34,10 +40,12 @@ REMOTE_GITHUB_PUBLISH="$ROOT/onbox-github-publish.py"
 REMOTE_GITHUB_TOKEN="$ROOT/config/github.token"
 REMOTE_MISSION="$ROOT/mission.md"
 REMOTE_ACTION_PLAN_SEED="$ROOT/action-plan.seed.md"
+REMOTE_BOUNDARY="$ROOT/operator-boundary.json"
 REMOTE_REPO="$ROOT/repo"
 REMOTE_READY="$ROOT/runtime/RUNNING.json"
 TOKEN_TMP=""
 REPO_STAGE=""
+BOUNDARY_TMP=""
 TRANSFER_ATTEMPTS="${STINT_ONBOX_TRANSFER_ATTEMPTS:-5}"
 TRANSFER_RETRY_SECONDS="${STINT_ONBOX_TRANSFER_RETRY_SECONDS:-3}"
 
@@ -60,6 +68,7 @@ retry_step() {
 cleanup_local() {
   [ -z "$TOKEN_TMP" ] || rm -f "$TOKEN_TMP"
   [ -z "$REPO_STAGE" ] || rm -rf "$REPO_STAGE"
+  [ -z "$BOUNDARY_TMP" ] || rm -f "$BOUNDARY_TMP"
 }
 trap cleanup_local EXIT
 
@@ -67,9 +76,53 @@ trap cleanup_local EXIT
 [ -n "$KEY" ] || die "STINT_BOX_KEY is required"
 [ -n "$MISSION_LOCAL" ] && [ -r "$MISSION_LOCAL" ] || die "STINT_MISSION must name a readable mission"
 [ -n "$REPO_LOCAL" ] && git -C "$REPO_LOCAL" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "STINT_REPO must name a git repository or linked worktree"
-SOURCE_HEAD="$(git -C "$REPO_LOCAL" rev-parse HEAD)"
+BASELINE_REF="${STINT_BASELINE_REF:-HEAD}"
+SOURCE_HEAD="$(git -C "$REPO_LOCAL" rev-parse "$BASELINE_REF^{commit}" 2>/dev/null || true)"
+[ -n "$SOURCE_HEAD" ] || die "STINT_BASELINE_REF does not resolve to a commit: $BASELINE_REF"
 SOURCE_ORIGIN="$(git -C "$REPO_LOCAL" remote get-url origin 2>/dev/null || true)"
 [ -n "$SOURCE_ORIGIN" ] || die "STINT_REPO must have an origin remote"
+BOUNDARY_TMP="$(mktemp)"
+python3 - "$REPO_LOCAL" "$BASELINE_REF" "$SOURCE_HEAD" "$BOUNDARY_TMP" <<'PY'
+import json, subprocess, sys
+repo, ref, head, path = sys.argv[1:]
+status = subprocess.check_output(["git", "-C", repo, "status", "--short"], text=True)
+branch = subprocess.check_output(["git", "-C", repo, "branch", "--show-current"], text=True).strip()
+payload = {"repository": repo, "operatorBranch": branch, "baselineRef": ref, "baselineHead": head, "status": status.splitlines()}
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(payload, stream, indent=2)
+    stream.write("\n")
+PY
+
+# Read policy metadata once on the operator side so the GPU supervisor gets
+# the same explicit capability boundary without transferring a token through
+# command arguments or prompts. The mission remains the source of truth.
+mapfile -t mission_policy < <(python3 - "$MISSION_LOCAL" <<'PY'
+import sys
+section = ""
+values = {"mode":"", "repository":"", "base":"", "allowed-authors":"", "approval":"", "completion":""}
+for raw in open(sys.argv[1], encoding="utf-8"):
+    line = raw.strip()
+    if line.startswith("## "):
+        section = line[3:].strip().lower()
+        continue
+    if ":" not in line:
+        continue
+    key, value = line.split(":", 1)
+    key, value = key.strip().lower(), value.strip()
+    if section == "github" and key in values:
+        values[key] = value
+    if section == "completion" and key == "policy":
+        values["completion"] = value
+for key in ("mode", "repository", "base", "allowed-authors", "approval", "completion"):
+    print(values[key])
+PY
+)
+GITHUB_MODE="${GITHUB_MODE:-${mission_policy[0]:-}}"
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-${mission_policy[1]:-}}"
+GITHUB_BASE="${GITHUB_BASE:-${mission_policy[2]:-}}"
+GITHUB_ALLOWED_AUTHORS="${GITHUB_ALLOWED_AUTHORS:-${mission_policy[3]:-}}"
+GITHUB_APPROVAL="${GITHUB_APPROVAL:-${mission_policy[4]:-}}"
+COMPLETION_POLICY="${COMPLETION_POLICY:-${mission_policy[5]:-report-and-destroy}}"
 if [ -n "$ACTION_PLAN_LOCAL" ]; then
   case "$ACTION_PLAN_LOCAL" in
     /*) ACTION_PLAN_SOURCE="$ACTION_PLAN_LOCAL" ;;
@@ -165,12 +218,14 @@ git clone --quiet --no-hardlinks --no-checkout "$REPO_LOCAL" "$REPO_STAGE" || di
 git -C "$REPO_STAGE" checkout --quiet --detach "$SOURCE_HEAD" || die "failed to checkout staged repository HEAD"
 git -C "$REPO_STAGE" remote set-url origin "$SOURCE_ORIGIN"
 
-echo "transferring pinned Stint runtime and mission repository"
+echo "transferring pinned Stint runtime and mission repository baseline=$BASELINE_REF head=$SOURCE_HEAD"
 retry_step "prepare remote directories" "${SSH[@]}" "mkdir -p '$ROOT/bin' '$ROOT/runtime' '$ROOT/config' '$ROOT/state' /root/.config/stint && chmod 700 '$ROOT' '$ROOT/config' '$ROOT/state' '$ROOT/runtime' /root/.config/stint"
 retry_step "transfer Stint binary" "${SCP[@]}" "$BIN" "root@$HOST:$REMOTE_BIN"
 retry_step "transfer supervisor" "${SCP[@]}" "$SUPERVISOR_LOCAL" "root@$HOST:$REMOTE_SUPERVISOR"
 retry_step "transfer mission" "${SCP[@]}" "$MISSION_LOCAL" "root@$HOST:$REMOTE_MISSION"
+retry_step "transfer operator boundary" "${SCP[@]}" "$BOUNDARY_TMP" "root@$HOST:$REMOTE_BOUNDARY"
 retry_step "install remote executables" "${SSH[@]}" "chmod 0755 '$REMOTE_BIN' '$REMOTE_SUPERVISOR'"
+retry_step "protect operator boundary" "${SSH[@]}" "chmod 0600 '$REMOTE_BOUNDARY'"
 retry_step "prepare remote repository" "${SSH[@]}" "rm -rf '$REMOTE_REPO' && mkdir -p '$REMOTE_REPO'"
 retry_step "transfer repository" rsync -a --delete -e "$RSYNC_SSH" "$REPO_STAGE/" "root@$HOST:$REMOTE_REPO/"
 # The staged tree preserves the operator UID during rsync. Register the exact
@@ -227,7 +282,9 @@ echo "starting detached on-box supervisor"
 remote_env=("STINT_ONBOX_BIN=$REMOTE_BIN" "STINT_ONBOX_ROOT=$ROOT" \
   "STINT_ONBOX_READY_FILE=$REMOTE_READY" "STINT_ONBOX_INSTANCE_ID=$STINT_INSTANCE_ID" \
   "STINT_ONBOX_DEADLINE=$STINT_DEADLINE" "STINT_ONBOX_CLIENTS=$CLIENTS" \
-  "STINT_ONBOX_ORIGIN=gpu-instance")
+  "STINT_ONBOX_ORIGIN=gpu-instance" "STINT_ONBOX_COMPLETION_POLICY=$COMPLETION_POLICY" \
+  "STINT_ONBOX_UNATTENDED=1" \
+  "STINT_OPERATOR_BOUNDARY_FILE=$REMOTE_BOUNDARY" "STINT_BASELINE_REF=$BASELINE_REF")
 if [ "$SKIP_GITHUB" = 1 ]; then
   remote_env+=("STINT_ONBOX_SKIP_GITHUB=1")
 else
@@ -235,6 +292,9 @@ else
     "STINT_GITHUB_TOKEN_FILE=$REMOTE_GITHUB_TOKEN" \
     "STINT_GITHUB_REPOSITORY=$GITHUB_REPOSITORY" \
     "STINT_GITHUB_BASE=$GITHUB_BASE" \
+    "STINT_GITHUB_MODE=${GITHUB_MODE:-engineering}" \
+    "STINT_GITHUB_ALLOWED_AUTHORS=$GITHUB_ALLOWED_AUTHORS" \
+    "STINT_GITHUB_APPROVAL=${GITHUB_APPROVAL:-internal}" \
     "STINT_GITHUB_PR_DRAFT=${STINT_GITHUB_PR_DRAFT:-1}")
 fi
 [ -n "${STINT_R2_ENV_FILE:-}" ] && remote_env+=("STINT_ONBOX_R2_SYNC=$REMOTE_R2_SYNC" "STINT_ONBOX_R2_ARCHIVE=$REMOTE_R2_ARCHIVE" "STINT_R2_ENV_FILE=$ROOT/config/r2.env")

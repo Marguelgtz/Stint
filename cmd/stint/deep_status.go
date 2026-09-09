@@ -54,6 +54,11 @@ func runDeepStatus(args []string) error {
 	fmt.Printf("Deep Work %s — %s (%s)\n", state.SessionID, state.MissionName, state.Phase)
 	fmt.Printf("  deadline: %s (%s remaining)\n", state.Deadline.Format(time.RFC3339), remaining.Round(time.Minute))
 	fmt.Printf("  worktree: %s (branch %s)\n", state.WorktreePath, state.Branch)
+	fmt.Printf("  GitHub:   mode=%s repository=%s base=%s approval=%s\n", state.GitHub.Mode, state.GitHub.Repository, state.GitHub.Base, state.GitHub.Approval)
+	fmt.Printf("  completion: %s\n", state.Completion)
+	if state.GitHubLedger != "" {
+		fmt.Printf("  GitHub ledger: %s\n", state.GitHubLedger)
+	}
 	if alive, pid := deep.CoordinatorAlive(paths.StateDir, state.SessionID); alive {
 		fmt.Printf("  coordinator: running (pid %d)\n", pid)
 	} else {
@@ -94,13 +99,17 @@ func runDeepStatus(args []string) error {
 		}
 	}
 	fmt.Println()
-	fmt.Printf("  %-10s %-10s %-4s %s\n", "TASK", "STATUS", "ATT", "OBJECTIVE")
+	fmt.Printf("  %-10s %-8s %-10s %-4s %s\n", "TASK", "PHASE", "STATUS", "ATT", "OBJECTIVE")
 	for _, t := range state.Tasks {
 		obj := t.Objective
 		if len(obj) > 52 {
 			obj = obj[:49] + "..."
 		}
-		fmt.Printf("  %-10s %-10s %-4d %s\n", t.ID, t.Status, t.Attempts, obj)
+		phase := t.Phase
+		if phase == "" {
+			phase = deep.PhaseWork
+		}
+		fmt.Printf("  %-10s %-8s %-10s %-4d %s\n", t.ID, phase, t.Status, t.Attempts, obj)
 		if t.Blocker != "" {
 			fmt.Printf("  %-10s %-10s %-4s  blocker: %s\n", t.ID, "", "", t.Blocker)
 		}

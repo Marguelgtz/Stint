@@ -237,6 +237,8 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 
 	if _, err := c.git.commitAll(c.state.WorktreePath, fmt.Sprintf("deep: %s handoff", c.state.SessionID)); err != nil {
 		c.logf("handoff commit: %v", err)
+	} else if head, err := c.git.headCommit(c.state.WorktreePath); err == nil {
+		c.state.HeadCommit = strings.TrimSpace(head)
 	}
 
 	c.state.Phase = deep.PhaseLanded
@@ -248,6 +250,10 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	fmt.Fprintf(c.out, "\nDeep Work landed (%s).\n", reason)
 	fmt.Fprintf(c.out, "  handoff:  %s\n", handoffPath)
 	fmt.Fprintf(c.out, "  worktree: %s (branch %s)\n", c.state.WorktreePath, c.state.Branch)
-	fmt.Fprintf(c.out, "  review locally: branch %s — merge or discard when ready.\n", c.state.Branch)
+	if c.state.GitHub.Mode == deep.GitHubNone {
+		fmt.Fprintf(c.out, "  review locally: branch %s — merge or discard when ready.\n", c.state.Branch)
+	} else {
+		fmt.Fprintf(c.out, "  review the GPU-published GitHub evidence and action ledger before landing follow-up work.\n")
+	}
 	return nil
 }

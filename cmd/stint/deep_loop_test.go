@@ -136,6 +136,26 @@ func completedResult() execResult {
 	return execResult{exitCode: 0, completed: true, finishReason: "completed", iterations: 1}
 }
 
+func TestDeepLoopPhaseSelectsReasoningLane(t *testing.T) {
+	for _, tc := range []struct {
+		phase deep.TaskPhase
+		want  string
+	}{
+		{deep.PhasePlan, deep.ReasoningXHigh},
+		{deep.PhaseWork, deep.ReasoningMedium},
+		{deep.PhaseReview, deep.ReasoningXHigh},
+		{deep.PhaseClose, deep.ReasoningXHigh},
+	} {
+		env := newTestEnv(t, nil, 1)
+		task := env.state.Tasks[0]
+		task.Phase = tc.phase
+		in := env.coord.execInputFor(task)
+		if in.reasoning != tc.want {
+			t.Errorf("phase %s reasoning=%q, want %q", tc.phase, in.reasoning, tc.want)
+		}
+	}
+}
+
 func failedResult() execResult {
 	return execResult{exitCode: 1, completed: false, finishReason: "error"}
 }

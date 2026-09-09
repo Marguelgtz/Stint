@@ -286,7 +286,7 @@ Subcommands:
 			"stint deep stop",
 		},
 		notes: []string{
-			"Work happens in a Stint-owned worktree (<repo>/.stint-deep/<session>) on branch stint/deep-<session>; your active checkout is never touched and nothing is pushed.",
+			"Work happens in a Stint-owned worktree (<repo>/.stint-deep/<session>) on branch stint/deep-<session>; your active checkout is never touched. GitHub pushes, PR updates, and merges are controlled by the mission's explicit policy.",
 			"State and the handoff live under ~/.local/state/stint/deep/<session>/; the handoff is also written to the worktree root.",
 			"Safety: auto-approval is off by default; grant the commands a mission needs with repeatable --allow-command prefixes, and every invocation, verification run, and state event is recorded in incidents.jsonl (recent tail: `stint deep status`).",
 			"The mission file must have an Objective and at least one task ('- [ ] ID: objective'); see docs/DEEP_WORK.md (DWX-011) for the full skeleton.",

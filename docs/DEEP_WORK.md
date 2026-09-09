@@ -263,9 +263,10 @@ persisted list, never a new one.
 | `…/<session-id>/mission.md` | copy of the mission as parsed |
 | `…/<session-id>/coordinator.log` | append-only coordinator decisions (invocations, transitions, landing reason) |
 | `…/<session-id>/incidents.jsonl` | machine-readable safety log: the command policy, every executor invocation, every verification run (command + result), checkpoint/state failures, stops, landing (`stint deep status` shows the recent tail) |
+| `…/<session-id>/github-actions.jsonl` | append-only GPU-side GitHub action ledger (pushes, PR updates, replies, gates, and merge results) |
 | `…/<session-id>/handoff.md` | the landing report |
 | `<repo>/.stint-deep/<session-id>/` | the Stint-owned worktree (left in place for your review) |
-| branch `stint/deep-<session-id>` | local commits: task checkpoints + handoff commit. Never pushed |
+| branch `stint/deep-<session-id>` | session worktree commits; engineering mode may publish session-owned branches and PRs |
 
 Session IDs are `YYYYMMDD-HHMMSS` (UTC), so they sort chronologically and read well in
 branches and logs.
@@ -299,6 +300,24 @@ section, adjust the mission (or add tasks), and start a new session; or run
 `stint deep resume` to pick the same session back up where the handoff left off — the
 loop simply keeps working the tasks that were not yet verified.
 
+### Repository operation modes
+
+Mission files may include a `## GitHub` policy. Missing policy keeps the legacy
+local-only behavior. `engineering` permits repository/PR inspection, commits,
+pushes of session-owned branches, PR creation/update, and review replies. It
+never permits merges, force-pushes, branch deletion, retargeting, closing, or
+administrator overrides. `maintenance` additionally permits narrowly scoped
+repairs on selected existing PR heads and merge requests; a deterministic GPU
+gatekeeper performs a merge only after every gate passes. The mission's
+`allowed-authors`, declared base, approval policy, phase, and completion policy
+are persisted in `deep.json` and cannot be broadened on resume.
+
+For `approval: internal`, a review task writes an approval JSON record containing
+`decision: approved`, the reviewed `headSha`, non-empty `evidence`, and the exact
+`filesReviewed` list. `request-merge` queues that record; the detached supervisor
+re-fetches all GitHub state and executes the merge only when its deterministic
+gate accepts the unchanged evidence.
+
 ### Deep Work dashboard
 
 `stint deep dash` is separate from `stint dash`: the former monitors execution
@@ -316,9 +335,12 @@ closes the dashboard.
 
 - **Isolation**: work happens only in the Stint-owned worktree; your active checkout is
   never mutated by the coordinator.
-- **Local only**: the coordinator commits to the `stint/deep-<session-id>` branch. It
-  never pushes, opens PRs, merges, or fetches. Landing leaves the worktree in place so
-  *you* decide merge-or-discard.
+- **Repository authority**: `none` is local-only. Engineering and maintenance
+  capabilities are explicit in the mission and recorded in the GitHub action
+  ledger. Maintenance merges require owner allowlisting, clean mergeability,
+  stable head SHA, resolved comments, passing checks, dependency order, and an
+  xhigh approval record. Deep Work-generated branches (`stint/deep-*`) remain
+  excluded from automatic maintenance merges.
 - **Bounded spend**: one invocation is capped by `--task-timeout` (hard process-group
   kill); the session is capped by the compute deadline, and the coordinator lands before
   it. Deep Work never extends or rents compute — that stays with `stint start/extend`,

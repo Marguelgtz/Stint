@@ -219,6 +219,10 @@ func runDeepStart(args []string) error {
 
 	state := deep.NewState(sessionID, mission, f.repoPath, worktree, deadline, landBefore, f.maxAttempts, now)
 	state.BaseCommit = baseCommit
+	state.HeadCommit = baseCommit
+	if mission.GitHub.Mode != deep.GitHubNone {
+		state.GitHubLedger = filepath.Join(paths.StateDir, "deep", sessionID, "github-actions.jsonl")
+	}
 	if f.actionPlan != "" {
 		state.Tasks = append([]deep.Task{{
 			ID:         "PLAN-001",
@@ -226,6 +230,7 @@ func runDeepStart(args []string) error {
 			Acceptance: "the living action plan exists at the requested path and records decisions, risks, next steps, and evidence pointers consistent with the mission and repository state",
 			Verify:     "test -s " + shellQuote(f.actionPlan),
 			Reasoning:  deep.ReasoningXHigh,
+			Phase:      deep.PhasePlan,
 			Status:     deep.StatusQueued,
 			Source:     "coordinator",
 		}}, state.Tasks...)

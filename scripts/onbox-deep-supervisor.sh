@@ -91,6 +91,43 @@ publish_once() {
   "$publisher" sync "$state_dir" >>"$LOG_FILE" 2>&1
 }
 
+inventory_once() {
+  [ "${STINT_ONBOX_SKIP_GITHUB:-0}" = 1 ] && return 0
+  local publisher="${STINT_ONBOX_GITHUB_PUBLISH:-}"
+  [ -n "$publisher" ] && [ -x "$publisher" ] || return 1
+  local state_dir output
+  state_dir="$(latest_state_dir)" || return 0
+  output="$state_dir/pr-inventory.json"
+  [ -s "$output" ] && return 0
+  "$publisher" inventory --output "$output" >>"$LOG_FILE" 2>&1
+}
+
+process_merge_requests() {
+  [ "${STINT_ONBOX_SKIP_GITHUB:-0}" = 1 ] && return 0
+  [ "${STINT_GITHUB_MODE:-}" = "maintenance" ] || return 0
+  local publisher="${STINT_ONBOX_GITHUB_PUBLISH:-}"
+  [ -n "$publisher" ] && [ -x "$publisher" ] || return 1
+  local state_dir requests request pr result done_dir
+  state_dir="$(latest_state_dir)" || return 0
+  requests="$state_dir/merge-requests"
+  [ -d "$requests" ] || return 0
+  done_dir="$requests/completed"
+  mkdir -p "$done_dir"
+  for request in "$requests"/*.json; do
+    [ -f "$request" ] || continue
+    pr="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pr", ""))' "$request" 2>/dev/null || true)"
+    case "$pr" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    result="$("$publisher" merge "$state_dir" "$pr" --approval "$request" 2>>"$LOG_FILE" || true)"
+    printf '%s\n' "$result" >>"$LOG_FILE"
+    if printf '%s\n' "$result" | grep -q '"result": "\(merged\|already-merged\)"'; then
+      mv "$request" "$done_dir/$(basename "$request")" || true
+      "$publisher" inventory --output "$state_dir/pr-inventory.json" >>"$LOG_FILE" 2>&1 || true
+    fi
+  done
+}
+
 publish_final() {
   [ "${STINT_ONBOX_SKIP_GITHUB:-0}" = 1 ] && return 0
   local attempts="${STINT_ONBOX_PUBLISH_RETRIES:-12}"
@@ -115,6 +152,7 @@ deep_root, out_path = sys.argv[1:]
 latest = os.path.join(deep_root, "latest")
 state = {}
 publication = {}
+session_dir = ""
 if os.path.isfile(latest):
     try:
         session = open(latest, encoding="utf-8").read().strip()
@@ -135,6 +173,7 @@ for task in tasks:
     status = task.get("status", "unknown")
     counts[status] = counts.get(status, 0) + 1
 active = next((task.get("id", "") for task in tasks if task.get("status") == "active"), "")
+active_phase = next((task.get("phase", "work") for task in tasks if task.get("status") == "active"), "")
 head = ""
 worktree = state.get("worktreePath", "")
 if worktree:
@@ -144,17 +183,58 @@ if worktree:
         pass
 checkpoints = publication.get("checkpoints") or []
 handoff = publication.get("handoff") or {}
+ledger_entries = []
+ledger_path = state.get("githubLedger", "")
+if not ledger_path and session_dir:
+    ledger_path = os.path.join(session_dir, "github-actions.jsonl")
+if ledger_path and os.path.isfile(ledger_path):
+    try:
+        with open(ledger_path, encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    ledger_entries.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception:
+        pass
+last_action = ledger_entries[-1] if ledger_entries else {}
+action_counts = {}
+for entry in ledger_entries:
+    operation = entry.get("operation", "")
+    action_counts[operation] = action_counts.get(operation, 0) + 1
+autodestroy = {"state": "pending"}
+autodestroy_path = os.path.join(os.path.dirname(out_path), "autodestroy.json")
+if os.path.isfile(autodestroy_path):
+    try:
+        with open(autodestroy_path, encoding="utf-8") as stream:
+            autodestroy = json.load(stream)
+    except Exception:
+        pass
 payload = {
     "observedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "session": state.get("sessionId", ""),
     "phase": state.get("phase", "starting"),
     "activeTask": active,
+    "activeTaskPhase": active_phase,
     "taskCounts": counts,
     "lastCheckpoint": head,
     "deadline": state.get("deadline", ""),
     "updatedAt": state.get("updatedAt", ""),
     "worker": (state.get("exec") or {}).get("worker", ""),
     "model": (state.get("exec") or {}).get("model", ""),
+    "github": {
+        "mode": (state.get("github") or {}).get("mode", "none"),
+        "head": head or state.get("headCommit", ""),
+        "base": (state.get("github") or {}).get("base", ""),
+        "ledger": ledger_path,
+        "reviewed": action_counts.get("review", 0) + action_counts.get("merge-gate", 0),
+        "repaired": action_counts.get("repair", 0),
+        "merged": action_counts.get("merge", 0),
+        "skipped": action_counts.get("skip", 0),
+        "lastAction": last_action,
+    },
+    "completion": state.get("completion", "report-and-destroy"),
+    "autodestroy": autodestroy,
     "provenance": {
         "origin": os.environ.get("STINT_ONBOX_ORIGIN", "unknown"),
         "instanceId": os.environ.get("STINT_ONBOX_INSTANCE_ID", ""),
@@ -169,6 +249,7 @@ if publication:
         "checkpointCount": len(checkpoints),
         "prUrls": [entry.get("prUrl", "") for entry in checkpoints if entry.get("prUrl")],
         "handoffUrl": handoff.get("prUrl", ""),
+        "final": bool(handoff.get("prUrl")) and state.get("phase") in {"landed", "stopped"},
         "lastError": publication.get("lastError", ""),
         "updatedAt": publication.get("updatedAt", ""),
     }
@@ -183,6 +264,8 @@ PY
 
 heartbeat_loop() {
   while :; do
+    inventory_once || true
+    process_merge_requests || true
     publish_once || true
     snapshot || true
     if [ -n "${STINT_ONBOX_R2_SYNC:-}" ] && [ -x "$STINT_ONBOX_R2_SYNC" ]; then
@@ -213,6 +296,41 @@ archive_final() {
   "$STINT_ONBOX_R2_ARCHIVE" "$state_dir" || true
 }
 
+write_autodestroy_state() {
+  local value="$1"
+  local path="$RUNTIME_DIR/autodestroy.json"
+  python3 - "$path" "$value" <<'PY'
+import json, os, sys, time
+path, state = sys.argv[1:]
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as stream:
+    json.dump({"state": state, "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, stream)
+    stream.write("\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
+  export STINT_ONBOX_AUTODESTROY_STATE="$value"
+}
+
+destroy_on_completion() {
+  local policy="${STINT_ONBOX_COMPLETION_POLICY:-report-and-destroy}"
+  [ "$policy" = "report-and-destroy" ] || return 0
+  write_autodestroy_state running
+  # `down` owns the provider API destroy and clears the on-box session state.
+  # The deadline watchdog remains the fallback if publication or this call
+  # fails, so a detached run cannot leave paid compute alive indefinitely.
+  if "$STINT_BIN" down >>"$LOG_FILE" 2>&1; then
+    # The watchdog is intentionally retained until provider teardown succeeds;
+    # once the session is cleared it has no work left and can be stopped.
+    pkill -f "[s]tint _watchdog" 2>/dev/null || true
+    write_autodestroy_state destroyed
+    return 0
+  fi
+  write_autodestroy_state failed
+  echo "$(date -u +%FT%TZ) on-box autodestroy failed; deadline watchdog remains active" >>"$LOG_FILE"
+  return 1
+}
+
 run_supervisor() {
   local -a onbox_args=("$@")
   mkdir -p "$ROOT" "$RUNTIME_DIR" "$CONFIG_HOME/stint" "$STATE_HOME"
@@ -221,6 +339,10 @@ run_supervisor() {
     [ -r "${STINT_GITHUB_TOKEN_FILE:-}" ] || die "GPU GitHub token file is required"
     [ -n "${STINT_GITHUB_REPOSITORY:-}" ] || die "STINT_GITHUB_REPOSITORY is required"
     [ -n "${STINT_GITHUB_BASE:-}" ] || die "STINT_GITHUB_BASE is required"
+    if [ "${STINT_GITHUB_MODE:-engineering}" = maintenance ]; then
+      [ -n "${STINT_GITHUB_ALLOWED_AUTHORS:-}" ] || die "maintenance mode requires STINT_GITHUB_ALLOWED_AUTHORS"
+      [ "${STINT_GITHUB_APPROVAL:-internal}" != bot ] || die "bot approval policy is documented but not enabled"
+    fi
   fi
   start_watchdog
   trap cleanup_supervisor EXIT
@@ -245,7 +367,13 @@ run_supervisor() {
     fi
     case "$phase" in
       landed|stopped)
+        process_merge_requests || true
         if ! publish_final; then
+          return 1
+        fi
+        archive_final || true
+        snapshot || true
+        if ! destroy_on_completion; then
           return 1
         fi
         snapshot || true
@@ -271,6 +399,9 @@ start() {
   if [ "${STINT_ONBOX_SKIP_GITHUB:-0}" != 1 ]; then
     [ -x "${STINT_ONBOX_GITHUB_PUBLISH:-}" ] || die "on-box GitHub publisher is required"
     [ -r "${STINT_GITHUB_TOKEN_FILE:-}" ] || die "GPU GitHub token file is required"
+    if [ "${STINT_GITHUB_MODE:-engineering}" = maintenance ] && [ -z "${STINT_GITHUB_ALLOWED_AUTHORS:-}" ]; then
+      die "maintenance mode requires STINT_GITHUB_ALLOWED_AUTHORS"
+    fi
   fi
   [ "${1:-}" = -- ] && shift || true
   [ "$#" -gt 0 ] || die "start requires arguments after --"

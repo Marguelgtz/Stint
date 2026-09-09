@@ -23,6 +23,7 @@ func TestFormatBuildVersion(t *testing.T) {
 		{"module release", "dev", build("v0.1.0", "", ""), "v0.1.0 (commit unknown, tree unknown)"},
 		{"module development", "dev", build("v0.0.0-20260906010840-e78ceef308d8+dirty", "e78ceef", "true"), "v0.0.0-20260906010840-e78ceef308d8+dirty (commit e78ceef, tree dirty)"},
 		{"release override", "0.1.0", build("v0.0.0-test", "abc123", "true"), "0.1.0 (commit abc123, tree dirty)"},
+		{"next designated release", "0.0.1", build("(devel)", "abc123", "false"), "0.0.1 (commit abc123, tree clean)"},
 		{"unknown modified", "dev", build("(devel)", "abc123", "unexpected"), "dev (commit abc123, tree unknown)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

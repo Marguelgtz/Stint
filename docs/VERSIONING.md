@@ -13,10 +13,14 @@ can leave provenance unknown. Unknown never means clean.
 
 For an intentionally designated release, the existing version variable can be
 set using `go build -ldflags '-X main.version=<release>' -o /tmp/stint ./cmd/stint`.
-Use an actual designated release identifier, not an invented version. The
-override does not suppress dirty state or missing provenance. This change
-creates no release or tag. Build timestamps are omitted: `vcs.time` in
-`go version -m /path/to/stint` is the commit timestamp, not the build date.
+The next designated release is `0.0.1`; use that value for release builds
+until a later release is explicitly approved. The historical `v0.1.0` tag is
+unchanged. The override does not suppress dirty state or missing provenance.
+This change creates no release or tag. Build timestamps are omitted: `vcs.time`
+in `go version -m /path/to/stint` is the commit timestamp, not the build date.
+
+The `0.0.x` series is pre-beta: release identifiers describe tested snapshots,
+may change incompatibly, and are not published automatically by Deep Work.
 
 Historical Go builds advanced a constant through 0.0.x to 0.1.0 in release
 commit 71d5227 (2026-08-29), then continued reporting 0.1.0 as development

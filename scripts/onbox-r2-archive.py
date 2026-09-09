@@ -79,7 +79,10 @@ def main():
     prefix = os.environ.get("STINT_R2_PREFIX", f"vanta/onbox/{session}").strip("/")
     proof = provenance(session)
     metadata = provenance_metadata(proof)
-    allowed = {"deep.json", "mission.md", "handoff.md", "incidents.jsonl", "publication.json"}
+    allowed = {
+        "deep.json", "mission.md", "handoff.md", "incidents.jsonl", "publication.json",
+        "github-actions.jsonl", "pr-inventory.json",
+    }
     uploaded = 0
     for name in sorted(allowed):
         path = os.path.join(state_dir, name)

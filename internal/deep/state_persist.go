@@ -47,6 +47,17 @@ func LoadState(stateDir, sessionID string) (DeepState, error) {
 	if state.SessionID != sessionID {
 		return DeepState{}, fmt.Errorf("deep state session id mismatch")
 	}
+	if state.Completion == "" {
+		state.Completion = CompletionReportAndDestroy
+	}
+	if state.GitHub.Mode == "" {
+		state.GitHub.Mode = GitHubNone
+	}
+	for i := range state.Tasks {
+		if state.Tasks[i].Phase == "" {
+			state.Tasks[i].Phase = PhaseWork
+		}
+	}
 	return state, nil
 }
 
