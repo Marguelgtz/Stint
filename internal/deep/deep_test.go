@@ -382,7 +382,6 @@ func TestParseMissionGitHubPolicyValidation(t *testing.T) {
 		{"bad mode", "mode: unsafe", "invalid GitHub mode"},
 		{"bad repository", "mode: engineering\nrepository: Stint", "owner/name"},
 		{"maintenance authors", "mode: maintenance\nrepository: o/r\nbase: main", "allowed author"},
-		{"bot approval", "mode: maintenance\nrepository: o/r\nbase: main\nallowed-authors: o\napproval: bot", "not enabled"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -392,6 +391,9 @@ func TestParseMissionGitHubPolicyValidation(t *testing.T) {
 				t.Fatalf("ParseMission error = %v, want containing %q", err, tc.want)
 			}
 		})
+	}
+	if mission, err := ParseMission("# x\n\n## Objective\no\n\n## GitHub\nmode: maintenance\nrepository: o/r\nbase: main\nallowed-authors: o\napproval: bot\n\n## Tasks\n- [ ] T1: do it\n"); err != nil || mission.GitHub.Approval != ApprovalBot {
+		t.Fatalf("bot approval should remain a parseable documented policy: mission=%+v err=%v", mission, err)
 	}
 }
 

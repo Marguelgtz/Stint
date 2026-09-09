@@ -122,9 +122,6 @@ func (p GitHubPolicy) Validate() error {
 	if mode == GitHubMaintenance && len(p.AllowedAuthors) == 0 {
 		return fmt.Errorf("maintenance mode requires at least one allowed author")
 	}
-	if p.Approval == ApprovalBot {
-		return fmt.Errorf("bot approval policy is documented but not enabled")
-	}
 	return nil
 }
 
