@@ -494,6 +494,8 @@ def merge_gate(cfg: dict, number: int, approval: dict | None = None, expected_he
     context = pull_request_context(cfg, int(number))
     pr = context["pull"]
     reasons: list[str] = []
+    if approval.get("pr") not in (None, "", number, str(number)):
+        reasons.append("approval record targets a different pull request")
     if pr.get("state") != "open":
         reasons.append("pull request is not open")
     if pr.get("draft"):
