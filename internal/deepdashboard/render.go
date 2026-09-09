@@ -20,8 +20,8 @@ const (
 )
 
 type Task struct {
-	ID, Objective, Status, LastResult, Blocker string
-	Attempts                                   int
+	ID, Objective, Status, LastResult, Blocker, Phase string
+	Attempts                                          int
 }
 
 type Event struct {
@@ -50,25 +50,30 @@ type Modal struct {
 }
 
 type Model struct {
-	Width, Height int
-	NoColor       bool
-	View          View
-	SessionID     string
-	Mission       string
-	Phase         string
-	WorkerName    string
-	Coordinator   string
-	StartedAt     time.Time
-	Deadline      time.Time
-	LandBefore    time.Time
-	Now           time.Time
-	Tasks         []Task
-	ActiveSince   *time.Time
-	Events        []Event
-	Compute       Compute
-	Worker        Worker
-	Error, Notice string
-	Modal         *Modal
+	Width, Height                                               int
+	NoColor                                                     bool
+	View                                                        View
+	SessionID                                                   string
+	Mission                                                     string
+	Phase                                                       string
+	GitHubMode                                                  string
+	GitHubHead                                                  string
+	GitHubBase                                                  string
+	GitHubReviewed, GitHubRepaired, GitHubMerged, GitHubSkipped int
+	GitHubLastAction, GitHubLastError                           string
+	WorkerName                                                  string
+	Coordinator                                                 string
+	StartedAt                                                   time.Time
+	Deadline                                                    time.Time
+	LandBefore                                                  time.Time
+	Now                                                         time.Time
+	Tasks                                                       []Task
+	ActiveSince                                                 *time.Time
+	Events                                                      []Event
+	Compute                                                     Compute
+	Worker                                                      Worker
+	Error, Notice                                               string
+	Modal                                                       *Modal
 }
 
 type palette struct{ noColor bool }
@@ -151,6 +156,22 @@ func runView(m Model, p palette) string {
 		worker += " · compute not recorded"
 	}
 	fmt.Fprintf(&b, "%s  %s\n", p.bold(or(m.Mission, "unnamed mission")), p.muted("session "+m.SessionID))
+	if m.GitHubMode != "" {
+		fmt.Fprintf(&b, "GitHub      %s", m.GitHubMode)
+		if m.GitHubReviewed+m.GitHubRepaired+m.GitHubMerged+m.GitHubSkipped > 0 {
+			fmt.Fprintf(&b, " · reviewed %d · repaired %d · merged %d · skipped %d", m.GitHubReviewed, m.GitHubRepaired, m.GitHubMerged, m.GitHubSkipped)
+		}
+		b.WriteString("\n")
+		if m.GitHubHead != "" || m.GitHubBase != "" {
+			fmt.Fprintf(&b, "PR head/base %s / %s\n", or(m.GitHubHead, "unknown"), or(m.GitHubBase, "unknown"))
+		}
+		if m.GitHubLastAction != "" {
+			fmt.Fprintf(&b, "Last GitHub  %s\n", m.GitHubLastAction)
+		}
+		if m.GitHubLastError != "" {
+			fmt.Fprintf(&b, "GitHub error %s\n", compact(m.GitHubLastError, max(12, m.Width-14)))
+		}
+	}
 	fmt.Fprintf(&b, "Worker     %s\n", worker)
 	fmt.Fprintf(&b, "Coordinator %s\n", or(m.Coordinator, "unknown"))
 
@@ -160,7 +181,11 @@ func runView(m Model, p palette) string {
 	if active == nil {
 		b.WriteString(p.muted("no active task"))
 	} else {
-		line := fmt.Sprintf("%s  attempt %d", active.ID, active.Attempts)
+		phase := active.Phase
+		if phase == "" {
+			phase = "work"
+		}
+		line := fmt.Sprintf("%s [%s]  attempt %d", active.ID, phase, active.Attempts)
 		if m.ActiveSince != nil {
 			line += "  ·  " + formatDuration(elapsed(*m.ActiveSince, m.Now)) + " running"
 		}
@@ -196,7 +221,11 @@ func tasksView(m Model, p palette) string {
 	}
 	for _, task := range m.Tasks {
 		label := taskStatus(task.Status, p)
-		line := fmt.Sprintf("%-12s %-11s %d  %s", task.ID, label, task.Attempts, compact(task.Objective, max(12, m.Width-32)))
+		phase := task.Phase
+		if phase == "" {
+			phase = "work"
+		}
+		line := fmt.Sprintf("%-12s %-8s %-11s %d  %s", task.ID, phase, label, task.Attempts, compact(task.Objective, max(12, m.Width-40)))
 		lines = append(lines, line)
 		if task.Blocker != "" {
 			lines = append(lines, "             "+p.danger("blocker: ")+compact(task.Blocker, max(12, m.Width-25)))

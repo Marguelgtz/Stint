@@ -51,6 +51,17 @@ func (c *deepCoordinator) execInputFor(t deep.Task) execInput {
 	in.prompt = deep.BuildTaskPromptWithActionPlan(mission, t, t.Attempts, c.repoSummary(), c.execCfg.actionPlan)
 	if t.Reasoning != "" {
 		in.reasoning = t.Reasoning
+	} else {
+		phase := t.Phase
+		if phase == "" {
+			phase = deep.PhaseWork
+		}
+		switch phase {
+		case deep.PhasePlan, deep.PhaseReview, deep.PhaseClose:
+			in.reasoning = deep.ReasoningXHigh
+		case deep.PhaseWork:
+			in.reasoning = deep.ReasoningMedium
+		}
 	}
 	// The session's command policy is part of the reconstructed context: the
 	// worker must know exactly which commands it may run and what will
@@ -67,6 +78,8 @@ func (c *deepCoordinator) mission() deep.Mission {
 		Objective:   c.state.Objective,
 		Success:     c.state.Success,
 		Constraints: c.state.Constraints,
+		GitHub:      c.state.GitHub,
+		Completion:  c.state.Completion,
 	}
 }
 
@@ -170,6 +183,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) {
 			c.incident(deep.IncidentCheckpointFail, t.ID, "read checkpoint HEAD failed: "+err.Error())
 		} else {
 			t.CheckpointCommit = strings.TrimSpace(head)
+			c.state.HeadCommit = strings.TrimSpace(head)
 		}
 		c.logf("task %s VERIFIED", t.ID)
 	case t.Attempts < c.state.TaskAttemptCap && now.Add(c.taskTimeout).Before(c.state.LandBefore):

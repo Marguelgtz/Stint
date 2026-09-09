@@ -31,6 +31,12 @@ type deepDashboardSnapshot struct {
 	Coordinator string
 	ActiveSince *time.Time
 	Events      []deepdash.Event
+	GitHub      deepDashboardGitHub
+}
+
+type deepDashboardGitHub struct {
+	Reviewed, Repaired, Merged, Skipped int
+	LastAction, LastError               string
 }
 
 func recordedTunnelPort(state sessionstate.State) int {
@@ -273,6 +279,15 @@ func (c *deepDashboardController) project() {
 	m.SessionID = s.SessionID
 	m.Mission = s.MissionName
 	m.Phase = string(s.Phase)
+	m.GitHubMode = string(s.GitHub.Mode)
+	m.GitHubHead = s.HeadCommit
+	m.GitHubBase = s.GitHub.Base
+	m.GitHubReviewed = c.snapshot.GitHub.Reviewed
+	m.GitHubRepaired = c.snapshot.GitHub.Repaired
+	m.GitHubMerged = c.snapshot.GitHub.Merged
+	m.GitHubSkipped = c.snapshot.GitHub.Skipped
+	m.GitHubLastAction = c.snapshot.GitHub.LastAction
+	m.GitHubLastError = c.snapshot.GitHub.LastError
 	m.WorkerName = "Cline on operator machine"
 	if s.Exec != nil && s.Exec.Worker != "" {
 		if s.Exec.Worker == workerHermes || s.Exec.Worker == workerHermesOnBox {
@@ -288,7 +303,7 @@ func (c *deepDashboardController) project() {
 	m.Events = c.snapshot.Events
 	m.Tasks = make([]deepdash.Task, 0, len(s.Tasks))
 	for _, task := range s.Tasks {
-		m.Tasks = append(m.Tasks, deepdash.Task{ID: task.ID, Objective: task.Objective, Status: string(task.Status), Attempts: task.Attempts, Blocker: task.Blocker, LastResult: task.LastResult})
+		m.Tasks = append(m.Tasks, deepdash.Task{ID: task.ID, Objective: task.Objective, Phase: string(task.Phase), Status: string(task.Status), Attempts: task.Attempts, Blocker: task.Blocker, LastResult: task.LastResult})
 	}
 	m.Compute = projectDeepDashboardCompute(c.compute, c.computeLive)
 	m.Worker = c.worker
@@ -396,7 +411,41 @@ func loadDeepDashboardSnapshot(stateDir, sessionID string) (deepDashboardSnapsho
 	for _, incident := range incidents {
 		events = append(events, deepdash.Event{Time: incident.Time.Local().Format("15:04:05"), Kind: incident.Kind, Task: incident.Task, Detail: incident.Detail})
 	}
-	return deepDashboardSnapshot{State: state, Coordinator: coordinator, ActiveSince: activeSince, Events: events}, nil
+	github := deepDashboardGitHub{}
+	if state.GitHubLedger != "" {
+		if data, readErr := os.ReadFile(state.GitHubLedger); readErr == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				var entry struct {
+					Operation string `json:"operation"`
+					Result    string `json:"result"`
+					Reason    string `json:"reason"`
+				}
+				if json.Unmarshal([]byte(line), &entry) != nil {
+					continue
+				}
+				switch entry.Operation {
+				case "merge-gate":
+					github.Reviewed++
+				case "repair":
+					github.Repaired++
+				case "merge":
+					if entry.Result == "merged" || entry.Result == "already-merged" {
+						github.Merged++
+					}
+				case "skip":
+					github.Skipped++
+				}
+				if entry.Operation != "" {
+					github.LastAction = entry.Operation + ": " + entry.Result
+					github.LastError = ""
+					if entry.Result == "failed" || entry.Result == "rejected" {
+						github.LastError = entry.Reason
+					}
+				}
+			}
+		}
+	}
+	return deepDashboardSnapshot{State: state, Coordinator: coordinator, ActiveSince: activeSince, Events: events, GitHub: github}, nil
 }
 
 func activeTaskID(tasks []deep.Task) string {

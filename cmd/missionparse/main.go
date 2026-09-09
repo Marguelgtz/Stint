@@ -22,12 +22,14 @@ func main() {
 	fmt.Printf("success:   %d bullets\n", len(m.Success))
 	fmt.Printf("constraints: %d bullets\n", len(m.Constraints))
 	fmt.Printf("verify:    %q\n", m.Verify)
+	fmt.Printf("github:    mode=%s repository=%s base=%s approval=%s\n", m.GitHub.Mode, m.GitHub.Repository, m.GitHub.Base, m.GitHub.Approval)
+	fmt.Printf("completion: %s\n", m.Completion)
 	fmt.Printf("tasks:     %d\n", len(m.Tasks))
 	for _, t := range m.Tasks {
 		hasVerify := "verify:"
 		if t.Verify == "" {
 			hasVerify = "NO-VERIFY (falls back to mission-level!)"
 		}
-		fmt.Printf("  [%s] %s\n    verify(%s): %s\n", t.ID, t.Objective, hasVerify, t.Verify)
+		fmt.Printf("  [%s] phase=%s %s\n    verify(%s): %s\n", t.ID, t.Phase, t.Objective, hasVerify, t.Verify)
 	}
 }

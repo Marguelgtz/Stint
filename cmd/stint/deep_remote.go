@@ -57,10 +57,9 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// remoteGit implements gitOps by running git on the box over SSH. Every
-// operation is local-to-the-box only (no push, no fetch), mirroring the local
-// gitRunner's safety model: the coordinator checkpoints the on-box worktree on
-// the session branch and never pushes.
+// remoteGit implements gitOps by running git on the box over SSH. Coordinator
+// checkpoint operations remain local; when a mission grants GitHub authority,
+// the GPU-side publisher performs authenticated pushes and PR actions.
 type remoteGit struct {
 	remote remoteCmd
 }

@@ -101,6 +101,9 @@ func runDeepOnBox(args []string) error {
 	if err != nil {
 		return err
 	}
+	if os.Getenv("STINT_ONBOX_UNATTENDED") == "1" && os.Getenv("STINT_ONBOX_SKIP_GITHUB") != "1" && !mission.GitHubConfigured {
+		return errors.New("unattended on-box missions must explicitly select a GitHub mode in ## GitHub (use mode: none only with the fixture bypass)")
+	}
 	if _, err := os.Stat(f.repoPath); err != nil {
 		return fmt.Errorf("on-box repository: %w", err)
 	}
@@ -140,6 +143,10 @@ func runDeepOnBox(args []string) error {
 	baseCommit, _ := git.repoHead(worktree)
 	state := deep.NewState(sessionID, mission, f.repoPath, worktree, deadline, landBefore, f.maxAttempts, now)
 	state.BaseCommit = baseCommit
+	state.HeadCommit = baseCommit
+	if mission.GitHub.Mode != deep.GitHubNone {
+		state.GitHubLedger = filepath.Join(paths.StateDir, "deep", sessionID, "github-actions.jsonl")
+	}
 	if f.actionPlan != "" {
 		state.Tasks = append([]deep.Task{{
 			ID:         "PLAN-001",
@@ -147,6 +154,7 @@ func runDeepOnBox(args []string) error {
 			Acceptance: "the living action plan exists at the requested path and records decisions, risks, next steps, and evidence pointers consistent with the mission and repository state",
 			Verify:     "test -s " + shellQuote(f.actionPlan),
 			Reasoning:  deep.ReasoningXHigh,
+			Phase:      deep.PhasePlan,
 			Status:     deep.StatusQueued,
 			Source:     "coordinator",
 		}}, state.Tasks...)
@@ -227,10 +235,12 @@ func writeOnBoxReady(path string, state deep.DeepState) error {
 		return err
 	}
 	payload, err := json.Marshal(struct {
-		Status   string    `json:"status"`
-		Session  string    `json:"session"`
-		Deadline time.Time `json:"deadline"`
-	}{Status: "RUNNING", Session: state.SessionID, Deadline: state.Deadline})
+		Status     string                `json:"status"`
+		Session    string                `json:"session"`
+		Deadline   time.Time             `json:"deadline"`
+		GitHubMode deep.GitHubMode       `json:"githubMode"`
+		Completion deep.CompletionPolicy `json:"completion"`
+	}{Status: "RUNNING", Session: state.SessionID, Deadline: state.Deadline, GitHubMode: state.GitHub.Mode, Completion: state.Completion})
 	if err != nil {
 		return err
 	}
@@ -265,6 +275,12 @@ func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags) error {
 	state, err := deep.LoadLatestState(paths.StateDir)
 	if err != nil {
 		return err
+	}
+	if err := deep.ValidateResumePolicy(state.GitHub, state.GitHub); err != nil {
+		return fmt.Errorf("persisted GitHub policy: %w", err)
+	}
+	if err := deep.ValidateResumeCompletionPolicy(state.Completion, state.Completion); err != nil {
+		return fmt.Errorf("persisted completion policy: %w", err)
 	}
 	if state.Exec == nil || state.Exec.Worker != workerHermesOnBox {
 		return errors.New("latest Deep Work session is not an on-box Hermes session")

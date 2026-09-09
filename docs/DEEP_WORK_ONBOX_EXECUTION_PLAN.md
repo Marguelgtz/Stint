@@ -8,10 +8,11 @@ After the launch handshake, the operator machine is limited to optional read-onl
 inspection. It must not coordinate tasks, upload run evidence, create commits, or
 publish GitHub changes. The GPU instance owns those actions until landing.
 
-**Live status (2026-09-08):** P6.1 local-on-box Hermes execution, P6.2 detached
+**Live status (2026-09-09):** P6.1 local-on-box Hermes execution, P6.2 detached
 supervisor/restart loop, P6.5 reconnectable sanitized heartbeat, GPU-side GitHub
 checkpoint/PR publishing, and explicit R2 uploader provenance are implemented on
-the publishing branch. The R2 credentials and object contract pass an isolated
+the publishing branch. This branch adds explicit engineering/maintenance policy,
+GPU-side inventory and merge gating, and report-and-destroy ordering. The R2 credentials and object contract pass an isolated
 bucket smoke. The live GPU handoff, disconnect proof, GitHub publish proof, and
 full two-lane gate still require a real qualifying GPU run.
 
@@ -29,6 +30,13 @@ full two-lane gate still require a real qualifying GPU run.
   persist branch/PR URLs in the on-box state. Production launch fails closed when
   the token file, repository, base branch, origin match, or repository push access
   is unusable. `STINT_ONBOX_SKIP_GITHUB=1` is an explicit fixture-only bypass.
+- [x] Add explicit `none`, `engineering`, and `maintenance` GitHub policies,
+  persisted completion/phase metadata, compact inventory/context/reply tooling,
+  deterministic merge gates, SHA-locked merge requests, and an append-only
+  GPU-side action ledger. Maintenance excludes all `stint/deep-*` branches.
+- [x] Add report-and-destroy completion ordering: final GitHub/R2 publication,
+  handoff archive, provider teardown, disappearance state, and deadline-watchdog
+  fallback. `bounded-replan` remains opt-in.
 - [ ] Make NInfer bootstrap resumable after launch SSH loss (the model marker loop
   is now safe against a completed download and PID reuse; a dropped-SSH live proof
   is still required).

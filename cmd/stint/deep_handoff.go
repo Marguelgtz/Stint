@@ -23,6 +23,14 @@ func buildHandoff(s deep.DeepState, reason string, now time.Time, finalVerify st
 	}
 	fmt.Fprintf(&b, "| Configured deadline | %s |\n", s.Deadline.Format(time.RFC3339))
 	fmt.Fprintf(&b, "| Actual duration | %s |\n", now.Sub(s.StartedAt).Round(time.Second))
+	fmt.Fprintf(&b, "| GitHub mode | %s |\n", s.GitHub.Mode)
+	if s.GitHub.Repository != "" {
+		fmt.Fprintf(&b, "| GitHub repository/base | `%s` / `%s` |\n", s.GitHub.Repository, s.GitHub.Base)
+	}
+	fmt.Fprintf(&b, "| Completion policy | %s |\n", s.Completion)
+	if s.GitHubLedger != "" {
+		fmt.Fprintf(&b, "| GitHub action ledger | `%s` |\n", s.GitHubLedger)
+	}
 
 	b.WriteString("\n## Mission\n\n")
 	fmt.Fprintf(&b, "%s\n", s.Objective)
@@ -40,11 +48,15 @@ func buildHandoff(s deep.DeepState, reason string, now time.Time, finalVerify st
 	}
 
 	b.WriteString("\n## Tasks\n\n")
-	b.WriteString("| ID | Objective | Status | Attempts | Evidence |\n")
-	b.WriteString("| --- | --- | --- | --- | --- |\n")
+	b.WriteString("| ID | Phase | Objective | Status | Attempts | Evidence |\n")
+	b.WriteString("| --- | --- | --- | --- | --- | --- |\n")
 	for _, t := range s.Tasks {
-		fmt.Fprintf(&b, "| %s | %s | %s | %d | %s |\n",
-			t.ID, truncate(t.Objective, 60), taskHandoffStatus(s, t), t.Attempts, taskHandoffEvidence(s, t))
+		phase := t.Phase
+		if phase == "" {
+			phase = deep.PhaseWork
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %d | %s |\n",
+			t.ID, phase, truncate(t.Objective, 60), taskHandoffStatus(s, t), t.Attempts, taskHandoffEvidence(s, t))
 	}
 
 	b.WriteString("\n## Verification\n\n")

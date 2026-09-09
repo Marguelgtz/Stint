@@ -21,7 +21,8 @@ import (
 	"github.com/Marguelgtz/Stint/internal/spark"
 )
 
-const version = "0.1.0"
+// version may be set for a release with -ldflags "-X main.version=<release>".
+var version = "dev"
 
 // clinePort is the local port the SSH tunnel binds for the session's
 // OpenAI-compatible endpoint (default 8409). It is a var, not a const, so a
@@ -66,7 +67,7 @@ func run(args []string) error {
 			printCommandHelp("version")
 			return nil
 		}
-		fmt.Println(version)
+		fmt.Println(buildVersion())
 		return nil
 	case "help", "--help", "-h":
 		return runHelp(args[1:])

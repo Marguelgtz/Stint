@@ -49,6 +49,7 @@ func (s Status) String() string { return string(s) }
 type Task struct {
 	ID         string     `json:"id"`
 	Objective  string     `json:"objective"`
+	Phase      TaskPhase  `json:"phase,omitempty"`
 	Acceptance string     `json:"acceptance,omitempty"`
 	Verify     string     `json:"verify,omitempty"`
 	Reasoning  string     `json:"reasoning,omitempty"`

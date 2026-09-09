@@ -254,6 +254,27 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStateRoundTripPersistsRepositoryPolicy(t *testing.T) {
+	dir := t.TempDir()
+	m, err := ParseMission("# x\n\n## Objective\no\n\n## GitHub\nmode: engineering\nrepository: o/r\nbase: main\n\n## Completion\npolicy: bounded-replan\n\n## Tasks\n- [ ] T1: work\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	state := NewState(NewSessionID(now), m, "/repo", "/worktree", now.Add(time.Hour), now.Add(50*time.Minute), 2, now)
+	state.GitHubLedger = "/state/deep/session/github-actions.jsonl"
+	if err := state.SaveDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadState(dir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.GitHub.Mode != GitHubEngineering || loaded.Completion != CompletionBoundedReplan || loaded.GitHubLedger == "" {
+		t.Errorf("policy state = %+v completion=%q ledger=%q", loaded.GitHub, loaded.Completion, loaded.GitHubLedger)
+	}
+}
+
 func TestStatusTerminal(t *testing.T) {
 	for _, s := range []Status{StatusVerified, StatusBlocked, StatusNeedsHuman, StatusDropped} {
 		if !s.Terminal() {
@@ -293,13 +314,127 @@ func TestBuildTaskPromptReconstruction(t *testing.T) {
 		"branch: stint/deep-20260902-150000",
 		"head: abc1234",
 		"uncommitted changes:",
-		"Never push, open pull requests",
+		"GITHUB POLICY (mode: none)",
+		"GitHub side effects are disabled",
 		"CONSTRAINTS:",
 		"Do not touch infra/.",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q\nprompt:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestParseMissionGitHubAndCompletionPolicy(t *testing.T) {
+	mission := `# maintenance
+
+## Objective
+Land straightforward PRs.
+
+## GitHub
+mode: maintenance
+repository: Marguelgtz/Stint
+base: main
+allowed-authors: Marguelgtz, release-bot
+approval: internal
+
+## Completion
+policy: report-and-destroy
+
+## Tasks
+- [ ] PLAN-001: inventory PRs
+  - phase: plan
+  - reasoning: xhigh
+- [ ] T-004: repair a comment
+  - phase: work
+`
+	m, err := ParseMission(mission)
+	if err != nil {
+		t.Fatalf("ParseMission: %v", err)
+	}
+	if !m.GitHubConfigured || m.GitHub.Mode != GitHubMaintenance || m.GitHub.Repository != "Marguelgtz/Stint" || m.GitHub.Base != "main" {
+		t.Errorf("github policy = %+v", m.GitHub)
+	}
+	if len(m.GitHub.AllowedAuthors) != 2 || m.GitHub.AllowedAuthors[1] != "release-bot" {
+		t.Errorf("allowed authors = %v", m.GitHub.AllowedAuthors)
+	}
+	if m.Completion != CompletionReportAndDestroy || m.Tasks[0].Phase != PhasePlan || m.Tasks[1].Phase != PhaseWork {
+		t.Errorf("completion/phases = %q/%q/%q", m.Completion, m.Tasks[0].Phase, m.Tasks[1].Phase)
+	}
+}
+
+func TestParseMissionExplicitNoneIsConfigured(t *testing.T) {
+	m, err := ParseMission("# x\n\n## Objective\no\n\n## GitHub\nmode: none\n\n## Tasks\n- [ ] T1: work\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.GitHubConfigured || m.GitHub.Mode != GitHubNone {
+		t.Fatalf("github policy = %+v configured=%v", m.GitHub, m.GitHubConfigured)
+	}
+}
+
+func TestParseMissionGitHubPolicyValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"bad mode", "mode: unsafe", "invalid GitHub mode"},
+		{"bad repository", "mode: engineering\nrepository: Stint", "owner/name"},
+		{"maintenance authors", "mode: maintenance\nrepository: o/r\nbase: main", "allowed author"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := "# x\n\n## Objective\no\n\n## GitHub\n" + tc.body + "\n\n## Tasks\n- [ ] T1: do it\n"
+			_, err := ParseMission(content)
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tc.want)) {
+				t.Fatalf("ParseMission error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+	if mission, err := ParseMission("# x\n\n## Objective\no\n\n## GitHub\nmode: maintenance\nrepository: o/r\nbase: main\nallowed-authors: o\napproval: bot\n\n## Tasks\n- [ ] T1: do it\n"); err != nil || mission.GitHub.Approval != ApprovalBot {
+		t.Fatalf("bot approval should remain a parseable documented policy: mission=%+v err=%v", mission, err)
+	}
+}
+
+func TestGitHubPolicyPromptCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		mode  GitHubMode
+		want  []string
+		avoid string
+	}{
+		{GitHubNone, []string{"mode: none", "side effects are disabled"}, "push session-owned"},
+		{GitHubEngineering, []string{"mode: engineering", "push session-owned", "Never force-push"}, "gatekeeper performs"},
+		{GitHubMaintenance, []string{"mode: maintenance", "existing PR heads", "gatekeeper performs"}, ""},
+	} {
+		prompt := GitHubPolicySection(GitHubPolicy{Mode: tc.mode, Repository: "o/r", Base: "main", Approval: ApprovalInternal})
+		for _, want := range tc.want {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s prompt missing %q:\n%s", tc.mode, want, prompt)
+			}
+		}
+		if tc.avoid != "" && strings.Contains(prompt, tc.avoid) {
+			t.Errorf("%s prompt unexpectedly contains %q:\n%s", tc.mode, tc.avoid, prompt)
+		}
+	}
+}
+
+func TestValidateResumePolicyNeverBroadens(t *testing.T) {
+	previous := GitHubPolicy{Mode: GitHubMaintenance, Repository: "o/r", Base: "main", AllowedAuthors: []string{"o"}, Approval: ApprovalInternal}
+	if err := ValidateResumePolicy(previous, GitHubPolicy{Mode: GitHubEngineering, Repository: "o/r", Base: "main", AllowedAuthors: []string{"o"}, Approval: ApprovalInternal}); err != nil {
+		t.Fatalf("tightening maintenance to engineering: %v", err)
+	}
+	if err := ValidateResumePolicy(previous, GitHubPolicy{Mode: GitHubMaintenance, Repository: "o/r", Base: "main", AllowedAuthors: []string{"o", "other"}, Approval: ApprovalInternal}); err == nil {
+		t.Fatal("expected added author to be rejected")
+	}
+	if err := ValidateResumePolicy(GitHubPolicy{Mode: GitHubEngineering, Repository: "o/r", Base: "main"}, GitHubPolicy{Mode: GitHubMaintenance, Repository: "o/r", Base: "main", AllowedAuthors: []string{"o"}, Approval: ApprovalInternal}); err == nil {
+		t.Fatal("expected mode broadening to be rejected")
+	}
+	if err := ValidateResumeCompletionPolicy(CompletionReportAndDestroy, CompletionBoundedReplan); err == nil {
+		t.Fatal("expected completion broadening to be rejected")
+	}
+	if err := ValidateResumeCompletionPolicy(CompletionBoundedReplan, CompletionReportAndDestroy); err != nil {
+		t.Fatalf("tightening completion policy: %v", err)
 	}
 }
 func TestTaskVerifyInPromptAndRoundTrip(t *testing.T) {
