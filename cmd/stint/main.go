@@ -25,10 +25,10 @@ const version = "0.1.0"
 const clinePort = 8409
 
 type planDiagnostics struct {
-	Candidates      int                    `json:"candidates"`
-	Qualified       int                    `json:"qualified"`
+	Candidates      int                          `json:"candidates"`
+	Qualified       int                          `json:"qualified"`
 	RejectedBy      map[core.RejectionReason]int `json:"rejectedBy,omitempty"`
-	ClosestRejected []core.OfferEvaluation `json:"closestRejected,omitempty"`
+	ClosestRejected []core.OfferEvaluation       `json:"closestRejected,omitempty"`
 }
 
 type planOutput struct {
@@ -55,8 +55,24 @@ func run(args []string) error {
 
 	switch args[0] {
 	case "version", "--version", "-v":
+		if wantsHelp(args[1:]) {
+			printCommandHelp("version")
+			return nil
+		}
 		fmt.Println(version)
 		return nil
+	case "help", "--help", "-h":
+		return runHelp(args[1:])
+	}
+
+	// Every registered command accepts --help / -h and prints its detail page
+	// instead of executing, so help is always free of side effects.
+	if cmd, ok := findCommand(args[0]); ok && wantsHelp(args[1:]) {
+		printCommandHelp(cmd.name)
+		return nil
+	}
+
+	switch args[0] {
 	case "plan":
 		return runPlan(args[1:])
 	case "start":
@@ -77,11 +93,8 @@ func run(args []string) error {
 		return runStatus()
 	case "onboard":
 		return runOnboard(args[1:])
-	case "help", "--help", "-h":
-		printUsage()
-		return nil
 	default:
-		return fmt.Errorf("unknown command %q", args[0])
+		return fmt.Errorf("unknown command %q (run 'stint help')", args[0])
 	}
 }
 
@@ -502,32 +515,4 @@ func valueOr(value, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-func printUsage() {
-	fmt.Print(`Stint — elastic compute for coding agents
-
-Setup:
-  stint auth vast
-  stint auth vast --from-env
-  stint setup ssh
-  stint doctor
-
-Planning (read-only):
-  stint plan interactive --hours 1
-  stint plan interactive --hours 1 --json
-  stint plan interactive --hours 1 --fixture
-
-Compute (paid):
-  stint start interactive --hours 1
-  stint start interactive --hours 1 --yes
-  stint resume
-  stint status
-  stint down
-
-Other:
-  stint plan deep --hours 8 --fixture
-  stint onboard spark
-  stint version
-`)
 }
