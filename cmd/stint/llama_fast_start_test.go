@@ -16,9 +16,12 @@ func TestLlamaUsesSSHCapableVastImage(t *testing.T) {
 	}
 }
 
-func TestLlamaDoesNotReplaceVastContainerLifecycle(t *testing.T) {
-	if got := vastOnStartForRuntime(runtimeLlamaCpp); got != "" {
-		t.Fatalf("llama.cpp onstart = %q, want empty", got)
+func TestLlamaOnStartDoesNotReplaceVastContainerLifecycle(t *testing.T) {
+	command := vastOnStartForRuntime(runtimeLlamaCpp)
+	for _, forbidden := range []string{"llama-server", "hf download", "apt-get", "git clone", "cmake"} {
+		if strings.Contains(command, forbidden) {
+			t.Fatalf("llama.cpp onstart unexpectedly performs runtime bootstrap %q: %s", forbidden, command)
+		}
 	}
 }
 
@@ -41,8 +44,11 @@ func TestLlamaLaunchDownloadsModelAfterSSH(t *testing.T) {
 	}
 }
 
-func TestNInferDoesNotReceiveLlamaOnStart(t *testing.T) {
-	if got := vastOnStartForRuntime(runtimeNInfer); got != "" {
-		t.Fatalf("NInfer onstart = %q, want empty", got)
+func TestNInferOnStartDoesNotPerformRuntimeBootstrap(t *testing.T) {
+	command := vastOnStartForRuntime(runtimeNInfer)
+	for _, forbidden := range []string{"ninfer-serve", "qwen3_8_27b.ninfer", "apt-get", "git clone", "cmake"} {
+		if strings.Contains(command, forbidden) {
+			t.Fatalf("NInfer onstart unexpectedly performs runtime bootstrap %q: %s", forbidden, command)
+		}
 	}
 }
