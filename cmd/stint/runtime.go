@@ -247,6 +247,33 @@ func remoteModelLaunchCommandForState(state sessionstate.State) string {
 	return llamaModelLaunchCommand(contextForState(state))
 }
 
+func remoteModelProgressCommandForState(state sessionstate.State) string {
+	if runtimeForState(state) == runtimeNInfer {
+		return `if pgrep -f '[c]url .*qwen3_8_27b.ninfer' >/dev/null 2>&1; then bytes="$(stat -c %s /workspace/stint/models/qwen3_8_27b.ninfer 2>/dev/null || echo 0)"; pct=$((bytes * 100 / 18210531328)); echo "model download ${pct}% ($((bytes / 1048576)) MiB / 17367 MiB)"; elif pgrep -x ninfer-serve >/dev/null 2>&1; then tail -n 1 /workspace/stint/llama.log 2>/dev/null || echo "loading model on GPU"; else tail -n 1 /workspace/stint/model-download.log 2>/dev/null || tail -n 1 /workspace/stint/llama.log 2>/dev/null || true; fi`
+	}
+
+	return fmt.Sprintf(`model=/workspace/stint/models/%s
+expected=%d
+if pgrep -f '[h]f download' >/dev/null 2>&1; then
+  bytes="$(grep -h 'observed bytes sent so far' /root/.cache/huggingface/xet/logs/*.log 2>/dev/null | tail -n 1 | sed -n 's/.*observed bytes sent so far = \([0-9][0-9]*\).*/\1/p')"
+  if [ -z "$bytes" ]; then
+    bytes="$(find /workspace/stint/models/.cache/huggingface/download -name '*.incomplete' -printf '%%s\n' 2>/dev/null | sort -nr | head -n 1)"
+  fi
+  bytes="${bytes:-0}"
+  pct=$((bytes * 100 / expected))
+  [ "$pct" -gt 100 ] && pct=100
+  echo "model download ${pct}%% ($((bytes / 1048576)) MiB / $((expected / 1048576)) MiB transferred)"
+elif pgrep -x sha256sum >/dev/null 2>&1; then
+  echo "model download complete; verifying checksum"
+elif pgrep -x llama-server >/dev/null 2>&1; then
+  tail -n 1 /workspace/stint/llama.log 2>/dev/null || echo "loading model on GPU"
+elif [ -f "$model" ]; then
+  echo "model artifact ready; starting llama-server"
+else
+  tail -n 1 /workspace/stint/llama.log 2>/dev/null || true
+fi`, llamaModelFileName, llamaModelSizeBytes)
+}
+
 func llamaModelLaunchCommand(contextTokens int) string {
 	return fmt.Sprintf(`set -eu
 mkdir -p /workspace/stint/models
