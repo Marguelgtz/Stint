@@ -47,6 +47,11 @@ func OpenTerminal(stdin, stdout *os.File) (*Terminal, error) {
 	// output semantics intact while disabling canonical input, echo, and
 	// signal-character handling so Ctrl+C reaches the dashboard as byte 3 and
 	// can exit through the normal restore path.
+	//
+	// Keep VMIN=1/VTIME=0. A VMIN=0 timeout on a terminal can surface through
+	// Go's os.File.Read as io.EOF, which makes the dashboard believe stdin was
+	// closed and immediately leave the alternate screen. Cursor-key CSI bytes
+	// are still delivered normally with blocking byte-at-a-time reads.
 	cmd := exec.Command("stty", dashboardInputModeArgs()...)
 	cmd.Stdin = stdin
 	if err := cmd.Run(); err != nil {

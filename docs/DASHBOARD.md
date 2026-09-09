@@ -25,7 +25,11 @@ When stdin or stdout is not a TTY, `dashboard` falls back to a static refreshed 
 | `2` | Performance | Latest explicit benchmark details |
 | `3` | Config | Authoritative model/runtime/context/session configuration |
 | `4` | Logs | Bounded tail of local `tunnel.log` and `watchdog.log` |
+| `←` / `↑` | Previous view | Moves to the previous numbered view and wraps from Home to Logs |
+| `→` / `↓` | Next view | Moves to the next numbered view and wraps from Logs to Home |
 | `Tab` | Next view | Cycles through the four views |
+
+Arrow-key escape sequences are parsed as one logical navigation event. They do not leak the leading Escape byte into modal handling.
 
 ## Actions
 
@@ -102,7 +106,9 @@ Only one passive remote refresh may run at a time. The existing telemetry collec
 
 ## Terminal behavior
 
-The v1 dashboard intentionally has no external TUI dependency. It uses the standard library plus the host `stty` command to enter raw mode and an alternate terminal screen.
+The v1 dashboard intentionally has no external TUI dependency. It uses the standard library plus the host `stty` command and an alternate terminal screen.
+
+Input is non-canonical and byte-oriented (`-icanon -echo -isig`) while normal terminal output processing remains enabled. A short `VMIN=0` / `VTIME=1` idle boundary lets Stint distinguish a standalone Escape key from CSI cursor-key sequences without blocking input or putting terminal output into raw mode.
 
 On every normal exit path it restores the saved terminal mode, cursor, and primary screen. `SIGWINCH` causes a size refresh and redraw. Rendering supports narrow terminals by switching from the wide multi-column Home identity row to a compact stacked presentation and by bounding log output to the visible height.
 
