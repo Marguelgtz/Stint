@@ -19,13 +19,13 @@ import (
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
-const providerStartupTimeout = 12 * time.Minute
+const providerStartupTimeout = 6 * time.Minute
 
 // runStartResumable is the paid interactive start path with explicit recovery
-// checkpoints. Once Vast has created the paid instance, later startup failures
-// preserve it and leave the deadline watchdog running so `stint resume` can
-// continue the same session rather than silently discarding already-provisioned
-// work or forcing another rental.
+// checkpoints. Provider/SSH startup failures reject the host and move to the
+// next distinct candidate. Once SSH is usable, later startup failures preserve
+// the paid instance and leave the deadline watchdog running so `stint resume`
+// can continue rather than forcing another rental.
 func runStartResumable(args []string) (retErr error) {
 	startupStartedAt := time.Now().UTC()
 	if len(args) == 0 {
@@ -48,12 +48,21 @@ func runStartResumable(args []string) (retErr error) {
 	runtimeValue := fs.String("runtime", runtimeAuto, "inference runtime: auto, ninfer, or llama.cpp")
 	contextValue := fs.String("context", "", "llama.cpp context tokens (1024-131072; default 16384)")
 	ninferConfigValue := fs.String("ninfer-config", ninferConfigCoding, "NInfer config: coding, precision, or native")
+	minNetworkMbps := fs.Float64("min-network-mbps", defaultMinAdvertisedNetworkMbps, "minimum Vast advertised download bandwidth in Mbps; 0 disables")
+	minMeasuredDownloadMBps := fs.Float64("min-measured-download-mbps", defaultMinMeasuredDownloadMBps, "minimum measured post-SSH download throughput in MB/s; 0 disables")
+	networkCandidateAttempts := fs.Int("network-candidate-attempts", defaultNetworkCandidateAttempts, "maximum distinct Vast machines to try during provider startup and measured-network qualification")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	hours, err := strconv.ParseFloat(*hoursValue, 64)
 	if err != nil || hours <= 0 {
 		return fmt.Errorf("invalid --hours value %q", *hoursValue)
+	}
+	if err := validateNetworkMinimums(*minNetworkMbps, *minMeasuredDownloadMBps); err != nil {
+		return err
+	}
+	if err := validateNetworkCandidateAttempts(*networkCandidateAttempts); err != nil {
+		return err
 	}
 	runtimeRequest, err := normalizeRuntime(*runtimeValue)
 	if err != nil {
@@ -68,6 +77,11 @@ func runStartResumable(args []string) (retErr error) {
 	if err != nil {
 		return err
 	}
+	releaseLifecycle, err := acquireLifecycleLock(paths)
+	if err != nil {
+		return err
+	}
+	defer releaseLifecycle()
 	if existing, loadErr := sessionstate.Load(paths); loadErr == nil {
 		next := "run: stint status or stint down"
 		if existing.Status == sessionstate.StatusRecoverable || checkpointIsRecoverable(existing.Checkpoint) {
@@ -107,11 +121,19 @@ func runStartResumable(args []string) (retErr error) {
 			return err
 		}
 	}
+	offers = filterOffersByMinimumNetwork(offers, *minNetworkMbps)
+	if len(offers) == 0 {
+		return fmt.Errorf("no qualifying interactive offers meet the minimum advertised network %.0f Mbps; lower --min-network-mbps or retry the marketplace", *minNetworkMbps)
+	}
+	candidates := selectNetworkCandidates(profile, offers, *networkCandidateAttempts)
+	if len(candidates) == 0 {
+		return errors.New("no qualifying interactive offers remain after policy ranking")
+	}
 	plan, err := core.CreateSessionPlan(profile, hours, offers)
 	if err != nil {
 		return err
 	}
-	selected := plan.Workers[0].Offer
+	selected := candidates[0]
 	selectedRuntime, err := selectInteractiveRuntime(runtimeRequest, selected.GPUModel)
 	if err != nil {
 		return err
@@ -135,6 +157,11 @@ func runStartResumable(args []string) (retErr error) {
 	fmt.Printf("GPU            %s\n", selected.GPUModel)
 	fmt.Printf("Location       %s\n", valueOr(selected.Geolocation, "unknown"))
 	fmt.Printf("Price          $%.3f/hr\n", selected.HourlyUSD)
+	fmt.Printf("Network        %.0f Mbps advertised (min %.0f)\n", selected.InetDownMBps, *minNetworkMbps)
+	if *minMeasuredDownloadMBps > 0 {
+		fmt.Printf("Probe minimum  %.1f MB/s measured\n", *minMeasuredDownloadMBps)
+		fmt.Printf("Host attempts  up to %d distinct machine(s)\n", len(candidates))
+	}
 	fmt.Printf("Duration cap   %.2fh\n", hours)
 	fmt.Printf("Compute cap    $%.2f\n", plan.EstimatedTotalUSD)
 	fmt.Printf("Model          %s\n", interactiveModelAlias)
@@ -161,14 +188,7 @@ func runStartResumable(args []string) (retErr error) {
 
 	rootCtx, stop := signalContext()
 	defer stop()
-	startedAt := time.Now().UTC()
-	deadline := startedAt.Add(time.Duration(hours * float64(time.Hour)))
-	state := sessionstate.State{
-		OfferID: selected.ID, Profile: profileName, GPUModel: selected.GPUModel,
-		RuntimeRequest: runtimeRequest, Runtime: selectedRuntime, ContextTokens: selectedContext,
-		HourlyUSD: selected.HourlyUSD, Hours: hours, StartedAt: startedAt, Deadline: deadline,
-		Status: sessionstate.StatusRenting,
-	}
+	var state sessionstate.State
 	created := false
 	ready := false
 	defer func() {
@@ -199,57 +219,163 @@ func runStartResumable(args []string) (retErr error) {
 		_ = sessionstate.Clear(paths)
 	}()
 
-	fmt.Println("Renting selected offer...")
-	instanceID, err := client.CreateInstance(rootCtx, selected.ID, vast.CreateInstanceOptions{
-		Image:  vastImageForRuntime(runtimeRequest),
-		DiskGB: profile.Session.StorageGB,
-		Label:  "stint-interactive",
-	})
-	if err != nil {
-		return err
-	}
-	created = true
-	state.InstanceID = instanceID
-	state.Status = sessionstate.StatusBooting
-	state.Checkpoint = sessionstate.CheckpointInstanceCreated
-	if err := sessionstate.Save(paths, state); err != nil {
-		return fmt.Errorf("instance %d was created but state persistence failed: %w", instanceID, err)
-	}
-	fmt.Printf("Instance       %d\n", instanceID)
+	qualified := false
+	for attempt, candidate := range candidates {
+		candidateRuntime, candidateErr := selectInteractiveRuntime(runtimeRequest, candidate.GPUModel)
+		if candidateErr != nil {
+			return candidateErr
+		}
+		candidateContext := contextForRuntime(candidateRuntime)
+		if strings.TrimSpace(*contextValue) != "" {
+			if candidateRuntime != runtimeLlamaCpp {
+				return errors.New("--context is supported only with llama.cpp; use --ninfer-config for NInfer context profiles")
+			}
+			candidateContext, candidateErr = resolveLlamaContext(*contextValue)
+			if candidateErr != nil {
+				return candidateErr
+			}
+		}
+		if candidateRuntime == runtimeNInfer {
+			candidateContext = requestedNInferConfig.ContextTokens
+		}
 
-	watchdogPID, err := spawnWatchdog(paths)
-	if err != nil {
-		return fmt.Errorf("start session watchdog: %w", err)
-	}
-	state.WatchdogPID = watchdogPID
-	if err := sessionstate.Save(paths, state); err != nil {
-		return err
-	}
+		selected = candidate
+		selectedRuntime = candidateRuntime
+		selectedContext = candidateContext
+		startedAt := time.Now().UTC()
+		deadline := startedAt.Add(time.Duration(hours * float64(time.Hour)))
+		state = sessionstate.State{
+			OfferID: selected.ID, Profile: profileName, GPUModel: selected.GPUModel,
+			RuntimeRequest: runtimeRequest, Runtime: selectedRuntime, ContextTokens: selectedContext,
+			HourlyUSD: selected.HourlyUSD, Hours: hours, StartedAt: startedAt, Deadline: deadline,
+			Status: sessionstate.StatusRenting,
+		}
 
-	if err := retryAttachSSHKey(rootCtx, client, instanceID, publicKey, 90*time.Second); err != nil {
-		return err
-	}
-	_ = os.Remove(filepath.Join(paths.StateDir, "known_hosts"))
+		if len(candidates) > 1 {
+			fmt.Printf("Renting candidate %d/%d (%s, %s, %.0f Mbps advertised)...\n", attempt+1, len(candidates), selected.GPUModel, valueOr(selected.Geolocation, "unknown"), selected.InetDownMBps)
+		} else {
+			fmt.Println("Renting selected offer...")
+		}
+		instanceID, createErr := client.CreateInstance(rootCtx, selected.ID, vast.CreateInstanceOptions{
+			Image:   vastImageForRuntime(runtimeRequest),
+			DiskGB:  profile.Session.StorageGB,
+			Label:   "stint-interactive",
+			OnStart: vastOnStartForRuntime(selectedRuntime),
+		})
+		if createErr != nil {
+			return createErr
+		}
+		created = true
+		state.InstanceID = instanceID
+		state.Status = sessionstate.StatusBooting
+		state.Checkpoint = sessionstate.CheckpointInstanceCreated
+		if err := sessionstate.Save(paths, state); err != nil {
+			return fmt.Errorf("instance %d was created but state persistence failed: %w", instanceID, err)
+		}
+		fmt.Printf("Instance       %d\n", instanceID)
 
-	fmt.Println("Waiting for Vast SSH...")
-	instance, err := waitForSSHMetadata(rootCtx, client, instanceID, providerStartupTimeout)
-	if err != nil {
-		return err
+		watchdogPID, watchdogErr := spawnWatchdog(paths)
+		if watchdogErr != nil {
+			return fmt.Errorf("start session watchdog: %w", watchdogErr)
+		}
+		state.WatchdogPID = watchdogPID
+		if err := sessionstate.Save(paths, state); err != nil {
+			return err
+		}
+
+		if err := retryAttachSSHKey(rootCtx, client, instanceID, publicKey, 90*time.Second); err != nil {
+			return err
+		}
+		_ = os.Remove(filepath.Join(paths.StateDir, "known_hosts"))
+
+		fmt.Println("Waiting for Vast SSH...")
+		instance, metadataErr := waitForSSHMetadata(rootCtx, client, instanceID, providerStartupTimeout)
+		if metadataErr != nil {
+			if rootCtx.Err() != nil {
+				return metadataErr
+			}
+			rejectedInstanceID := state.InstanceID
+			if destroyErr := destroyRejectedInstance(client, paths, state); destroyErr != nil {
+				return fmt.Errorf("provider startup failed (%v), and cleanup of instance %d failed: %w", metadataErr, rejectedInstanceID, destroyErr)
+			}
+			created = false
+			fmt.Printf("Rejected        instance %d (provider startup failed: %v)\n", rejectedInstanceID, metadataErr)
+			if attempt+1 < len(candidates) {
+				fmt.Println("Trying next network candidate...")
+				continue
+			}
+			return fmt.Errorf("startup exhausted %d distinct candidate(s); instance %d never became SSH-ready: %w", len(candidates), rejectedInstanceID, metadataErr)
+		}
+		state.SSHHost = instance.SSHHost
+		state.SSHPort = instance.SSHPort
+		state.Status = sessionstate.StatusSSHConnecting
+		if err := sessionstate.Save(paths, state); err != nil {
+			return err
+		}
+		if sshErr := waitForSSH(rootCtx, paths, state, 4*time.Minute); sshErr != nil {
+			if rootCtx.Err() != nil {
+				return sshErr
+			}
+			rejectedInstanceID := state.InstanceID
+			if destroyErr := destroyRejectedInstance(client, paths, state); destroyErr != nil {
+				return fmt.Errorf("SSH startup failed (%v), and cleanup of instance %d failed: %w", sshErr, rejectedInstanceID, destroyErr)
+			}
+			created = false
+			fmt.Printf("Rejected        instance %d (SSH startup failed: %v)\n", rejectedInstanceID, sshErr)
+			if attempt+1 < len(candidates) {
+				fmt.Println("Trying next network candidate...")
+				continue
+			}
+			return fmt.Errorf("startup exhausted %d distinct candidate(s); instance %d never accepted SSH: %w", len(candidates), rejectedInstanceID, sshErr)
+		}
+		state.Status = sessionstate.StatusSSHReady
+		state.Checkpoint = sessionstate.CheckpointSSHReady
+		state.LastError = ""
+		if err := sessionstate.Save(paths, state); err != nil {
+			return err
+		}
+
+		if *minMeasuredDownloadMBps <= 0 {
+			qualified = true
+			break
+		}
+
+		fmt.Println("Checking remote download throughput before model startup...")
+		measured, probeErr := measureRemoteDownloadMBps(rootCtx, paths, state)
+		if probeErr != nil {
+			rejectedInstanceID := state.InstanceID
+			if destroyErr := destroyRejectedInstance(client, paths, state); destroyErr != nil {
+				return fmt.Errorf("network qualification probe failed (%v), and cleanup of instance %d failed: %w", probeErr, rejectedInstanceID, destroyErr)
+			}
+			created = false
+			fmt.Printf("Rejected        instance %d (network probe failed: %v)\n", rejectedInstanceID, probeErr)
+			if attempt+1 < len(candidates) {
+				fmt.Println("Trying next network candidate...")
+				continue
+			}
+			return fmt.Errorf("network qualification exhausted %d distinct candidate(s); last probe failed on instance %d: %w", len(candidates), rejectedInstanceID, probeErr)
+		}
+
+		fmt.Printf("Network probe   %.1f MB/s measured (min %.1f)\n", measured, *minMeasuredDownloadMBps)
+		if measured < *minMeasuredDownloadMBps {
+			rejectedInstanceID := state.InstanceID
+			if destroyErr := destroyRejectedInstance(client, paths, state); destroyErr != nil {
+				return fmt.Errorf("instance %d measured %.1f MB/s below the %.1f MB/s minimum, and cleanup failed: %w", rejectedInstanceID, measured, *minMeasuredDownloadMBps, destroyErr)
+			}
+			created = false
+			fmt.Printf("Rejected        instance %d (%.1f MB/s below %.1f MB/s)\n", rejectedInstanceID, measured, *minMeasuredDownloadMBps)
+			if attempt+1 < len(candidates) {
+				fmt.Println("Trying next network candidate...")
+				continue
+			}
+			return fmt.Errorf("network qualification exhausted %d distinct candidate(s); instance %d measured %.1f MB/s below the %.1f MB/s minimum", len(candidates), rejectedInstanceID, measured, *minMeasuredDownloadMBps)
+		}
+
+		qualified = true
+		break
 	}
-	state.SSHHost = instance.SSHHost
-	state.SSHPort = instance.SSHPort
-	state.Status = sessionstate.StatusSSHConnecting
-	if err := sessionstate.Save(paths, state); err != nil {
-		return err
-	}
-	if err := waitForSSH(rootCtx, paths, state, 4*time.Minute); err != nil {
-		return err
-	}
-	state.Status = sessionstate.StatusSSHReady
-	state.Checkpoint = sessionstate.CheckpointSSHReady
-	state.LastError = ""
-	if err := sessionstate.Save(paths, state); err != nil {
-		return err
+	if !qualified {
+		return errors.New("network qualification did not select a candidate")
 	}
 
 	state.Status = sessionstate.StatusRuntimeBootstrap

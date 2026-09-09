@@ -19,3 +19,10 @@ func vastImageForRuntime(runtime string) string {
 	}
 	return interactiveImage
 }
+
+// Runtime setup starts only after the provider reports SSH metadata and Stint
+// has established an SSH connection. Keep the hook explicit so the startup
+// retry flow can pass it to Vast without relying on an unverified custom image.
+func vastOnStartForRuntime(string) string {
+	return ""
+}
