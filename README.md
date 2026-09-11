@@ -31,7 +31,7 @@ Stint separates identity from infrastructure credentials.
 - **Compute provider:** the user's Vast API key remains a local BYOC credential and is not a Stint identity credential.
 - **Repository evidence:** Spark owns repository/change evidence and GitHub App integration.
 
-See [`docs/AUTH.md`](docs/AUTH.md).
+See the [authentication guide](docs/guides/authentication.md).
 
 ## Pre-V0 phases
 
@@ -107,7 +107,7 @@ lower price
 higher GPU power allowance (preferred >= 350 W)
 ```
 
-Vast discovery is intentionally broader and capped at `$0.60/hour` so Stint can inspect candidates and explain hard-policy rejections instead of receiving an opaque zero-result response. Failed plans print marketplace diagnostics and still end with `NO COMPUTE HAS BEEN RENTED.` See [`docs/PHASE2.md`](docs/PHASE2.md).
+Vast discovery is intentionally broader and capped at `$0.60/hour` so Stint can inspect candidates and explain hard-policy rejections instead of receiving an opaque zero-result response. Failed plans print marketplace diagnostics and still end with `NO COMPUTE HAS BEEN RENTED.` The original live-planner findings are retained in the [Phase 2 record](docs/history/phase-2.md).
 
 ## Layout
 
