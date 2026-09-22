@@ -39,6 +39,9 @@ not the target design.
   `integrate/deep-work-onbox-recovery-20260922`, stacks on #100 with commit
   `1356ef4` for durable resume/rebind on restored compute. PR #100 previously
   reported no checks; PR #101 is open/draft. None of these drafts are merged.
+  Draft PR #102 (https://github.com/Marguelgtz/Stint/pull/102), branch
+  `integrate/deep-work-publisher-policy-20260923`, stacks on #101 with commit
+  `04151f5` for persisted GitHub policy and bounded engineering publication.
 - All historical Deep Work feature PRs remain open. Their source heads share an
   old base (`d34cb2b...`) and are not safe merge units against current `main`.
   Use their code and evidence selectively on this clean integration branch.
@@ -50,8 +53,13 @@ not the target design.
   followed by #76 `fix/p0-ninfer-session-safety` (`792bb50`). Neither is merged.
   Reconcile only fixes still absent from or incorrect in current `main`.
 - #85 (`feat/deep-work-github-modes`, `dd03489`) adds autonomous GitHub maintenance
-  authority. Keep it separate unless dependency inspection proves core publication
-  requires it and its gates can be repaired without destabilizing core execution.
+  authority. Direct source inspection found generic arbitrary-branch push authority
+  (including the configured base), environment-owned config with no durable mission
+  policy comparison, existing-PR lookup capped at 10 without pagination, inventory
+  capped at 1,000 without failing when the cap is reached, review/comment/file/
+  commit/check-run collections capped at 100, review-thread comments capped at 20,
+  and overrideable API/git URLs not bound to the configured repository. Keep it
+  separate; core checkpoint publication does not require merge authority.
 - Generated/live-run PRs #81–84 and #86–89 are evidence or run products, not source
   integration units. #81–84 report a prior GPU smoke; #86–89 are later generated
   run branches and their latest reported `build-check` failed. Inspect before any
@@ -231,8 +239,19 @@ not the target design.
   check directly before `CreateInstance`; a candidate can satisfy the hourly cap
   and still be rejected for the requested duration. The focused regression uses a
   $0.30/hour initial offer and a $0.40/hour fallback over seven hours against the
-  $2.50 ceiling. GitHub publisher authority and pagination remain under audit;
-  #85 remains deferred pending dependency and gate inspection.
+  $2.50 ceiling. PR #102 now persists mission GitHub mode/repository/base/allowed-
+  authors/approval and checks launcher, resume, durable state, and publication
+  records against that authority. Its engineering publisher restricts pushes to
+  generated refs for the same session, validates exact checkpoint/PR/landing
+  identities, preserves mismatched publication records, and fully paginates its
+  existing-PR query with a 10,000-result bound plus lookahead failure. Seven Python
+  fixture tests cover policy, API/push URL binding, push restrictions, pagination
+  limits, PR identity, retry preservation, and exact final landing. The broader
+  #85 maintenance and merge APIs are not dependencies of core publication and
+  remain deferred because their generic push and bounded collection gaps are not
+  repaired by this slice. PR #102 is open/draft and stacks on #101; local
+  verification passed and its GitHub `build-check`, `go-vet`, `unit-tests`,
+  `race-tests`, and `spark-profile` checks passed. No live GPU smoke has been run.
 
 ### [~] Reconcile immutable NInfer revision and transfer recovery
 
@@ -275,11 +294,14 @@ not the target design.
 - PR #100 commit `453c91f`: `go test ./...` — PASS; `bash -n` for the launcher, provisioner, phase setup, smoke, and supervisor scripts — PASS; Python byte-compilation for phase proxy, observer, and publisher — PASS; `git diff --check` — PASS. ShellCheck is unavailable.
 - PR #100 currently reports no GitHub checks. No fresh GPU validation has been run against PR #100. Local static checks do not prove package installs, Hermes configuration compatibility, route inference, watchdog startup, or supervisor recovery on a clean GPU.
 - PR #101 commit `1356ef4`: `go test -count=1 ./cmd/stint ./internal/deep ./internal/session` — PASS; `go test ./...` — PASS; Bash syntax for launcher, supervisor, provisioner, and live-smoke scripts — PASS; embedded resume-preflight Python compile and fixture checks (same identity, implicit mismatch refusal, explicit mismatch allowance, missing branch refusal) — PASS; `git diff --check` — PASS. GitHub `build-check`, `go-vet`, `race-tests`, `spark-profile`, and `unit-tests` — PASS. No live replacement-compute or volume-restore run has been performed.
+- PR #102 implementation commit `04151f5`: `go test -count=1 ./...` — PASS; `python3 scripts/test_onbox_github_publish.py` — PASS (7 tests); Python byte-compilation — PASS; Bash syntax for launcher, smoke, supervisor, and provisioner — PASS; embedded resume-preflight Python compilation — PASS; `git diff --check` — PASS. Draft PR #102 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. No live GPU smoke was run.
 
 ## Next action
 
-Audit publisher policy authority, push restrictions, pagination, and
-landing/publication identity before attempting the authorized fresh-GPU smoke.
-PR #101 provides the explicit compute-resume gate but does not restore state
-volumes; confirm a durable-volume restoration path before treating replacement
-compute recovery as operationally complete.
+Wait for and inspect PR #102 exact-head CI, then continue the remaining fixture
+state-machine and runtime verification against the cumulative head. Audit the
+actual completion/teardown transaction and NInfer corrupt/oversized transfer
+recovery. Before the authorized fresh-GPU smoke, confirm a durable-volume restore
+path: PR #101 provides the explicit compute-resume gate but does not restore state
+volumes. Do not claim replacement-compute recovery is operational until that path
+is exercised or the external dependency is recorded as a blocker.
