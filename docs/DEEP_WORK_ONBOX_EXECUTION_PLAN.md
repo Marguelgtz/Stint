@@ -32,7 +32,10 @@ not the target design.
   (https://github.com/Marguelgtz/Stint/pull/99), branch
   `integrate/deep-work-hermes-only-20260922`, stacks on #98 with commit
   `5401752` for compute identity, Hermes-only execution, and dashboard safety.
-  None of these drafts are merged.
+  Draft PR #100 (https://github.com/Marguelgtz/Stint/pull/100), branch
+  `integrate/deep-work-bootstrap-20260922`, stacks on #99 with commit
+  `453c91f` for fresh-box qualification and current operator docs. PR #100 is
+  open/draft and reports no checks yet. None of these drafts are merged.
 - All historical Deep Work feature PRs remain open. Their source heads share an
   old base (`d34cb2b...`) and are not safe merge units against current `main`.
   Use their code and evidence selectively on this clean integration branch.
@@ -135,12 +138,19 @@ not the target design.
 - **Acceptance:** Fresh-box fixture and exact launcher-path checks establish both
   routes, verification tools, durable state, and supervisor readiness before
   `RUNNING`; restart/disconnect fixture passes.
-- **Outcome / uncertainty:** Core Deep Work source, on-box launcher/supervisor,
-  phase proxy, and smoke scripts are now in the isolated integration worktree.
-  `go test ./cmd/stint ./internal/deep ./internal/deepdashboard` passes after
-  integration. Fresh-box qualification, proxy installation on a newly provisioned
-  instance, declared verification-tool preflight, and live GPU execution remain
-  open; the old GPU report is historical evidence only.
+- **Outcome / uncertainty:** The production launcher now transfers and runs the
+  runtime provisioner, phase proxy/setup, observer, route smoke, and optional
+  two-lane smoke before it starts the supervisor. `run-onbox-deep-smoke.sh` now
+  calls that same launcher path instead of manually preparing the GPU. Provisioning
+  installs missing Hermes/Node and a checksum-verified current Go toolchain for a
+  repo with `go.mod`; for Stint itself it runs `go test ./...` before startup and
+  checks NInfer flags and the requested model. Generic missions still receive
+  executable-presence preflight only; arbitrary language dependencies are not
+  installed. Commit `453c91f` is pushed in draft PR #100, stacked on #99. Local
+  full Go tests, shell syntax, Python byte-compilation, and diff checks pass. A
+  fresh GPU has not run this launcher yet, so actual install/provider behavior,
+  readiness, and disconnect recovery remain unverified; historical GPU evidence
+  is not evidence for this head.
 
 ### [~] Repair coordinator identity, policy reconstruction, and durable transitions
 
@@ -251,9 +261,10 @@ not the target design.
 
 ## Verification so far
 
-- On working branch `integrate/deep-work-hermes-only-20260922`, `go test ./cmd/stint ./internal/deep ./internal/deepdashboard` — PASS after the Hermes-only, compute-binding, dashboard identity, reserved task-ID, and model-endpoint changes. `git diff --check` — PASS.
-- These focused package results ran on the tree committed as `5401752` and pushed to draft PR #99. They do not verify the full repository, a fresh-box bootstrap, or a live GPU run.
+- PR #99 commit `5401752`: `go test ./cmd/stint ./internal/deep ./internal/deepdashboard` and `git diff --check` — PASS.
+- PR #100 commit `453c91f`: `go test ./...` — PASS; `bash -n` for the launcher, provisioner, phase setup, smoke, and supervisor scripts — PASS; Python byte-compilation for phase proxy, observer, and publisher — PASS; `git diff --check` — PASS. ShellCheck is unavailable.
+- PR #100 currently reports no GitHub checks. No fresh GPU validation has been run against PR #100. Local static checks do not prove package installs, Hermes configuration compatibility, route inference, watchdog startup, or supervisor recovery on a clean GPU.
 
 ## Next action
 
-Continue with the production launcher: install and qualify fresh-box Hermes phase providers, observer, and verifier environment through the same path used by the smoke. Rewrite the stale Cline user guides and audit GitHub publication gates before full-system verification.
+Add an explicit, durable on-box resume/rebind path for replacement compute. Ensure the launcher can resume without deleting the saved repo/state and that a resumed session writes the readiness handshake only after its identity and recovery checks pass. Then audit publisher policy authority, push restrictions, pagination, and landing/publication identity before a live GPU run.
