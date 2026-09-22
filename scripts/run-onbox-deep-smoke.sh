@@ -91,17 +91,7 @@ KEY="$CONFIG_ROOT/stint/ssh/id_ed25519"
 chmod 600 "$KEY"
 SSH=(ssh -i "$KEY" -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "root@$HOST")
 
-say "provisioning Hermes and phase routes on $HOST:$PORT"
-timeout 25m "${SSH[@]}" 'bash -s' < "$REPO_ROOT/scripts/provision-box.sh" >>"$LOG" 2>&1
-rsync -a -e "ssh -i $KEY -p $PORT -o BatchMode=yes -o StrictHostKeyChecking=accept-new" \
-  "$REPO_ROOT/scripts/phaseproxy.py" "$REPO_ROOT/scripts/box-phase-setup.sh" \
-  "$REPO_ROOT/scripts/deep-observe.sh" "$REPO_ROOT/scripts/phase-lane-concurrency-smoke.sh" \
-  "root@$HOST:/root/" >>"$LOG" 2>&1
-"${SSH[@]}" 'chmod +x /root/phaseproxy.py /root/box-phase-setup.sh /root/deep-observe.sh /root/phase-lane-concurrency-smoke.sh && PHASE_PROXY=/root/phaseproxy.py /root/box-phase-setup.sh' >>"$LOG" 2>&1
-timeout 12m "${SSH[@]}" 'STINT_PHASED=1 PHASING_DIR=/root/stint-phasing bash -s' < "$REPO_ROOT/scripts/box-smoke.sh" >>"$LOG" 2>&1
-timeout 6m "${SSH[@]}" 'PHASING_DIR=/root/stint-phasing /root/phase-lane-concurrency-smoke.sh' >>"$LOG" 2>&1
-
-say "starting detached on-box supervisor"
+say "starting detached supervisor through the production launcher; it installs and tests the same fresh-box runtime, phase routes, verifier tools, and compression configuration as every Deep Work run"
 STINT_BOX_HOST="$HOST" STINT_BOX_PORT="$PORT" STINT_BOX_KEY="$KEY" \
   STINT_MISSION="$MISSION_PATH" STINT_REPO="$REPO_ROOT" \
   STINT_BIN="$STINT_BIN" STINT_REMOTE_ROOT="$REMOTE_ROOT" \

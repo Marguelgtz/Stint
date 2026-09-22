@@ -10,15 +10,16 @@ fail() { echo "LANE_SMOKE_FAIL $*"; exit 1; }
 command -v hermes >/dev/null 2>&1 || fail "hermes missing"
 pgrep -x ninfer-serve >/dev/null 2>&1 || fail "ninfer-serve missing"
 cmdline="$(tr '\0' ' ' </proc/$(pgrep -xo ninfer-serve)/cmdline 2>/dev/null || true)"
-printf '%s' "$cmdline" | grep -Fq -- '--max-concurrency 2' || fail "NInfer is not serving two lanes"
+max_concurrency="$(printf '%s' "$cmdline" | sed -n 's/.*--max-concurrency \([0-9][0-9]*\).*/\1/p')"
+[ -n "$max_concurrency" ] && [ "$max_concurrency" -ge 2 ] || fail "NInfer is not serving at least two lanes"
 
 : >"$PHASING_DIR/wire-xhigh.jsonl"
 : >"$PHASING_DIR/wire-medium.jsonl"
 set +e
-timeout 150 hermes chat -q 'Reply with exactly: LANE_XHIGH_OK' --oneshot -Q \
+timeout 150 hermes chat -q 'Reply with exactly: LANE_XHIGH_OK' --oneshot \
   --provider custom:qwen-stint-xhigh -m "$MODEL" >/tmp/lane-xhigh.out 2>&1 &
 xhigh_pid=$!
-timeout 150 hermes chat -q 'Reply with exactly: LANE_MEDIUM_OK' --oneshot -Q \
+timeout 150 hermes chat -q 'Reply with exactly: LANE_MEDIUM_OK' --oneshot \
   --provider custom:qwen-stint-medium -m "$MODEL" >/tmp/lane-medium.out 2>&1 &
 medium_pid=$!
 wait "$xhigh_pid"; xhigh_status=$?

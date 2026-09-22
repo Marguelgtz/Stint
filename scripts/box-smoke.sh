@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# P2 gate: configure the box's Hermes for Deep Work --worker hermes and
+# Fresh-box gate: configure the box's Hermes for on-box Deep Work and
 # empirically verify the exact headless invocation the Stint executor uses
 # reaches the box's local model endpoint. Run OVER SSH, after
 # provision-box.sh:
 #
-#   ssh -i <stint-key> -p <port> root@<host> 'bash -s' < scripts/box-smoke.sh
+#   ssh -i <stint-key> -p <port> root@<host> /root/.../box-smoke.sh
 #
 # Idempotent. Set STINT_PHASED=1 after box-phase-setup.sh to smoke both
 # distinct reasoning routes as well as the ordinary Hermes safety gates.
@@ -97,7 +97,7 @@ echo "SMOKE approvals.single_query_mode now: $(hermes config get approvals.singl
 
 # A: the exact executor shape (minus the prompt staging) reaches the model.
 echo "=== SMOKE A: provider=custom reaches local model? (bounded 150s) ==="
-timeout 150 hermes chat -q "Reply with exactly: OK" --oneshot -Q \
+timeout 150 hermes chat -q "Reply with exactly: OK" --oneshot \
   --provider "$SMOKE_PROVIDER" -m "$HERMES_MODEL" >/tmp/smoke_a.out 2>&1
 ec=$?
 echo "  $(tail -3 /tmp/smoke_a.out | tr '\n' ' ')"
@@ -106,7 +106,7 @@ echo "SMOKE A exit=$ec"
 
 if [ "$STINT_PHASED" = 1 ]; then
   echo "=== SMOKE A2: medium phase route reaches local model? (bounded 150s) ==="
-  timeout 150 hermes chat -q "Reply with exactly: OK" --oneshot -Q \
+  timeout 150 hermes chat -q "Reply with exactly: OK" --oneshot \
     --provider custom:qwen-stint-medium -m "$HERMES_MODEL" >/tmp/smoke_a2.out 2>&1
   ec=$?
   echo "  $(tail -3 /tmp/smoke_a2.out | tr '\n' ' ')"
@@ -124,7 +124,7 @@ fi
 # B: an ordinary command runs headless inside the agent run.
 echo "=== SMOKE B: ordinary command runs headless? (bounded 150s) ==="
 timeout 150 hermes chat -q "Run this exact shell command and quote its output verbatim: echo CP1SMOKE_OK" \
-  --oneshot -Q --provider "$SMOKE_PROVIDER" -m "$HERMES_MODEL" >/tmp/smoke_b.out 2>&1
+  --oneshot --provider "$SMOKE_PROVIDER" -m "$HERMES_MODEL" >/tmp/smoke_b.out 2>&1
 ec=$?
 echo "  $(tail -3 /tmp/smoke_b.out | tr '\n' ' ')"
 echo "SMOKE B exit=$ec"
@@ -137,7 +137,7 @@ echo "=== SMOKE C: dangerous-class command denied, not hung? (bounded 90s) ==="
 mkdir -p /tmp/stint-smoke-deny-sentinel
 printf 'must survive the approval check\n' >/tmp/stint-smoke-deny-sentinel/marker
 timeout 90 hermes chat -q "Run this exact shell command: rm -rf /tmp/stint-smoke-deny-sentinel" \
-  --oneshot -Q --provider "$SMOKE_PROVIDER" -m "$HERMES_MODEL" >/tmp/smoke_c.out 2>&1
+  --oneshot --provider "$SMOKE_PROVIDER" -m "$HERMES_MODEL" >/tmp/smoke_c.out 2>&1
 ec=$?
 echo "  $(tail -3 /tmp/smoke_c.out | tr '\n' ' ')"
 echo "SMOKE C exit=$ec  (124 = timed out/hung; else = responded)"

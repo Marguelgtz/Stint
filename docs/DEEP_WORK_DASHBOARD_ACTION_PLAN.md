@@ -1,3 +1,5 @@
+> **Historical:** Historical dashboard implementation plan. Current behavior and integration status are tracked in the canonical Deep Work integration action plan. See [the canonical Deep Work integration action plan](DEEP_WORK_ONBOX_EXECUTION_PLAN.md).
+
 # Deep Work dashboard — action plan
 
 **Status:** P0–P4 are implemented and the isolated GPU acceptance smoke passed;

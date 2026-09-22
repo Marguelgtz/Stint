@@ -44,12 +44,16 @@ write_vast_session() {
   local session_file="$STATE_HOME/stint/session.json"
   local instance_id="${STINT_ONBOX_INSTANCE_ID:-}"
   local deadline="${STINT_ONBOX_DEADLINE:-}"
+  local started_at="${STINT_ONBOX_STARTED_AT:-}"
   [ -n "$instance_id" ] && [ -n "$deadline" ] || return 0
   command -v python3 >/dev/null 2>&1 || die "python3 is required for on-box session state"
   mkdir -p "$(dirname "$session_file")"
-  python3 - "$session_file" "$instance_id" "$deadline" <<'PY'
+  python3 - "$session_file" "$instance_id" "$deadline" "$started_at" <<'PY'
 import json, os, sys
-path, instance, deadline = sys.argv[1:]
+import datetime
+path, instance, deadline, started_at = sys.argv[1:]
+if not started_at:
+    started_at = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 payload = {
     "instanceId": int(instance),
     "profile": "deep-onbox",
@@ -57,7 +61,7 @@ payload = {
     "runtimeRequest": "ninfer",
     "contextTokens": 262144,
     "clients": int(os.environ.get("STINT_ONBOX_CLIENTS", "1")),
-    "startedAt": deadline,
+    "startedAt": started_at,
     "deadline": deadline,
     "status": "READY",
     "checkpoint": "READY",
@@ -72,12 +76,12 @@ PY
 }
 
 start_watchdog() {
-  [ "${STINT_ONBOX_SKIP_WATCHDOG:-0}" = 1 ] && return 0
-  [ -n "${STINT_ONBOX_INSTANCE_ID:-}" ] && [ -n "${STINT_ONBOX_DEADLINE:-}" ] || \
-    die "STINT_ONBOX_INSTANCE_ID and STINT_ONBOX_DEADLINE are required (or set STINT_ONBOX_SKIP_WATCHDOG=1 for a fixture)"
-  [ -r "$CONFIG_HOME/stint/credentials.json" ] || die "Vast credentials missing at $CONFIG_HOME/stint/credentials.json"
-  write_vast_session
-  if ! pgrep -f "[s]tint _watchdog" >/dev/null 2>&1; then
+	[ -n "${STINT_ONBOX_INSTANCE_ID:-}" ] && [ -n "${STINT_ONBOX_DEADLINE:-}" ] || \
+		die "STINT_ONBOX_INSTANCE_ID and STINT_ONBOX_DEADLINE are required"
+	write_vast_session
+	[ "${STINT_ONBOX_SKIP_WATCHDOG:-0}" = 1 ] && return 0
+	[ -r "$CONFIG_HOME/stint/credentials.json" ] || die "Vast credentials missing at $CONFIG_HOME/stint/credentials.json"
+	if ! pgrep -f "[s]tint _watchdog" >/dev/null 2>&1; then
     setsid nohup "$STINT_BIN" _watchdog >>"$ROOT/watchdog.log" 2>&1 < /dev/null &
   fi
 }

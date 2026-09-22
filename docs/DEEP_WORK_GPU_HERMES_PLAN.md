@@ -1,3 +1,5 @@
+> **Historical:** Historical pre-implementation plan. Its `PLAN-001` task ID and assumptions are superseded by the current reserved `STINT-PLAN-*` namespace and integration action plan. See [the canonical Deep Work integration action plan](DEEP_WORK_ONBOX_EXECUTION_PLAN.md).
+
 # Deep Work on the GPU with Hermes — Implementation Plan
 
 **Status:** P0–P4 are complete for the remote-over-SSH prototype. **P1** implemented and tested — the `--worker hermes` executor,

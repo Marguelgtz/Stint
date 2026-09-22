@@ -1,3 +1,5 @@
+> **Historical:** Historical Cline-first MVP design; superseded by the current Hermes-on-box integration. See [the canonical Deep Work integration action plan](DEEP_WORK_ONBOX_EXECUTION_PLAN.md).
+
 # Stint Deep Work — MVP Execution (Living Document)
 
 **Status:** ACTIVE execution run (supersedes the PROPOSED gate model of `STINT_DEEP_WORK_INVESTIGATION.md`).

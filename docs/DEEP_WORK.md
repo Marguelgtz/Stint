@@ -1,397 +1,106 @@
-# Stint Deep Work
+# Deep Work
 
-Deep Work hands Stint an **engineering mission** and a **bounded amount of time**. Stint
-then supervises execution continuity: a coding agent (the [Cline CLI](https://github.com/cline/cline),
-pointed at your Stint endpoint) works in an isolated git worktree, and every time an
-invocation ends, **Stint — not the worker — decides what happened next**, using
-repository evidence. A partially completed mission that lands with an honest handoff is a
-successful Deep Work run.
+Deep Work runs bounded engineering missions on a rented GPU box. Stint prepares and verifies the box, then starts a detached on-box supervisor. The coordinator, Hermes, repository verification, checkpoint commits, publication, and final handoff all run on that box.
 
-**Production topology decision (2026-09-08):** the CP1 run must use the on-box
-supervisor mode. The rented instance owns the coordinator, Hermes, worktree,
-verification, checkpoints, handoff, durable state, and deadline destroy path. The
-operator machine may disconnect immediately after launch. The local-coordinator flow
-described below remains a development and recovery fixture until that mode is landed;
-do not use it for CP1.
-
-```
-You            Stint (coordinator)                    Cline CLI (worker)
- │  stint deep start ──────────► │
- │                               │  mission parse, preflight checks
- │                               │  git worktree (stint/deep-<id>)
- │                               │  durable state (deep.json)
- │                               │ ── reconstructed prompt ──────►│  works in worktree
- │                               │ ◄── JSONL events + exit code ──│
- │                               │  runs YOUR verify command
- │                               │  VERIFIED → checkpoint, next task
- │                               │  INCOMPLETE → reconstruct context, re-invoke
- │                               │  BLOCKED → park, continue with next task
- │                               │  … until no safe useful work remains
- │  handoff.md ◄── truthful landing report, worktree left for review
+```text
+Stint compute session
+  → fresh-box bootstrap and qualification
+  → detached on-box supervisor
+  → durable coordinator state
+  → Hermes task invocation
+  → independent verification
+  → checkpoint commit and SHA
+  → publication
+  → resumable landing and handoff
 ```
 
-**Stint orchestrates; Cline executes.** Stint owns the mission, task state, deadline-aware
-loop, workspace, verification, and handoff. Cline owns model interaction and coding-agent
-mechanics. One logical Deep Work worker spans **multiple fresh Cline invocations** —
-continuity comes from durable state + git, never from a long-lived conversation.
+The supported production entry point is [`scripts/launch-onbox-deep.sh`](../scripts/launch-onbox-deep.sh). `stint deep onbox` is the supervisor's box-side command. It expects the launcher to have prepared Hermes providers, phase routing, the verification toolchain, and durable compute identity first.
 
----
+## Before launch
 
-## 1. Prerequisites
+1. Build Stint with `make build`.
+2. Start a Stint compute session with the NInfer runtime and wait for `READY`.
+3. Commit the repository state you want copied to the box. The launcher stages the exact `HEAD`; it does not transfer local uncommitted files.
+4. Prepare a mission with an independent verification command for every task or at mission level.
+5. Provide a GitHub token file with the least authority the configured publisher needs, the target repository and base branch, and the Vast credentials file used by the deadline watchdog.
 
-| Requirement | Check |
-| --- | --- |
-| `stint` built with Deep Work (this branch) | `stint deep` → `deep requires a subcommand: start, status, stop, or resume` |
-| A **READY** compute session | `stint status` (or `stint start interactive --hours 2` first) |
-| The Stint endpoint answering | `curl -s http://127.0.0.1:8409/v1/models` lists a model |
-| Cline CLI on PATH | `cline --version` (install: `npm i -g cline`) |
-| Cline configured once against the endpoint | provider `openai-compatible` with base URL `http://127.0.0.1:8409/v1` (or pass `--provider/--model/--api-key` per run) |
-| A local git repository | `git -C <repo> status` works; **no uncommitted tracked changes** (untracked files are fine) |
-
-Deep Work **rides your existing compute session**: it never rents, extends, or destroys
-compute, and never outlives the session deadline. If the session dies mid-run, re-establish
-compute with the usual `stint resume` / `stint start interactive` and continue with
-`stint deep resume` (§4) — or start a fresh session with `stint deep start`.
-
-**Keep the machine awake.** The coordinator runs in the foreground process you launched.
-Wall-clock deadlines keep advancing while the host sleeps. A sleep that lapses the
-deadline no longer loses the session — `stint deep resume` re-anchors the budget to the
-compute session you restore — but it does consume your compute budget, so `caffeinate`
-(or equivalent) is still the cheap option for long missions.
-
----
-
-## 2. Quick start
+## Production launch
 
 ```sh
-# 1. Compute (existing machinery)
-stint start interactive --hours 4
-
-# 2. Write a mission (see §3)
-$EDITOR mission.md
-
-# 3. Launch — rides the READY session, runs until it lands
-stint deep start --mission mission.md --repo /path/to/repo
-
-# 4. While it runs (optional): inspect progress
-stint deep status
-stint deep status --json
-
-# 5. Intervene if needed: land now, honestly, from durable state
-stint deep stop
-
-# 6. After a crash, a lapsed machine, or a deadline landing
-stint resume            # or: stint start interactive --hours 2
-stint deep resume       # continues the session in the same worktree and branch
+STINT_BOX_HOST=203.0.113.10 \
+STINT_BOX_PORT=22 \
+STINT_BOX_KEY="$HOME/.config/stint/ssh/id_ed25519" \
+STINT_MISSION="$PWD/mission.md" \
+STINT_REPO="$PWD" \
+STINT_GITHUB_TOKEN_FILE="$HOME/.config/stint/github-token" \
+STINT_GITHUB_REPOSITORY=owner/repository \
+STINT_GITHUB_BASE=main \
+STINT_VAST_CREDENTIALS="$HOME/.config/stint/credentials.json" \
+STINT_ONBOX_CLIENTS=2 \
+scripts/launch-onbox-deep.sh
 ```
 
-When the session lands, Stint prints the handoff path. Read
-`~/.local/state/stint/deep/<session-id>/handoff.md` — it is the deliverable:
-verified vs partial vs blocked work, evidence, and the exact next action.
----
+The launcher obtains the instance ID and deadline from the READY Stint state file. If using a non-default state directory, set `STINT_SESSION_JSON` or set `STINT_INSTANCE_ID` and `STINT_DEADLINE` to the same values recorded in that READY state. It refuses an expired session or an identity mismatch.
 
-## 3. The mission file
+Before it reports `RUNNING`, the launcher transfers and runs the same bootstrap used by the live smoke. It installs missing Hermes/Node and a compatible Go toolchain when the target repo has `go.mod`, verifies NInfer and the selected model, runs `go test ./...` for Stint itself, installs phase proxy and observer scripts, configures xhigh/medium providers and compression, and makes real Hermes calls through both routes. When `STINT_ONBOX_CLIENTS=2`, it also verifies concurrent xhigh and medium traffic. Any failed step stops launch before the supervisor starts.
 
-A mission is a small Markdown document. Only `## Objective` and a non-empty `## Tasks`
-list are required; everything else is optional and unknown sections are ignored, so the
-format can grow.
+A Vast credentials file is required because the on-box watchdog enforces the compute deadline. `STINT_ONBOX_SKIP_WATCHDOG=1` is reserved for disposable fixtures and disables automatic teardown. The GitHub publisher can also be disabled with `STINT_ONBOX_SKIP_GITHUB=1` for fixtures; production sessions require publication setup.
+
+## Mission format
 
 ```markdown
-# Fix the flaky session-resume path
+# Example repair
 
 ## Objective
-Make `stint resume` reliably re-attach to a running compute session, and prove it
-with a focused test.
-
-## Success
-- `go test ./internal/session/ -run TestResume` passes
-- no new vet or build failures in the touched packages
-
-## Constraints
-- do not change the Vast API surface
-- keep the change under ~300 lines
-- no new dependencies
+Fix the retry bug in the parser.
 
 ## Verification
-go test ./internal/session/ -count=1
+go test ./...
 
 ## Tasks
-- [ ] T-001: reproduce the resume flake with a failing test
-  - acceptance: a test that fails on the current code exists and is committed
-  - verify: go test ./internal/session/ -run TestResume -count=1
-- [ ] T-002: fix the root cause in the resume path
-  - acceptance: the reproduction test passes and the package suite is green
-  - verify: go test ./internal/session/ -count=1
-- [ ] T-003: document the resume contract in docs/
-  - acceptance: a short section exists and matches the implemented behavior
+- [ ] PARSE-001: Reject the malformed retry header.
+  - acceptance: the parser returns a clear error and keeps valid headers working.
+  - verify: go test ./internal/parser
 ```
 
-### Format rules
+The box preflight checks that declared verifier executables are available. For the Stint Go repository, bootstrap runs `go test ./...` before `RUNNING`. Other repositories must provide their own reproducible dependency setup; a present executable does not prove project dependencies are installed.
 
-| Element | Syntax | Notes |
-| --- | --- | --- |
-| Name | first `# heading` | optional; used in reports |
-| Objective | `## Objective` + lines | **required** |
-| Success criteria | `## Success` bullets | folded into every prompt |
-| Constraints | `## Constraints` bullets | folded into every prompt |
-| Verification | `## Verification` + first line | a shell command Stint runs **in the worktree** after every task attempt and at landing; 3-minute cap |
-| Tasks | `- [ ] ID: objective` | **required, ≥ 1**; `*` or plain `-` also work; `[x]` marks pre-done |
-| Per-task acceptance | indented `- acceptance: …` | human-readable evidence description; included in the prompt |
-| Per-task verify command | indented `- verify: <shell command>` | run by the coordinator in the worktree after each attempt of **this task**; takes precedence over the mission-level `## Verification` for that task; the prompt tells the worker the exact command |
+Coordinator task IDs beginning `STINT-PLAN-` and `STINT-CLOSE-` are reserved. `--action-plan` adds a coordinator-owned xhigh planning task using the reserved namespace.
 
-Task IDs are 1–32 chars of letters, digits, `_`, `-`, and must be unique.
+## Verification and command guidance
 
-### Writing good missions
+A successful Hermes exit is a worker claim. A task becomes `verified` only after its independent verifier succeeds, a checkpoint commit is created, its exact commit SHA is read, and the verified state is persisted. A task without a verifier remains `needs_human`.
 
-1. **Small, independently verifiable tasks.** Each task is a *fresh* agent invocation with
-   no memory of the last one. "Refactor the auth module" is a bad task; "move token
-   validation from `check.go` to `token.go` and keep tests green" is a good one.
-2. **Acceptance you can check.** The coordinator runs your `Verification` command after
-   each attempt. If the command can't tell success from failure, neither can Stint — it
-   will honestly report *unverified* and eventually park the task.
-3. **Scope verification per task when the mission command is broader.** A mission
-   `## Verification` command applies to *every* task — if it only passes once all the
-   work is done, early correctly-scoped tasks fail it and park. Give such tasks a
-   per-task `- verify:` command that checks their own scope (it overrides the mission
-   command for that task, and appears in the worker's prompt); keep the mission command
-   as the final landing check. If every task is independently checkable, per-task
-   commands alone are fine — the mission-level final check simply doesn't run.
-4. **Keep the list short** (3–8 tasks), ordered by dependency: earlier tasks' work is
-   committed before later tasks start, and later invocations see it in the repository state.
-5. **Constraints are guidance; policy is the rail.** The worktree, local-only commits, and
-   the landing deadline are hard; your constraints text guides the worker's judgment.
----
+`--allow-command` adds advisory prompt text only. Stint does not enforce a command allow-list at the Hermes process boundary. Do not treat this setting as a security boundary.
 
-## 4. How a session works
+Hermes prompt files are created in protected temporary storage outside the target repository and removed after each invocation. Phase and compression counts shown by the worker view come from shared host logs. They are explicitly not attributed to a particular Deep Work session and are not task acceptance evidence.
 
-### Preflight (fails fast, before any side effects)
+## State and recovery
 
-1. The mission file parses and has at least one task.
-2. A **READY** compute session exists and its deadline is in the future.
-3. `cline` is on PATH; the model is known (your `--model`, else the first model the
-   Stint endpoint serves).
-4. The target repo is a git repository with no uncommitted **tracked** changes.
+Deep Work state is stored on the GPU under the supervisor's state root (default `/var/lib/stint-onbox/state/stint/deep`). It records the owning Vast instance. The dashboard only attaches live telemetry and enables landing when the active READY compute instance matches that binding. Resuming on replacement compute requires an explicit audited rebind, and Stint first checks that the saved branch and worktree can be recovered there.
 
-Then Stint creates the session: a Stint-owned **git worktree** at
-`<repo>/.stint-deep/<session-id>` on branch `stint/deep-<session-id>`, cut from the repo's
-current HEAD, and initializes durable state. Your active checkout is never touched.
+The on-box supervisor resumes persisted settings after a process failure. It does not take omitted command-line defaults as new policy. Landing is a durable transaction; an interrupted landing is resumed from its saved phase, and the handoff records the exact landing commit.
 
-### The loop
+To inspect from the GPU host:
 
-Each iteration the coordinator:
+```sh
+XDG_STATE_HOME=/var/lib/stint-onbox/state /var/lib/stint-onbox/bin/stint deep status
+XDG_STATE_HOME=/var/lib/stint-onbox/state /var/lib/stint-onbox/bin/stint deep dash
+```
 
-1. Re-reads the on-disk state (so `stint deep stop` from another terminal is honored
-   immediately).
-2. If the clock has reached the **landing window** (default: 10 min before the deadline;
-   a quarter of shorter windows), it lands instead of starting new work.
-3. Selects the first task that is not terminal: `queued`, or `incomplete` (retryable).
-4. If even one invocation (`--task-timeout`) would overrun the landing window, a
-   `queued` task is parked as `blocked` ("not started: insufficient time") and it lands.
-5. Otherwise it invokes Cline in the worktree with a **reconstructed prompt**:
-   mission, task ID/objective/acceptance, previous attempt result, findings, and the
-   current repository state (branch, HEAD, recent commits, diff vs base, uncommitted
-   changes). A fresh process reading only that prompt can continue the work.
+To inspect supervisor readiness from the operator host:
 
-### Acceptance (the part that makes it Deep *Work*)
+```sh
+ssh -i "$STINT_BOX_KEY" -p "$STINT_BOX_PORT" "root@$STINT_BOX_HOST" \
+  "STINT_ONBOX_ROOT=/var/lib/stint-onbox /var/lib/stint-onbox/onbox-deep-supervisor.sh status"
+```
 
-When the invocation ends, Stint does **not** ask the worker "did you finish?". It runs
-the verification command in the worktree and reads the result — the task's own
-`- verify:` command when the task defines one, else the mission's `## Verification`
-command. Only then does it transition the task:
+The supported live smoke is [`scripts/run-onbox-deep-smoke.sh`](../scripts/run-onbox-deep-smoke.sh). It rents a bounded fixture session and calls the same launcher and bootstrap path as production.
 
-| Outcome | Transition |
-| --- | --- |
-| verification passes | `verified` → checkpoint commit → next task |
-| verification fails, attempts remain, time remains | `incomplete` → **continuation**: next fresh invocation with reconstructed context + the prior attempt's result |
-| attempts exhausted (default cap 3) | `blocked` with a blocker string → park, continue with the next task |
-| worker invocation itself failed (nonzero exit / no completion event) | same as above — the failure is recorded as the task's blocker evidence |
+## Current limits
 
-Without any verification command (per-task or mission-level), a cleanly completed
-invocation is accepted but the handoff marks the result **unverified (worker report)**
-— truthfulness over optimism. A per-task command verifies only its task; the final
-mission-level check at landing is a separate, cumulative statement about the whole
-branch.
+- Phase and compression logs are host-wide. Session/task/invocation correlation is not yet available.
+- Preflight detects missing executables. Outside the Stint Go project, it does not install arbitrary language dependencies or prove a project's full test suite.
+- A passing bootstrap is not a completed mission. Completion still depends on coordinator verification, durable publication, final handoff, and the deadline watchdog.
 
-### Landing
-
-When no safe useful work remains (or the window is reached), the coordinator: parks any
-`active` task as `incomplete`, runs the final verification (the mission-level command,
-when the mission defines one — per-task commands are per-task and do not run at
-landing), checkpoints the worktree,
-writes `handoff.md` (state dir **and** worktree root as `DEEP_WORK_HANDOFF.md`), and
-persists the final state atomically. The handoff distinguishes *verified* evidence,
-*worker claims*, and *unresolved uncertainty*, and ends with the exact next action:
-review the branch, merge or discard.
-
-### Resuming
-
-`stint deep resume` restarts the coordinator for a session whose process is gone —
-after a crash, a killed process, a lapsed machine, or a deadline landing. It requires
-compute to be READY first (`stint resume` / `stint start interactive`) and then
-reconstructs everything else from durable state:
-
-1. **Single coordinator.** The coordinator writes `coordinator.pid`; `start` and
-   `resume` refuse to run if that process is still alive. A stale pid file (crash,
-   power loss) is cleared and tolerated — a signal-0 probe decides.
-2. **Deadline re-anchoring.** While the original deadline is still in the future it can
-   only be tightened: `min(deep deadline, compute deadline)`. If it lapsed while the
-   machine slept, the fresh compute deadline becomes the budget — you deliberately
-   re-provisioned compute to continue.
-3. **Worktree re-attachment.** If a crash or cleanup lost the worktree directory, the
-   branch still holds every checkpoint commit, so resume re-attaches the worktree over
-   the existing branch. Only a missing *branch* is unrecoverable (that is a fresh
-   `stint deep start`).
-4. **Phase revival.** A `landed` or `stopped` session is a pause, not a verdict: resume
-   sets it back to `executing` and the loop continues with the remaining tasks.
-   `verified` tasks are never redone.
-
-Executor settings (auto-approve, command policy, provider, model, timeouts) are
-persisted at start and come back on resume; `--auto-approve`, `--provider`,
-`--model`, `--api-key`, `--task-timeout`, and `--cline-config` override them per
-resume. The command allow-list is session-level policy: resume always runs the
-persisted list, never a new one.
-
----
-
-## 5. Where things live
-
-| Path | What |
-| --- | --- |
-| `~/.local/state/stint/deep/latest` | one line: the most recent session id |
-| `~/.local/state/stint/deep/<session-id>/deep.json` | durable state (tasks, statuses, deadlines, executor settings, handoff path) — atomic, 0600 |
-| `…/<session-id>/coordinator.pid` | live coordinator pid (signal-0 probed by `start`/`resume`; cleared on exit, tolerated when stale) |
-| `…/<session-id>/mission.md` | copy of the mission as parsed |
-| `…/<session-id>/coordinator.log` | append-only coordinator decisions (invocations, transitions, landing reason) |
-| `…/<session-id>/incidents.jsonl` | machine-readable safety log: the command policy, every executor invocation, every verification run (command + result), checkpoint/state failures, stops, landing (`stint deep status` shows the recent tail) |
-| `…/<session-id>/handoff.md` | the landing report |
-| `<repo>/.stint-deep/<session-id>/` | the Stint-owned worktree (left in place for your review) |
-| branch `stint/deep-<session-id>` | local commits: task checkpoints + handoff commit. Never pushed |
-
-Session IDs are `YYYYMMDD-HHMMSS` (UTC), so they sort chronologically and read well in
-branches and logs.
-
----
-
-## 6. Operations
-
-| Command | What it does |
-| --- | --- |
-| `stint deep start --mission m.md --repo <repo>` | preflight → worktree → loop → landing (foreground) |
-| `stint deep status` | latest session: phase, deadline remaining, worktree, task table (+ blockers) |
-| `stint deep status --json` | the durable state, verbatim, for scripting |
-| `stint deep status --session <id>` | inspect a specific past session |
-| `stint deep dash` | interactive execution cockpit: task state, coordinator events, passive compute telemetry, and sanitized GPU-worker evidence |
-| `stint deep dash --session <id>` | inspect a specific session, including landed/recoverable work with no active compute |
-| `stint deep dash --refresh` | in a non-TTY, print the snapshot plus one passive compute/GPU-worker observation |
-| `stint deep stop` | land the latest session **now**, from durable state. Works whether or not the start process is alive; the running coordinator observes the phase change and exits on its next iteration. Stopping never touches compute. |
-| `stint deep resume` | continue the latest (or `--session <id>`) session after a crash, a lapsed machine, or a deadline landing. Compute must be READY first. Deadline re-anchored to the current compute session, worktree re-attached if lost, remaining tasks continue in the same branch. |
-
-**Recovering a crashed or lapsed session.** Restore compute (`stint resume` /
-`stint start interactive`), then `stint deep resume`: the coordinator restarts from
-`deep.json`, re-anchors the deadline to your restored session, and continues in the same
-worktree and branch — verified and checkpointed work is never redone. If the *branch*
-itself is gone (deleted, not just the worktree directory), the session is unrecoverable:
-review any remaining evidence in `deep.json`/`coordinator.log` and start fresh with
-`stint deep start`.
-
-**Continuing a landed session.** Two honest paths: read the handoff's "Remaining work"
-section, adjust the mission (or add tasks), and start a new session; or run
-`stint deep resume` to pick the same session back up where the handoff left off — the
-loop simply keeps working the tasks that were not yet verified.
-
-### Deep Work dashboard
-
-`stint deep dash` is separate from `stint dash`: the former monitors execution
-continuity while the latter controls and observes paid compute. The Deep Work dashboard
-loads `deep.json` and coordinator incidents locally, so it remains useful after a
-compute loss or landing. Its GPU Worker view performs only a bounded read-only
-observation; it never sends a model request or exposes Hermes prompts/tool output.
-
-`s` opens a confirmation and uppercase `S` lands the latest Deep Work session through
-the existing `stint deep stop` path. It does not destroy or change compute. `q` only
-closes the dashboard.
----
-
-## 7. Safety boundaries (hard rails)
-
-- **Isolation**: work happens only in the Stint-owned worktree; your active checkout is
-  never mutated by the coordinator.
-- **Local only**: the coordinator commits to the `stint/deep-<session-id>` branch. It
-  never pushes, opens PRs, merges, or fetches. Landing leaves the worktree in place so
-  *you* decide merge-or-discard.
-- **Bounded spend**: one invocation is capped by `--task-timeout` (hard process-group
-  kill); the session is capped by the compute deadline, and the coordinator lands before
-  it. Deep Work never extends or rents compute — that stays with `stint start/extend`,
-  where you see the price.
-- **Approval policy (deny-by-default)**: `--auto-approve` defaults to **off** — the
-  worker cannot run shell commands it is not allowed to. Grant the commands a mission
-  genuinely needs with repeatable `--allow-command <prefix>` flags (e.g.
-  `--allow-command "go test" --allow-command "git status"`): the allow-list is named in
-  every worker prompt, persisted in `deep.json`, and — while auto-approval is off —
-  commands outside it are denied by the Cline CLI. `--auto-approve` (on) lets the
-  worker use all tools; with it on, the allow-list is advisory and says so in the
-  prompt.
-- **Audit trail**: `incidents.jsonl` in the state dir records the policy the
-  coordinator ran with, every executor invocation, every verification command it ran
-  and its result, and every state/checkpoint/stop/landing event. `stint deep status`
-  prints the recent tail. A verification command is bounded (3 m default): a hung
-  verify cannot stall the session.
-- **One coordinator per session**: `start` and `resume` write/probe a pid file and
-  refuse to run a second coordinator for a session that has one alive. Durable state
-  always wins over in-memory state: an external `stop` that lands a session cannot be
-  resurrected by the running process's later saves.
-- **Truthful reporting**: handoffs label worker claims as such; only coordinator-checked
-  verification is reported as verified. A "completed" self-report that fails verification
-  is reported as failed.
-
-## 8. Tuning
-
-| Flag | Default | When to change it |
-| --- | --- | --- |
-| `--hours <n>` | session deadline | give Deep Work a shorter budget than your session |
-| `--task-timeout <dur>` | 10m | live runs of small tasks took 20–35 s; for large repo work 10–15 m is a sane bound. Never let it approach the landing window. |
-| `--max-attempts <n>` | 3 | lower (2) if your verify command is expensive; raise if tasks legitimately need more fresh starts |
-| `--auto-approve` | false | true to let the worker run any tool call unattended (the allow-list becomes advisory) |
-| `--allow-command <prefix>` | none | repeatable; command prefixes the worker may run — named in the prompt, denied by the CLI otherwise while auto-approve is off |
-| `--provider` / `--model` | `openai-compatible` / first model the endpoint serves | pin a specific model |
-| `--api-key` | from Cline config | per-run override |
-| `--cline-config` | `~/.cline` | isolated Cline profile per machine/project |
-
-Calibration notes from the live MVP run (2026-09-02): small fixture tasks completed in
-22–33 s per invocation; the 10-minute task timeout was never close to binding; the
-landing window (10 m) was never needed. Mission-level verification parked a correctly
-scoped task whose acceptance depended on a *later* task — order tasks so each task's
-verification can pass on its own, or use a verify command that checks cumulative progress.
-
-## 9. Troubleshooting
-
-| Symptom | Cause / fix |
-| --- | --- |
-| `no active compute session …` | no READY session: `stint start interactive` (or `stint resume`) first |
-| `compute session is …, not READY` / deadline passed | `stint resume` or `stint start interactive` |
-| `the cline CLI was not found on PATH` | `npm i -g cline` |
-| `resolve model from the Stint endpoint` | endpoint down or no models: check `curl http://127.0.0.1:8409/v1/models`, `stint status` |
-| `has uncommitted tracked changes` | commit or stash in the repo before starting |
-| every task lands `blocked: verification did not pass` | the mission verify command is stricter than any single task's scope — give tasks a per-task `- verify:` command (§3), or make tasks cumulative (see §8) |
-| task `blocked: invocation did not complete` | read the blocker's stderr tail in `deep.json`/handoff: auth, model, or Cline CLI failure — fix the endpoint/Cline config and re-launch |
-| worker needs a command that gets denied | with auto-approve off (the default), only `--allow-command` prefixes may run — re-launch with the prefix the mission needs (`stint deep resume` keeps the persisted policy; adjust the mission's task list or start fresh to change it) |
-| session landed early with tasks `queued` | the landing window closed first; extend your session and re-launch the same mission |
-| Cline invocations seem slow | that's the model, not the coordinator: `run_result` durations are in `coordinator.log`; a bigger model or more context = slower |
-| state looks stale | `stint deep status --json` reads `deep.json` directly; the on-disk file is the truth the coordinator itself trusts |
-| `a coordinator for <id> is already running (pid N)` | a `start`/`resume` is in flight: wait for it to land, or `stint deep stop` first |
-| `is no longer a git repository` (resume) | the repo path in `deep.json` no longer exists (moved/deleted): restore it or start fresh |
-| `worktree … is not a usable git worktree` (resume) | the repository moved and the worktree's links are stale: `git -C <repo> worktree repair`, then resume again |
-| `the worktree (…) and its branch (…) are gone` (resume) | the branch was deleted: the session is unrecoverable — `stint deep start` with the same mission |
-| `both the Deep Work deadline and the compute session deadline have passed` | the machine lapsed past both budgets: `stint deep start` a fresh session |
-| resume lands immediately with `not started: insufficient time` | the re-anchored window was too short: restore more compute time first (`stint extend` / `stint start interactive --hours N`), then resume |
-
-## 10. Going further
-
-- The `deep` profile opening its own compute rental (today Deep Work rides an existing
-  session on purpose).
-- Live `stint deep plan` (mission drafting against a repo), cross-review of landed
-  branches, multiple workers.
-- [Deep Work dashboard action plan](DEEP_WORK_DASHBOARD_ACTION_PLAN.md) — a dedicated
-  execution cockpit for task, verifier, coordinator, and sanitized GPU-worker signals.
-- Engineering detail, findings, and live-run evidence: `docs/DEEP_WORK_MVP_EXECUTION.md`.
-- Product direction: `docs/STINT_DEEP_WORK_VISION.md`.
+See the canonical [Deep Work integration action plan](DEEP_WORK_ONBOX_EXECUTION_PLAN.md) for current branch/PR status, evidence, and remaining work.
