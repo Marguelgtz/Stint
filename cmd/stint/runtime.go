@@ -402,8 +402,87 @@ func ninferModelLaunchCommand(contextTokens int) string {
 	return ninferModelLaunchCommandWithClients(contextTokens, defaultNInferClients)
 }
 
+// ninferModelArtifactCommand prepares and verifies the immutable model artifact.
+// The path arguments are shell-quoted so the same command can be executed in a
+// temporary fixture without reaching the network or a GPU.
+func ninferModelArtifactCommand(modelPath, sizePath, modelURL, modelSHA string) string {
+	command := `set -eu
+model=@MODEL@
+model_size_file=@SIZE_FILE@
+model_url=@MODEL_URL@
+model_sha=@MODEL_SHA@
+mkdir -p "$(dirname "$model")"
+
+discover_model_size() {
+  size="$(curl -fsSLI --retry 3 --retry-delay 1 -o /dev/null -w "%header{content-length}" "$model_url" 2>/dev/null || true)"
+  case "$size" in
+    ""|*[!0-9]*) size=0 ;;
+  esac
+  printf "%s\n" "$size"
+}
+
+expected="$(cat "$model_size_file" 2>/dev/null || true)"
+case "$expected" in
+  ""|*[!0-9]*) expected=0 ;;
+esac
+if [ "$expected" -le 0 ]; then
+  expected="$(discover_model_size)"
+  if [ "$expected" -gt 0 ]; then
+    printf "%s\n" "$expected" > "$model_size_file"
+  fi
+fi
+
+if [ -f "$model" ] && ! echo "$model_sha  $model" | sha256sum -c - >/dev/null 2>&1; then
+  bytes="$(stat -c %s "$model" 2>/dev/null || echo 0)"
+  if [ "$expected" -gt 0 ] && [ "$bytes" -ge "$expected" ]; then
+    echo "Discarding invalid completed/oversized NInfer model artifact before resumable download."
+    rm -f "$model"
+  fi
+fi
+
+if [ ! -f "$model" ] || ! echo "$model_sha  $model" | sha256sum -c - >/dev/null 2>&1; then
+  echo "Downloading Qwen3.8-27B NInfer artifact..."
+  curl -L -C - --fail --retry 10 --retry-all-errors --retry-delay 2 --connect-timeout 20 --output "$model" "$model_url"
+  if ! echo "$model_sha  $model" | sha256sum -c - >/dev/null 2>&1; then
+    echo "Resumed NInfer artifact failed SHA-256; discarding it and retrying from byte zero."
+    rm -f "$model"
+    curl -L -C - --fail --retry 10 --retry-all-errors --retry-delay 2 --connect-timeout 20 --output "$model" "$model_url"
+  fi
+fi
+echo "$model_sha  $model" | sha256sum -c -
+`
+	return strings.NewReplacer(
+		"@MODEL@", shellQuote(modelPath),
+		"@SIZE_FILE@", shellQuote(sizePath),
+		"@MODEL_URL@", shellQuote(modelURL),
+		"@MODEL_SHA@", shellQuote(modelSHA),
+	).Replace(command)
+}
+
 func ninferModelLaunchCommandWithClients(contextTokens, clients int) string {
 	config := ninferConfigForContext(contextTokens)
+	artifactCommand := ninferModelArtifactCommand(
+		"/workspace/stint/models/qwen3_8_27b.ninfer",
+		"/workspace/stint/model-total-bytes",
+		ninferModelURL,
+		ninferModelSHA256,
+	)
+	modelCommand := fmt.Sprintf(`%s
+exec /workspace/stint/ninfer/build/apps/ninfer-serve "$model" \
+  --host 127.0.0.1 \
+  --port %d \
+  --model-id %s \
+  --max-context %d \
+  --kv-capacity %d \
+  --max-concurrency %d \
+  --max-pending-requests 16 \
+  --pending-timeout-ms 600000 \
+  --prefill-chunk 1024 \
+  --kv-dtype %s \
+  --spec mtp \
+  --draft-tokens 3 \
+  --lm-head-draft \
+  --preserve-thinking`, artifactCommand, clineRemotePort, interactiveModelAlias, contextTokens, contextTokens, clients, config.KVDType)
 	return fmt.Sprintf(`set -eu
 mkdir -p /workspace/stint/models
 pid_file=/workspace/stint/llama.pid
@@ -427,61 +506,7 @@ fi
 rm -f "$pid_file"
 : > "$log_file"
 
-nohup bash -c '
-set -eu
-model=/workspace/stint/models/qwen3_8_27b.ninfer
-model_size_file=/workspace/stint/model-total-bytes
-model_url="%s"
-model_sha="%s"
-
-discover_model_size() {
-  size="$(curl -fsSLI --retry 3 --retry-delay 1 -o /dev/null -w "%%header{content-length}" "$model_url" 2>/dev/null || true)"
-  case "$size" in
-    ""|*[!0-9]*) size=0 ;;
-  esac
-  printf "%%s\n" "$size"
-}
-
-expected="$(cat "$model_size_file" 2>/dev/null || true)"
-case "$expected" in
-  ""|*[!0-9]*) expected=0 ;;
-esac
-if [ "$expected" -le 0 ]; then
-  expected="$(discover_model_size)"
-  if [ "$expected" -gt 0 ]; then
-    printf "%%s\n" "$expected" > "$model_size_file"
-  fi
-fi
-
-if [ -f "$model" ] && ! echo "$model_sha  $model" | sha256sum -c - >/dev/null 2>&1; then
-  bytes="$(stat -c %%s "$model" 2>/dev/null || echo 0)"
-  if [ "$expected" -gt 0 ] && [ "$bytes" -ge "$expected" ]; then
-    echo "Discarding invalid completed/oversized NInfer model artifact before resumable download."
-    rm -f "$model"
-  fi
-fi
-
-if [ ! -f "$model" ] || ! echo "$model_sha  $model" | sha256sum -c - >/dev/null 2>&1; then
-  echo "Downloading Qwen3.8-27B NInfer artifact..."
-  curl -L -C - --fail --retry 10 --retry-all-errors --retry-delay 2 --connect-timeout 20 --output "$model" "$model_url"
-fi
-echo "$model_sha  $model" | sha256sum -c -
-exec /workspace/stint/ninfer/build/apps/ninfer-serve "$model" \
-  --host 127.0.0.1 \
-  --port %d \
-  --model-id %s \
-  --max-context %d \
-  --kv-capacity %d \
-  --max-concurrency %d \
-  --max-pending-requests 16 \
-  --pending-timeout-ms 600000 \
-  --prefill-chunk 1024 \
-  --kv-dtype %s \
-  --spec mtp \
-  --draft-tokens 3 \
-  --lm-head-draft \
-  --preserve-thinking
-' > "$log_file" 2>&1 < /dev/null &
+nohup bash -c %s > "$log_file" 2>&1 < /dev/null &
 new_pid=$!
 printf '%%s\n' "$new_pid" > "$pid_file"
 sleep 1
@@ -489,5 +514,5 @@ if ! kill -0 "$new_pid" 2>/dev/null; then
   tail -n 20 "$log_file" >&2 || true
   exit 1
 fi
-`, ninferModelURL, ninferModelSHA256, clineRemotePort, interactiveModelAlias, contextTokens, contextTokens, clients, config.KVDType)
+`, shellQuote(modelCommand))
 }
