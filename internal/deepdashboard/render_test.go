@@ -15,7 +15,7 @@ func testModel() Model {
 		Now: now, LandBefore: now.Add(time.Hour), ActiveSince: &started,
 		Tasks:   []Task{{ID: "PLAN-001", Status: "verified", Attempts: 1, Objective: "plan"}, {ID: "VANTA-001", Status: "active", Attempts: 1, Objective: "implement"}},
 		Compute: Compute{Available: true, Status: "READY", Endpoint: "healthy", Runtime: "running", Utilization: "80%"},
-		Worker:  Worker{Observed: true, NInferContext: 262144, NInferKV: 262144, NInferDefaultMaxTokens: 262144, MediumRequests: 2, Compression: "completed"},
+		Worker:  Worker{Observed: true, Scope: "Shared host logs; not attributed to this session", NInferContext: 262144, NInferKV: 262144, NInferDefaultMaxTokens: 262144, MediumRequests: 2, Compression: "completed"},
 	}
 }
 
@@ -33,7 +33,7 @@ func TestWorkerViewShowsTruncation(t *testing.T) {
 	m.View = WorkerView
 	m.Worker.Compression = "truncated"
 	out := Render(m)
-	if !strings.Contains(out, "truncated") || !strings.Contains(out, "completion budget 262144") {
+	if !strings.Contains(out, "truncated") || !strings.Contains(out, "completion budget 262144") || !strings.Contains(out, "not attributed to this session") {
 		t.Fatalf("worker render missing evidence:\n%s", out)
 	}
 }

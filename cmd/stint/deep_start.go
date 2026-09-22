@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,20 +41,16 @@ func runDeep(args []string) error {
 }
 
 type deepStartFlags struct {
-	worker        string
 	missionPath   string
 	repoPath      string
 	hours         float64
 	taskTimeout   time.Duration
 	maxAttempts   int
-	autoApprove   bool
 	allowCommands stringSlice
 	provider      string
 	model         string
 	reasoning     string
 	actionPlan    string
-	apiKey        string
-	clineConfig   string
 }
 
 // stringSlice collects a repeatable --flag value into a slice.
@@ -76,23 +74,16 @@ func runDeepStart(args []string) error {
 	fs := flag.NewFlagSet("deep start", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	f := &deepStartFlags{}
-	fs.StringVar(&f.worker, "worker", workerCline, "worker: cline (runs on this machine, the default) or "+
-		"hermes (Hermes agent plus all file/shell work on the compute box, model via the box's local endpoint; "+
-		"--repo is then the repo path ON THE BOX)")
 	fs.StringVar(&f.missionPath, "mission", "", "mission Markdown file (required)")
 	fs.StringVar(&f.repoPath, "repo", "", "target git repository path (required)")
 	fs.Float64Var(&f.hours, "hours", 0, "optional Deep Work duration cap in hours (default: the compute session deadline)")
 	fs.DurationVar(&f.taskTimeout, "task-timeout", 10*time.Minute, "maximum wall time per coding-agent invocation")
 	fs.IntVar(&f.maxAttempts, "max-attempts", 3, "maximum executor attempts per task before parking")
-	fs.BoolVar(&f.autoApprove, "auto-approve", false, "auto-approve ALL Cline tool calls (default: off — deny-by-default; "+
-		"with it off, commands outside --allow-command are denied by the CLI)")
-	fs.Var(&f.allowCommands, "allow-command", "command prefix the worker may run (repeatable; named in the prompt and denied otherwise while auto-approve is off)")
-	fs.StringVar(&f.provider, "provider", "openai-compatible", "Cline provider id")
-	fs.StringVar(&f.model, "model", "", "model id (default: first model served by the Stint endpoint)")
+	fs.Var(&f.allowCommands, "allow-command", "advisory command prefix included in the Hermes prompt (repeatable)")
+	fs.StringVar(&f.provider, "provider", "custom:qwen-stint-{reasoning}", "configured Hermes provider id or reasoning template")
+	fs.StringVar(&f.model, "model", "", "Hermes model id (default: first model served on the compute box)")
 	fs.StringVar(&f.reasoning, "reasoning", deep.ReasoningMedium, "request reasoning effort: none, low, medium, or xhigh (task-level metadata may override it)")
 	fs.StringVar(&f.actionPlan, "action-plan", "", "optional path inside the worktree for a living action plan; creates a first xhigh planning task")
-	fs.StringVar(&f.apiKey, "api-key", "", "Cline API key override")
-	fs.StringVar(&f.clineConfig, "cline-config", "", "Cline config directory (default: ~/.cline)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -117,9 +108,6 @@ func runDeepStart(args []string) error {
 		if err != nil {
 			return err
 		}
-	}
-	if f.worker != workerCline && f.worker != workerHermes {
-		return fmt.Errorf("--worker must be %s or %s", workerCline, workerHermes)
 	}
 
 	paths, err := config.DefaultPaths()
@@ -150,53 +138,47 @@ func runDeepStart(args []string) error {
 		return fmt.Errorf("compute session deadline has passed; run `stint resume` or `stint start interactive` first")
 	}
 
-	remote := f.worker == workerHermes
-	var remoteFn remoteCmd
-	if remote {
-		remoteFn = newRemoteCmd(paths, session)
-	}
+	remoteFn := newRemoteCmd(paths, session)
 
-	// 3. Executor preflight: Cline on PATH (local worker), or SSH + Hermes
-	//    + the model endpoint reachable on the box (remote worker).
-	if remote {
-		if _, err := remoteFn(context.Background(), "true"); err != nil {
-			return fmt.Errorf("cannot reach the compute box over SSH (%v); the hermes worker runs on the box — "+
-				"check the session (`stint status`) or use --worker cline", err)
-		}
-		if out, err := remoteFn(context.Background(), "command -v hermes"); err != nil || strings.TrimSpace(out) == "" {
-			return errors.New("hermes was not found on the compute box (install it there first, or use --worker cline)")
-		}
-		if out, err := remoteFn(context.Background(), "curl -s -m 5 http://127.0.0.1:8080/v1/models"); err != nil || strings.TrimSpace(out) == "" {
-			return fmt.Errorf("the model endpoint is not answering on the box: %v", err)
-		}
-	} else {
-		if _, err := lookPath("cline"); err != nil {
-			return errors.New("the cline CLI was not found on PATH (install with: npm i -g cline)")
-		}
+	// 3. Executor preflight: SSH, Hermes, and the model endpoint must all be
+	// reachable on the compute box before a worktree or session is created.
+	if _, err := remoteFn(context.Background(), "true"); err != nil {
+		return fmt.Errorf("cannot reach the compute box over SSH (%v); check the session (`stint status`)", err)
+	}
+	if out, err := remoteFn(context.Background(), "command -v hermes"); err != nil || strings.TrimSpace(out) == "" {
+		return errors.New("hermes was not found on the compute box")
+	}
+	modelsJSON, err := remoteFn(context.Background(), "curl -fsS -m 5 http://127.0.0.1:8080/v1/models")
+	if err != nil {
+		return fmt.Errorf("the compute-box model endpoint is not answering: %w", err)
 	}
 
 	// 4. Model: from the flags, or the first model the endpoint serves.
+	modelIDs, err := endpointModelIDsFromJSON(modelsJSON)
+	if err != nil {
+		return fmt.Errorf("parse compute-box model list: %w", err)
+	}
 	modelID := f.model
 	if modelID == "" {
-		modelID, err = firstEndpointModel()
+		modelID, err = firstEndpointModelFromJSON(modelsJSON)
 		if err != nil {
-			return fmt.Errorf("resolve model from the Stint endpoint: %w (or pass --model)", err)
+			return fmt.Errorf("resolve model from the compute-box endpoint: %w (or pass --model)", err)
 		}
 	}
-
-	// 5. Repository: must be a git repo with no tracked modifications. For
-	//    the remote worker the repo (and its clean tree) is checked on the box.
-	var git gitOps
-	if remote {
-		git = &remoteGit{remote: remoteFn}
-	} else {
-		git = newGitRunner()
+	if !containsString(modelIDs, modelID) {
+		return fmt.Errorf("model %q is not served by the compute-box endpoint (available: %s)", modelID, strings.Join(modelIDs, ", "))
 	}
+
+	// 5. Repository: the repo (and its clean tree) is checked on the box.
+	var git gitOps = &remoteGit{remote: remoteFn}
 	if _, err := git.repoHead(f.repoPath); err != nil {
 		return fmt.Errorf("%s is not a git repository: %v", f.repoPath, err)
 	}
 	if clean, detail := git.cleanTracked(f.repoPath); !clean {
 		return fmt.Errorf("%s has uncommitted tracked changes; commit or stash them first:\n%s", f.repoPath, detail)
+	}
+	if err := preflightRemoteVerifyTools(mission, remoteFn); err != nil {
+		return err
 	}
 
 	// 6. Deep deadline: the compute deadline is the hard bound; --hours
@@ -215,62 +197,58 @@ func runDeepStart(args []string) error {
 	if err := git.worktreeAdd(f.repoPath, worktree, deep.BranchName(sessionID)); err != nil {
 		return fmt.Errorf("create deep worktree: %w", err)
 	}
-	baseCommit, _ := git.repoHead(worktree)
+	baseCommit, err := git.repoHead(worktree)
+	if err != nil {
+		return fmt.Errorf("read new worktree HEAD: %w", err)
+	}
+	if strings.TrimSpace(baseCommit) == "" {
+		return errors.New("new worktree returned an empty HEAD")
+	}
 
 	state := deep.NewState(sessionID, mission, f.repoPath, worktree, deadline, landBefore, f.maxAttempts, now)
 	state.BaseCommit = baseCommit
+	if err := state.BindCompute("vast", session.InstanceID, now); err != nil {
+		return fmt.Errorf("bind Deep Work session to compute instance: %w", err)
+	}
 	if f.actionPlan != "" {
-		state.Tasks = append([]deep.Task{{
-			ID:         "PLAN-001",
-			Objective:  "Create or update the living action plan at " + f.actionPlan + " before execution begins",
-			Acceptance: "the living action plan exists at the requested path and records decisions, risks, next steps, and evidence pointers consistent with the mission and repository state",
-			Verify:     "test -s " + shellQuote(f.actionPlan),
-			Reasoning:  deep.ReasoningXHigh,
-			Status:     deep.StatusQueued,
-			Source:     "coordinator",
-		}}, state.Tasks...)
+		state.Tasks = addActionPlanTask(state.Tasks, f.actionPlan)
 	}
 	// Persist the executor settings (and command policy) so `stint deep resume`
 	// can reconstruct identical invocations without a live endpoint or
 	// operator memory.
 	state.Exec = &deep.ExecSettings{
-		Worker:          f.worker,
-		AutoApprove:     f.autoApprove,
+		Worker:          workerHermes,
 		Provider:        f.provider,
 		Model:           modelID,
 		Reasoning:       f.reasoning,
 		ActionPlanPath:  f.actionPlan,
-		ClineConfig:     f.clineConfig,
 		TaskTimeoutSec:  int(f.taskTimeout.Seconds()),
 		AllowedCommands: f.allowCommands,
-	}
-	if err := state.SaveDir(paths.StateDir); err != nil {
-		return err
 	}
 	if err := deep.SaveMissionCopy(paths.StateDir, sessionID, f.missionPath); err != nil {
 		return err
 	}
+	if err := state.SaveDir(paths.StateDir); err != nil {
+		return err
+	}
 
 	return deepRunSession(paths.StateDir, &state, &deepRunConfig{
-		worker:          f.worker,
-		autoApprove:     f.autoApprove,
+		worker:          workerHermes,
 		allowedCommands: f.allowCommands,
 		provider:        f.provider,
 		model:           modelID,
 		reasoning:       f.reasoning,
 		actionPlan:      f.actionPlan,
-		apiKey:          f.apiKey,
-		clineConfig:     f.clineConfig,
 		taskTimeout:     f.taskTimeout,
 		missionName:     mission.Name,
-		taskCount:       len(mission.Tasks),
+		taskCount:       len(state.Tasks),
 		remote:          remoteFn,
 		paths:           paths,
 	}, git, false)
 }
 
 // actionPlanPath accepts a worktree-relative path so the same persisted value
-// works for local Cline and on-box Hermes workers. Keeping it below the
+// works for Hermes workers. Keeping it below the
 // worktree prevents a planning task from writing outside the session branch.
 func actionPlanPath(raw string) (string, error) {
 	clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(raw)))
@@ -281,4 +259,177 @@ func actionPlanPath(raw string) (string, error) {
 		return "", errors.New("--action-plan contains a NUL byte")
 	}
 	return clean, nil
+}
+
+func addActionPlanTask(tasks []deep.Task, actionPlan string) []deep.Task {
+	used := make(map[string]bool, len(tasks))
+	for _, task := range tasks {
+		used[task.ID] = true
+	}
+	for n := 1; ; n++ {
+		id := fmt.Sprintf("STINT-PLAN-%03d", n)
+		if used[id] {
+			continue
+		}
+		planTask := deep.Task{
+			ID:         id,
+			Objective:  "Create or update the living action plan at " + actionPlan + " before execution begins",
+			Acceptance: "the living action plan exists at the requested path and records decisions, risks, next steps, and evidence pointers consistent with the mission and repository state",
+			Verify:     "test -s " + shellQuote(actionPlan),
+			Reasoning:  deep.ReasoningXHigh,
+			Status:     deep.StatusQueued,
+			Source:     "coordinator",
+		}
+		return append([]deep.Task{planTask}, tasks...)
+	}
+}
+
+func firstEndpointModelFromJSON(raw string) (string, error) {
+	ids, err := endpointModelIDsFromJSON(raw)
+	if err != nil {
+		return "", err
+	}
+	if len(ids) == 0 {
+		return "", errors.New("the model endpoint reported no models")
+	}
+	return ids[0], nil
+}
+
+func endpointModelIDsFromJSON(raw string) ([]string, error) {
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(body.Data))
+	for _, item := range body.Data {
+		if id := strings.TrimSpace(item.ID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func verificationToolNames(commands []string) []string {
+	builtins := map[string]bool{
+		".": true, "[": true, "alias": true, "break": true, "cd": true, "command": true,
+		"continue": true, "echo": true, "eval": true, "exec": true, "exit": true, "export": true,
+		"false": true, "local": true, "printf": true, "pwd": true, "read": true, "return": true,
+		"set": true, "shift": true, "source": true, "test": true, "true": true, "trap": true,
+		"type": true, "ulimit": true, "umask": true, "unset": true, "wait": true,
+	}
+	controlWords := map[string]bool{
+		"!": true, "do": true, "done": true, "elif": true, "else": true, "esac": true,
+		"fi": true, "for": true, "if": true, "in": true, "then": true, "time": true,
+		"until": true, "while": true,
+	}
+	seen := map[string]bool{}
+	for _, command := range commands {
+		for _, segment := range splitShellCommands(command) {
+			fields := strings.Fields(segment)
+			for len(fields) > 0 && strings.Contains(fields[0], "=") && !strings.HasPrefix(fields[0], "=") {
+				fields = fields[1:]
+			}
+			for len(fields) > 0 && controlWords[fields[0]] {
+				fields = fields[1:]
+			}
+			if len(fields) == 0 {
+				continue
+			}
+			name := strings.Trim(fields[0], "'\"` ")
+			if name == "" || strings.HasPrefix(name, "$") || builtins[name] {
+				continue
+			}
+			seen[name] = true
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for name := range seen {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func splitShellCommands(command string) []string {
+	var out []string
+	var b strings.Builder
+	var quote rune
+	escaped := false
+	for _, r := range command {
+		if escaped {
+			b.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' && quote != '\'' {
+			b.WriteRune(r)
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			b.WriteRune(r)
+			continue
+		}
+		if r == '\'' || r == '"' || r == '`' {
+			quote = r
+			b.WriteRune(r)
+			continue
+		}
+		if r == ';' || r == '|' || r == '&' || r == '\n' {
+			if segment := strings.TrimSpace(b.String()); segment != "" {
+				out = append(out, segment)
+			}
+			b.Reset()
+			continue
+		}
+		b.WriteRune(r)
+	}
+	if segment := strings.TrimSpace(b.String()); segment != "" {
+		out = append(out, segment)
+	}
+	return out
+}
+
+func preflightRemoteVerifyTools(mission deep.Mission, remote remoteCmd) error {
+	commands := make([]string, 0, len(mission.Tasks)+1)
+	commands = append(commands, mission.Verify)
+	for _, task := range mission.Tasks {
+		commands = append(commands, task.Verify)
+	}
+	for _, tool := range verificationToolNames(commands) {
+		if _, err := remote(context.Background(), "command -v "+shellQuote(tool)+" >/dev/null 2>&1"); err != nil {
+			return fmt.Errorf("mission verification requires %q, which is unavailable on the compute box", tool)
+		}
+	}
+	return nil
+}
+
+func preflightLocalVerifyTools(mission deep.Mission) error {
+	commands := make([]string, 0, len(mission.Tasks)+1)
+	commands = append(commands, mission.Verify)
+	for _, task := range mission.Tasks {
+		commands = append(commands, task.Verify)
+	}
+	for _, tool := range verificationToolNames(commands) {
+		if _, err := lookPath(tool); err != nil {
+			return fmt.Errorf("mission verification requires %q, which is unavailable on the compute box", tool)
+		}
+	}
+	return nil
 }

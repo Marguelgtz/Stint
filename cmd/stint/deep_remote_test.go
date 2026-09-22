@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -103,13 +104,16 @@ func TestHermesExecutorSuccess(t *testing.T) {
 	}
 	line := fr.calls[0]
 	for _, want := range []string{
-		"base64 -d", "cd '/root/repo/.stint-deep/x'",
-		"hermes chat --query-file", "--oneshot", "--provider custom -m 'qwen3.8-27b'",
+		"mktemp /tmp/stint-deep-prompt.XXXXXX", "base64 -d", "cd '/root/repo/.stint-deep/x'",
+		"hermes chat --query-file", "--oneshot --provider custom -m 'qwen3.8-27b'", "trap 'rm -f",
 		hermesExitMarker,
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("box line missing %q:\n%s", want, line)
 		}
+	}
+	if strings.Contains(line, " -Q") {
+		t.Errorf("remote Hermes invocation uses -Q quiet mode, which can disrupt tool calls:\n%s", line)
 	}
 }
 
@@ -171,7 +175,11 @@ func TestHermesExecutorSSHFailure(t *testing.T) {
 func TestLocalHermesExecutorSuccess(t *testing.T) {
 	dir := t.TempDir()
 	hermes := dir + "/hermes"
-	if err := os.WriteFile(hermes, []byte("#!/bin/sh\nprintf 'on-box worker output\\n'\n"), 0o700); err != nil {
+	captured := filepath.Join(dir, "captured-prompt-path")
+	script := "#!/bin/sh\ntest \"$2\" = --query-file || exit 11\n" +
+		"test \"$(cat \"$3\")\" = 'continue locally' || exit 12\n" +
+		"printf '%s' \"$3\" > " + shellQuote(captured) + "\nprintf 'on-box worker output\\n'\n"
+	if err := os.WriteFile(hermes, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	e := newLocalHermesExecutor(hermes)
@@ -188,13 +196,24 @@ func TestLocalHermesExecutorSuccess(t *testing.T) {
 	if !strings.Contains(res.outputText, "on-box worker output") {
 		t.Errorf("outputText = %q", res.outputText)
 	}
+	promptPathBytes, err := os.ReadFile(captured)
+	if err != nil {
+		t.Fatalf("read captured prompt path: %v", err)
+	}
+	promptPath := strings.TrimSpace(string(promptPathBytes))
+	if filepath.Dir(promptPath) == dir {
+		t.Errorf("prompt was staged in the target worktree: %q", promptPath)
+	}
+	if _, err := os.Stat(promptPath); !os.IsNotExist(err) {
+		t.Errorf("temporary prompt was not removed after Hermes exited: stat err=%v", err)
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".stint-hermes-prompt-") {
-			t.Fatalf("temporary prompt was not removed: %s", entry.Name())
+			t.Fatalf("temporary prompt was captured in the target worktree: %s", entry.Name())
 		}
 	}
 }

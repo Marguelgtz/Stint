@@ -34,6 +34,7 @@ type DeepState struct {
 	Phase             Phase         `json:"phase"`
 	Deadline          time.Time     `json:"deadline"`
 	LandBefore        time.Time     `json:"landBefore"`
+	ComputeBinding    *ComputeBinding `json:"computeBinding,omitempty"`
 	LandedAt          *time.Time    `json:"landedAt,omitempty"`
 	HandoffPath       string        `json:"handoffPath,omitempty"`
 	LandingReason     string        `json:"landingReason,omitempty"`
@@ -50,21 +51,18 @@ type DeepState struct {
 // ExecSettings are the per-session coding-agent invocation settings,
 // persisted at start so `stint deep resume` can reconstruct the same
 // invocations without a live endpoint or operator memory. Nil on sessions
-// started before the field existed; resume falls back to the start-time
-// defaults (deny-by-default: auto-approval off). The API key is deliberately
-// not persisted: it is re-passed from the operator environment. AllowedCommands
-// is advisory policy included in the worker prompt; Hermes does not enforce it.
+// started before the field existed; resume falls back to current Hermes
+// defaults. AllowedCommands is advisory policy included in the worker prompt;
+// Hermes does not enforce it.
 // Worker selects the execution target: "hermes" (Hermes plus file/shell work on the
 // compute box through the launcher's SSH seam), or "hermes-onbox" (the
 // coordinator and Hermes are co-located on the compute box with no SSH loopback).
 type ExecSettings struct {
 	Worker          string   `json:"worker,omitempty"`
-	AutoApprove     bool     `json:"autoApprove"`
 	Provider        string   `json:"provider,omitempty"`
 	Model           string   `json:"model,omitempty"`
 	Reasoning       string   `json:"reasoning,omitempty"`
 	ActionPlanPath  string   `json:"actionPlanPath,omitempty"`
-	ClineConfig     string   `json:"clineConfig,omitempty"`
 	TaskTimeoutSec  int      `json:"taskTimeoutSec,omitempty"`
 	AllowedCommands []string `json:"allowedCommands,omitempty"`
 }

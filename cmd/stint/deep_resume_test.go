@@ -72,37 +72,35 @@ func TestReanchorDeadline(t *testing.T) {
 }
 
 func TestResolveExecSettings(t *testing.T) {
-	on := true
 	t.Run("persisted settings survive resume", func(t *testing.T) {
 		st := &deep.DeepState{Exec: &deep.ExecSettings{
-			AutoApprove: false, Provider: "openai-compatible", Model: "qwen3.8-27b",
-			ClineConfig: "/cfg", TaskTimeoutSec: 900,
+			Provider: "custom:qwen-stint-{reasoning}", Model: "qwen3.8-27b", TaskTimeoutSec: 900,
 		}}
 		got := resolveExecSettings(st, execOverrides{})
-		if got.AutoApprove || got.Model != "qwen3.8-27b" || got.ClineConfig != "/cfg" || got.TaskTimeoutSec != 900 {
+		if got.Provider != "custom:qwen-stint-{reasoning}" || got.Model != "qwen3.8-27b" || got.TaskTimeoutSec != 900 {
 			t.Errorf("got = %+v", got)
 		}
 	})
 	t.Run("flags override persisted settings", func(t *testing.T) {
-		st := &deep.DeepState{Exec: &deep.ExecSettings{AutoApprove: true, Provider: "openai-compatible", Model: "m1", TaskTimeoutSec: 600}}
-		got := resolveExecSettings(st, execOverrides{autoApprove: &on, provider: "p2", clineConfig: "/c2", taskTimeout: 5 * time.Minute})
-		if !got.AutoApprove || got.Provider != "p2" || got.ClineConfig != "/c2" || got.TaskTimeoutSec != 300 {
+		st := &deep.DeepState{Exec: &deep.ExecSettings{Provider: "custom:qwen-stint-{reasoning}", Model: "m1", TaskTimeoutSec: 600}}
+		got := resolveExecSettings(st, execOverrides{provider: "p2", taskTimeout: 5 * time.Minute})
+		if got.Provider != "p2" || got.TaskTimeoutSec != 300 {
 			t.Errorf("got = %+v", got)
 		}
 		if got.Model != "m1" {
 			t.Errorf("model = %q, want the persisted model (flags never clear it)", got.Model)
 		}
 	})
-	t.Run("legacy sessions fall back to deny-by-default start-time defaults", func(t *testing.T) {
+	t.Run("legacy sessions fall back to Hermes start-time defaults", func(t *testing.T) {
 		got := resolveExecSettings(&deep.DeepState{}, execOverrides{})
-		if got.AutoApprove || got.Provider != "openai-compatible" || got.TaskTimeoutSec != 600 || got.Model != "" {
-			t.Errorf("got = %+v, want auto-approval OFF (safety default)", got)
+		if got.Provider != "custom:qwen-stint-{reasoning}" || got.TaskTimeoutSec != 600 || got.Model != "" {
+			t.Errorf("got = %+v, want Hermes defaults", got)
 		}
 	})
 	t.Run("command policy is persisted state, not an override", func(t *testing.T) {
-		st := &deep.DeepState{Exec: &deep.ExecSettings{AutoApprove: false, AllowedCommands: []string{"go test", "git status"}}}
+		st := &deep.DeepState{Exec: &deep.ExecSettings{AllowedCommands: []string{"go test", "git status"}}}
 		got := resolveExecSettings(st, execOverrides{})
-		if got.AutoApprove || len(got.AllowedCommands) != 2 || got.AllowedCommands[0] != "go test" || got.AllowedCommands[1] != "git status" {
+		if len(got.AllowedCommands) != 2 || got.AllowedCommands[0] != "go test" || got.AllowedCommands[1] != "git status" {
 			t.Errorf("got = %+v, want the persisted allow-list intact", got)
 		}
 	})

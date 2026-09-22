@@ -24,6 +24,7 @@ const (
 	IncidentStateSave      = "state-save-failed"
 	IncidentLanded         = "landed"  // or stopped: the detail carries the reason
 	IncidentResumed        = "resumed" // a coordinator restarted the session from durable state
+	IncidentComputeRebind  = "compute_rebind"
 )
 
 // Incident is one machine-readable coordinator event. One JSON object per
@@ -81,27 +82,18 @@ func ReadIncidents(stateDir, sessionID string) ([]Incident, error) {
 	return out, nil
 }
 
-// CommandPolicySection renders the session's worker command policy for the
-// reconstructed prompt. Enforcement comes from the Cline CLI's approval
-// mode: with auto-approval OFF (the default) commands outside the list are
-// denied, so the prompt statement is a hard boundary in practice; with
-// auto-approval ON the CLI approves everything and the list is advisory,
-// which the section says plainly.
-func CommandPolicySection(allowed []string, autoApprove bool) string {
+// CommandPolicySection renders advisory command guidance for Hermes. Stint
+// does not enforce this list at the Hermes tool boundary.
+func CommandPolicySection(allowed []string) string {
 	if len(allowed) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\nCOMMAND POLICY:\n")
-	b.WriteString("The only shell commands permitted in this workspace are those beginning with:\n")
+	b.WriteString("\nCOMMAND GUIDANCE (ADVISORY ONLY; NOT ENFORCED BY STINT):\n")
+	b.WriteString("Prefer shell commands beginning with one of these prefixes:\n")
 	for _, a := range allowed {
 		fmt.Fprintf(&b, "- %s\n", a)
 	}
-	b.WriteString("Do not run any other command; if the task requires one, report it as a blocker instead of running it.\n")
-	if autoApprove {
-		b.WriteString("Note: tool auto-approval is ON for this session, so the CLI cannot deny commands on the operator's behalf; this policy is advisory — treat it as strict.\n")
-	} else {
-		b.WriteString("Note: tool auto-approval is OFF; commands outside this list are denied by the CLI.\n")
-	}
+	b.WriteString("This is prompt guidance, not a security boundary. Stint does not enforce this list; Hermes may execute other commands or use other tools.\n")
 	return b.String()
 }

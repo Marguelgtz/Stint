@@ -2,10 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -15,32 +12,25 @@ import (
 	"github.com/Marguelgtz/Stint/internal/deep"
 )
 
-// worker ids for the Deep Work executor. "cline" is the operator-machine
-// Cline CLI worker (the original design); "hermes" runs the Hermes agent —
-// plus all of its file and shell work — on the compute box, talking to the
-// box's local model endpoint directly.
+// worker ids for the supported Deep Work executor targets.
 const (
-	workerCline       = "cline"
 	workerHermes      = "hermes"
 	workerHermesOnBox = "hermes-onbox"
 )
 
 // deepRunConfig carries the per-session invocation settings from the CLI.
 type deepRunConfig struct {
-	worker          string // "cline" (operator machine) or "hermes" (on the box)
-	autoApprove     bool
+	worker          string // Hermes over SSH or co-located with the coordinator
 	allowedCommands []string
 	provider        string
 	model           string
 	reasoning       string
 	actionPlan      string
-	apiKey          string
-	clineConfig     string
 	taskTimeout     time.Duration
 	missionName     string
 	taskCount       int
-	// remote is the box SSH seam, set for the remote hermes worker; nil for
-	// cline and the on-box hermes worker.
+	// remote is the box SSH seam, set for the remote Hermes worker; nil for the
+	// on-box Hermes worker.
 	remote remoteCmd
 	paths  config.Paths
 }
@@ -52,36 +42,32 @@ func lookPath(name string) (string, error) { return exec.LookPath(name) }
 // resumed selects the banner verb: `start` reports "started", `resume`
 // reports "resumed" for the same coordinator.
 func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, git gitOps, resumed bool) error {
-	// The worker selects how a task is executed and where verification and git
-	// run. The remote Hermes worker uses SSH; the on-box Hermes worker uses
-	// local subprocesses on the compute instance. Everything else — the loop,
-	// acceptance, parking, checkpoint cadence, state, handoff — is shared.
+	// Remote Hermes uses SSH; on-box Hermes uses local subprocesses on the
+	// compute instance. Both share the same coordinator state machine.
 	var exec executor
 	verifyFn := func(ctx context.Context, command, workdir string) (string, bool, error) {
 		return runVerifyCmd(ctx, command, workdir)
 	}
-	if cfg.worker == workerHermes {
+	switch cfg.worker {
+	case workerHermes:
 		exec = newHermesExecutor(cfg.remote)
 		verifyFn = func(ctx context.Context, command, workdir string) (string, bool, error) {
 			return runVerifyCmdRemote(ctx, cfg.remote, command, workdir)
 		}
-	} else if cfg.worker == workerHermesOnBox {
+	case workerHermesOnBox:
 		exec = newLocalHermesExecutor("hermes")
-	} else {
-		exec = newClineExecutor("cline")
+	default:
+		return fmt.Errorf("unsupported Deep Work worker %q; only Hermes is supported", cfg.worker)
 	}
 	coord := &deepCoordinator{
 		stateDir: stateDir,
 		state:    state,
 		execCfg: execInput{
-			autoApprove:     cfg.autoApprove,
 			allowedCommands: cfg.allowedCommands,
 			provider:        cfg.provider,
 			model:           cfg.model,
 			reasoning:       cfg.reasoning,
 			actionPlan:      cfg.actionPlan,
-			apiKey:          cfg.apiKey,
-			clineConfig:     cfg.clineConfig,
 		},
 		executor:    exec,
 		now:         func() time.Time { return time.Now().UTC() },
@@ -122,7 +108,7 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 	} else if cfg.worker == workerHermesOnBox {
 		fmt.Printf("  worker:    hermes local to the compute box (model %s via http://127.0.0.1:8080/v1)\n", cfg.model)
 	} else {
-		fmt.Printf("  model:     %s via http://127.0.0.1:8409/v1\n", cfg.model)
+		fmt.Printf("  model:     %s via http://127.0.0.1:8080/v1\n", cfg.model)
 	}
 	fmt.Printf("  worktree:  %s (branch %s)\n", state.WorktreePath, state.Branch)
 	fmt.Printf("  deadline:  %s  (lands from %s)\n", state.Deadline.Format(time.RFC3339), state.LandBefore.Format(time.RFC3339))
@@ -135,11 +121,11 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 	// Record the execution policy this coordinator runs under: the incident
 	// log starts with what the operator permitted, so the audit trail is
 	// complete even if the process dies before any invocation.
-	policy := fmt.Sprintf("worker=%s autoApprove=%t", cfg.worker, cfg.autoApprove)
+	policy := fmt.Sprintf("worker=%s", cfg.worker)
 	if len(cfg.allowedCommands) > 0 {
-		policy += " allow=[" + strings.Join(cfg.allowedCommands, ", ") + "]"
+		policy += " advisoryCommands=[" + strings.Join(cfg.allowedCommands, ", ") + "]"
 	} else {
-		policy += " allow=<none>"
+		policy += " StintCommandRestrictions=none"
 	}
 	deep.AppendIncident(stateDir, *state, deep.IncidentPolicy, "", policy)
 
@@ -167,26 +153,4 @@ func landingDeadline(deadline, now time.Time) time.Time {
 		}
 	}
 	return deadline.Add(-window)
-}
-
-// firstEndpointModel asks the local Stint endpoint which model it serves.
-func firstEndpointModel() (string, error) {
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("http://127.0.0.1:8409/v1/models")
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	var body struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", err
-	}
-	if len(body.Data) == 0 || body.Data[0].ID == "" {
-		return "", errors.New("the Stint endpoint reported no models")
-	}
-	return body.Data[0].ID, nil
 }

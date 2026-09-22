@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
@@ -14,16 +15,14 @@ import (
 )
 
 type deepResumeFlags struct {
-	sessionID      string
-	taskTimeout    time.Duration
-	autoApprove    bool
-	autoApproveSet bool
-	provider       string
-	model          string
-	reasoning      string
-	reasoningSet   bool
-	apiKey         string
-	clineConfig    string
+	sessionID     string
+	taskTimeout   time.Duration
+	provider      string
+	model         string
+	reasoning     string
+	reasoningSet  bool
+	rebindCompute bool
+	rebindReason  string
 }
 
 // runDeepResume continues a Deep Work session from durable state (DWX-008).
@@ -41,22 +40,17 @@ func runDeepResume(args []string) error {
 	f := &deepResumeFlags{}
 	fs.StringVar(&f.sessionID, "session", "", "session id to resume (default: latest)")
 	fs.DurationVar(&f.taskTimeout, "task-timeout", 0, "override the session's per-invocation timeout")
-	fs.BoolVar(&f.autoApprove, "auto-approve", true, "override the session's auto-approve setting")
-	fs.StringVar(&f.provider, "provider", "", "override the session's Cline provider id")
+	fs.StringVar(&f.provider, "provider", "", "override the session's Hermes provider id")
 	fs.StringVar(&f.model, "model", "", "override the session's model id")
 	fs.StringVar(&f.reasoning, "reasoning", "", "override the session's reasoning effort: none, low, medium, or xhigh")
-	fs.StringVar(&f.apiKey, "api-key", "", "Cline API key override (never persisted)")
-	fs.StringVar(&f.clineConfig, "cline-config", "", "override the session's Cline config directory")
+	fs.BoolVar(&f.rebindCompute, "rebind-compute", false, "explicitly bind this worktree to the current compute instance")
+	fs.StringVar(&f.rebindReason, "rebind-reason", "", "required audit reason for --rebind-compute")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	// Visit reports the flags the operator actually set, so an unset
-	// --auto-approve keeps the session's persisted value instead of
-	// clobbering it with the flag's default.
+	// Visit reports whether --reasoning was explicitly supplied. An unset
+	// value keeps the session's persisted effort.
 	fs.Visit(func(flg *flag.Flag) {
-		if flg.Name == "auto-approve" {
-			f.autoApproveSet = true
-		}
 		if flg.Name == "reasoning" {
 			f.reasoningSet = true
 		}
@@ -66,6 +60,12 @@ func runDeepResume(args []string) error {
 		if f.reasoning, err = deep.NormalizeReasoning(f.reasoning); err != nil {
 			return fmt.Errorf("--reasoning: %w", err)
 		}
+	}
+	if f.rebindCompute && strings.TrimSpace(f.rebindReason) == "" {
+		return errors.New("--rebind-compute requires --rebind-reason")
+	}
+	if !f.rebindCompute && strings.TrimSpace(f.rebindReason) != "" {
+		return errors.New("--rebind-reason requires --rebind-compute")
 	}
 
 	paths, err := config.DefaultPaths()
@@ -86,6 +86,9 @@ func runDeepResume(args []string) error {
 	if err != nil {
 		return err
 	}
+	if state.Exec == nil || state.Exec.Worker == "" {
+		return errors.New("this Deep Work session has no persisted Hermes worker identity; it cannot be resumed safely")
+	}
 
 	// 2. Never run two coordinators for one session.
 	if _, err := assertNoLiveCoordinator(paths.StateDir, state.SessionID); err != nil {
@@ -104,53 +107,56 @@ func runDeepResume(args []string) error {
 	if !session.Deadline.After(now) {
 		return fmt.Errorf("compute session deadline has passed; run `stint resume` or `stint start interactive` first")
 	}
+	rebindNeeded := state.ComputeBinding == nil || state.ComputeBinding.Provider != "vast" || state.ComputeBinding.InstanceID != session.InstanceID
+	if rebindNeeded && !f.rebindCompute {
+		boundID := int64(0)
+		if state.ComputeBinding != nil {
+			boundID = state.ComputeBinding.InstanceID
+		}
+		return fmt.Errorf("Deep Work session is bound to Vast instance %d, current compute is %d; verify the worktree is present, then resume with --rebind-compute --rebind-reason <reason>", boundID, session.InstanceID)
+	}
+	if !rebindNeeded && f.rebindCompute {
+		return errors.New("--rebind-compute was supplied, but this Deep Work session is already bound to the current instance")
+	}
 
-	// 4. Executor: Cline on PATH (local worker) or Hermes on the box
-	//    (remote worker) must be reachable. The worker is session-level
-	//    policy, reconstructed from the persisted settings.
+	// 4. Hermes runs on the compute box. Reconstruct the persisted worker
+	//    policy and verify the box runtime before resuming.
 	exec := resolveExecSettings(&state, execOverrides{
-		autoApprove:  f.autoApproveValue(),
 		provider:     f.provider,
-		clineConfig:  f.clineConfig,
 		taskTimeout:  f.taskTimeout,
 		reasoning:    f.reasoning,
 		reasoningSet: f.reasoningSet,
 	})
 	workerID := exec.Worker
-	if workerID == "" {
-		workerID = workerHermes
-	}
-	if workerID == workerCline {
+	if workerID == "cline" {
 		return errors.New("this session was created for the retired Cline worker; create a Hermes Deep Work session to continue")
 	}
-	if workerID != workerHermes && workerID != workerHermesOnBox {
+	if workerID == workerHermesOnBox {
+		return errors.New("this session runs on the compute box; resume it there with `stint deep onbox --resume`")
+	}
+	if workerID != workerHermes {
 		return fmt.Errorf("unsupported Deep Work worker %q; expected Hermes", workerID)
 	}
-	remote := workerID == workerHermes
-	var remoteFn remoteCmd
-	if remote {
-		remoteFn = newRemoteCmd(paths, session)
+	remoteFn := newRemoteCmd(paths, session)
+	if _, err := remoteFn(context.Background(), "true"); err != nil {
+		return fmt.Errorf("cannot reach the compute box over SSH (%v); check the session (`stint status`)", err)
 	}
-	if remote {
-		if _, err := remoteFn(context.Background(), "true"); err != nil {
-			return fmt.Errorf("cannot reach the compute box over SSH (%v); check the session (`stint status`)", err)
-		}
-	} else {
-		if _, err := lookPath("cline"); err != nil {
-			return errors.New("the cline CLI was not found on PATH (install with: npm i -g cline)")
-		}
+	if out, err := remoteFn(context.Background(), "command -v hermes"); err != nil || strings.TrimSpace(out) == "" {
+		return errors.New("hermes was not found on the compute box")
+	}
+	modelsJSON, err := remoteFn(context.Background(), "curl -fsS -m 5 http://127.0.0.1:8080/v1/models")
+	if err != nil {
+		return fmt.Errorf("the compute-box model endpoint is not answering: %w", err)
+	}
+	if err := preflightRemoteVerifyTools(deep.Mission{Verify: state.Verify, Tasks: state.Tasks}, remoteFn); err != nil {
+		return err
 	}
 
 	// 5. Repository: it must still be a git repository. The clean-tree check
 	//    is skipped on purpose: the session's worktree already holds the
 	//    session's state; the developer's checkout is untouched either way.
 	//    For the remote worker the repo lives on the box.
-	var git gitOps
-	if remote {
-		git = &remoteGit{remote: remoteFn}
-	} else {
-		git = newGitRunner()
-	}
+	var git gitOps = &remoteGit{remote: remoteFn}
 	if _, err := git.repoHead(state.RepoPath); err != nil {
 		return fmt.Errorf("%s is no longer a git repository: %v", state.RepoPath, err)
 	}
@@ -162,8 +168,13 @@ func runDeepResume(args []string) error {
 	}
 
 	// 7. Workspace: restore the worktree if a crash or cleanup lost it.
-	if err := ensureDeepWorktree(git, remote, &state); err != nil {
+	if err := ensureDeepWorktree(git, true, &state); err != nil {
 		return err
+	}
+	if rebindNeeded {
+		if err := state.RebindCompute("vast", session.InstanceID, f.rebindReason, now); err != nil {
+			return fmt.Errorf("record explicit compute rebind: %w", err)
+		}
 	}
 
 	// 8. Executor settings: `exec` was resolved in step 4; apply the model
@@ -173,10 +184,17 @@ func runDeepResume(args []string) error {
 		modelID = exec.Model
 	}
 	if modelID == "" {
-		modelID, err = firstEndpointModel()
+		modelID, err = firstEndpointModelFromJSON(modelsJSON)
 		if err != nil {
-			return fmt.Errorf("resolve model from the Stint endpoint: %w (or pass --model)", err)
+			return fmt.Errorf("resolve model from the compute-box endpoint: %w (or pass --model)", err)
 		}
+	}
+	modelIDs, err := endpointModelIDsFromJSON(modelsJSON)
+	if err != nil {
+		return fmt.Errorf("parse compute-box model list: %w", err)
+	}
+	if !containsString(modelIDs, modelID) {
+		return fmt.Errorf("model %q is not served by the compute-box endpoint (available: %s)", modelID, strings.Join(modelIDs, ", "))
 	}
 	exec.Model = modelID
 
@@ -201,30 +219,23 @@ func runDeepResume(args []string) error {
 	deep.AppendLog(paths.StateDir, state, "resumed: %s (deadline %s, lands from %s)",
 		stateNote, state.Deadline.Format(time.RFC3339), state.LandBefore.Format(time.RFC3339))
 	deep.AppendIncident(paths.StateDir, state, deep.IncidentResumed, "", stateNote)
+	if rebindNeeded {
+		deep.AppendIncident(paths.StateDir, state, deep.IncidentComputeRebind, "", fmt.Sprintf("Vast instance %d: %s", session.InstanceID, f.rebindReason))
+	}
 
 	return deepRunSession(paths.StateDir, &state, &deepRunConfig{
 		worker:          workerID,
-		autoApprove:     exec.AutoApprove,
 		allowedCommands: exec.AllowedCommands,
 		provider:        exec.Provider,
 		model:           modelID,
 		reasoning:       exec.Reasoning,
 		actionPlan:      exec.ActionPlanPath,
-		apiKey:          f.apiKey,
-		clineConfig:     exec.ClineConfig,
 		taskTimeout:     time.Duration(exec.TaskTimeoutSec) * time.Second,
 		missionName:     state.MissionName,
 		taskCount:       len(state.Tasks),
 		remote:          remoteFn,
 		paths:           paths,
 	}, git, true)
-}
-
-func (f *deepResumeFlags) autoApproveValue() *bool {
-	if !f.autoApproveSet {
-		return nil
-	}
-	return &f.autoApprove
 }
 
 // assertNoLiveCoordinator refuses to start a second coordinator for a
@@ -267,34 +278,25 @@ func reanchorDeadline(state *deep.DeepState, sessionDeadline, now time.Time) (bo
 // execOverrides are the resume-time overrides on top of the session's
 // persisted executor settings.
 type execOverrides struct {
-	autoApprove  *bool // nil = keep the session's value
 	provider     string
-	clineConfig  string
 	taskTimeout  time.Duration // zero = keep the session's value
 	reasoning    string
 	reasoningSet bool
 }
 
-// resolveExecSettings merges the session's persisted executor settings with
+// resolveExecSettings merges the session's persisted Hermes settings with
 // resume-time overrides. Sessions started before settings were persisted
-// (Exec == nil) fall back to the start-time defaults, which are
-// deny-by-default (auto-approval off). The command allow-list always comes
-// from the persisted policy: it is session-level state, not an override.
+// (Exec == nil) fall back to current Hermes defaults. Advisory command
+// guidance always comes from persisted session policy.
 func resolveExecSettings(st *deep.DeepState, o execOverrides) *deep.ExecSettings {
-	const defaultProvider = "openai-compatible"
+	const defaultProvider = "custom:qwen-stint-{reasoning}"
 	const defaultTaskTimeout = 10 * time.Minute
-	es := &deep.ExecSettings{AutoApprove: false, Provider: defaultProvider, Reasoning: deep.ReasoningMedium, TaskTimeoutSec: int(defaultTaskTimeout.Seconds())}
+	es := &deep.ExecSettings{Provider: defaultProvider, Reasoning: deep.ReasoningMedium, TaskTimeoutSec: int(defaultTaskTimeout.Seconds())}
 	if st.Exec != nil {
 		*es = *st.Exec
 	}
-	if o.autoApprove != nil {
-		es.AutoApprove = *o.autoApprove
-	}
 	if o.provider != "" {
 		es.Provider = o.provider
-	}
-	if o.clineConfig != "" {
-		es.ClineConfig = o.clineConfig
 	}
 	if o.taskTimeout > 0 {
 		es.TaskTimeoutSec = int(o.taskTimeout.Seconds())

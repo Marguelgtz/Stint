@@ -13,11 +13,13 @@ import (
 
 	"github.com/Marguelgtz/Stint/internal/config"
 	"github.com/Marguelgtz/Stint/internal/deep"
+	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
 // deepOnBoxFlags are deliberately independent of the operator-side compute
-// session flags. The on-box supervisor already owns a live NInfer process and
-// does not need a local session.json, tunnel, or SSH key.
+// session flags. The on-box supervisor already owns a live NInfer process. It
+// still requires session.json so state cannot attach to a replacement instance
+// that happens to have the same worktree path.
 type deepOnBoxFlags struct {
 	missionPath    string
 	repoPath       string
@@ -26,11 +28,12 @@ type deepOnBoxFlags struct {
 	provider       string
 	model          string
 	reasoning      string
+	reasoningSet   bool
 	hours          float64
 	deadline       string
 	taskTimeout    time.Duration
+	taskTimeoutSet bool
 	maxAttempts    int
-	autoApprove    bool
 	allowCommands  stringSlice
 	readyFile      string
 	resume         bool
@@ -50,26 +53,53 @@ func runDeepOnBox(args []string) error {
 	fs.StringVar(&f.actionPlanSeed, "action-plan-seed", "", "optional on-box seed file copied to --action-plan before execution")
 	fs.StringVar(&f.provider, "provider", "custom:qwen-stint-{reasoning}", "Hermes provider id or reasoning template")
 	fs.StringVar(&f.model, "model", "", "model id (default: first model served by 127.0.0.1:8080)")
-	fs.StringVar(&f.reasoning, "reasoning", deep.ReasoningMedium, "reasoning effort: none, low, medium, or xhigh")
+	fs.StringVar(&f.reasoning, "reasoning", "", "reasoning effort: none, low, medium, or xhigh")
 	fs.Float64Var(&f.hours, "hours", 1, "on-box session duration when --deadline is omitted")
 	fs.StringVar(&f.deadline, "deadline", "", "absolute RFC3339 deadline (overrides --hours)")
-	fs.DurationVar(&f.taskTimeout, "task-timeout", 10*time.Minute, "maximum wall time per Hermes invocation")
+	fs.DurationVar(&f.taskTimeout, "task-timeout", 0, "maximum wall time per Hermes invocation")
 	fs.IntVar(&f.maxAttempts, "max-attempts", 3, "executor attempts per task before parking")
-	fs.BoolVar(&f.autoApprove, "auto-approve", false, "pass auto-approval policy to the worker prompt")
-	fs.Var(&f.allowCommands, "allow-command", "command prefix allowed by the mission policy (repeatable)")
+	fs.Var(&f.allowCommands, "allow-command", "advisory command prefix included in the Hermes prompt (repeatable)")
 	fs.StringVar(&f.readyFile, "ready-file", "", "write RUNNING after durable state is persisted")
 	fs.BoolVar(&f.resume, "resume", false, "resume the latest on-box session instead of creating one")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if f.taskTimeout <= 0 || f.maxAttempts < 1 {
-		return errors.New("--task-timeout must be positive and --max-attempts must be at least 1")
+	fs.Visit(func(flg *flag.Flag) {
+		if flg.Name == "reasoning" {
+			f.reasoningSet = true
+		}
+		if flg.Name == "task-timeout" {
+			f.taskTimeoutSet = true
+		}
+	})
+	if f.resume {
+		if f.taskTimeoutSet && f.taskTimeout <= 0 {
+			return errors.New("--task-timeout must be positive")
+		}
+	} else {
+		if f.taskTimeout == 0 {
+			f.taskTimeout = 10 * time.Minute
+		}
+		if f.reasoning == "" {
+			f.reasoning = deep.ReasoningMedium
+		}
+		if f.taskTimeout <= 0 {
+			return errors.New("--task-timeout must be positive")
+		}
+	}
+	if f.maxAttempts < 1 {
+		return errors.New("--max-attempts must be at least 1")
 	}
 	reasoning, err := deep.NormalizeReasoning(f.reasoning)
 	if err != nil {
 		return fmt.Errorf("--reasoning: %w", err)
 	}
-	f.reasoning = reasoning
+	if f.reasoningSet {
+		if reasoning == "" {
+			return errors.New("--reasoning cannot be empty when overriding a session")
+		}
+		f.reasoning = reasoning
+	}
 	if f.actionPlan != "" {
 		f.actionPlan, err = actionPlanPath(f.actionPlan)
 		if err != nil {
@@ -87,6 +117,13 @@ func runDeepOnBox(args []string) error {
 	if err := paths.Ensure(); err != nil {
 		return err
 	}
+	compute, err := sessionstate.Load(paths)
+	if err != nil {
+		return fmt.Errorf("on-box compute identity is unavailable: %w", err)
+	}
+	if compute.Status != sessionstate.StatusReady || !compute.Deadline.After(time.Now().UTC()) {
+		return errors.New("on-box compute session is not READY with a future deadline")
+	}
 	if _, err := lookPath("hermes"); err != nil {
 		return errors.New("hermes was not found on the compute instance")
 	}
@@ -101,6 +138,9 @@ func runDeepOnBox(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := preflightLocalVerifyTools(mission); err != nil {
+		return err
+	}
 	if _, err := os.Stat(f.repoPath); err != nil {
 		return fmt.Errorf("on-box repository: %w", err)
 	}
@@ -111,12 +151,16 @@ func runDeepOnBox(args []string) error {
 	if clean, detail := git.cleanTracked(f.repoPath); !clean {
 		return fmt.Errorf("%s has uncommitted tracked changes; commit or stash them first:\n%s", f.repoPath, detail)
 	}
+	modelIDs, err := onBoxEndpointModelIDs()
+	if err != nil {
+		return fmt.Errorf("read on-box model endpoint: %w", err)
+	}
 	model := strings.TrimSpace(f.model)
 	if model == "" {
-		model, err = firstOnBoxEndpointModel()
-		if err != nil {
-			return fmt.Errorf("resolve on-box model: %w", err)
-		}
+		model = modelIDs[0]
+	}
+	if !containsString(modelIDs, model) {
+		return fmt.Errorf("model %q is not served by the on-box endpoint (available: %s)", model, strings.Join(modelIDs, ", "))
 	}
 	now := time.Now().UTC()
 	deadline, err := onBoxDeadline(f.deadline, f.hours, now)
@@ -140,20 +184,14 @@ func runDeepOnBox(args []string) error {
 	baseCommit, _ := git.repoHead(worktree)
 	state := deep.NewState(sessionID, mission, f.repoPath, worktree, deadline, landBefore, f.maxAttempts, now)
 	state.BaseCommit = baseCommit
+	if err := state.BindCompute("vast", compute.InstanceID, now); err != nil {
+		return fmt.Errorf("bind Deep Work session to compute instance: %w", err)
+	}
 	if f.actionPlan != "" {
-		state.Tasks = append([]deep.Task{{
-			ID:         "PLAN-001",
-			Objective:  "Create or update the living action plan at " + f.actionPlan + " before execution begins",
-			Acceptance: "the living action plan exists at the requested path and records decisions, risks, next steps, and evidence pointers consistent with the mission and repository state",
-			Verify:     "test -s " + shellQuote(f.actionPlan),
-			Reasoning:  deep.ReasoningXHigh,
-			Status:     deep.StatusQueued,
-			Source:     "coordinator",
-		}}, state.Tasks...)
+		state.Tasks = addActionPlanTask(state.Tasks, f.actionPlan)
 	}
 	state.Exec = &deep.ExecSettings{
 		Worker:          workerHermesOnBox,
-		AutoApprove:     f.autoApprove,
 		Provider:        f.provider,
 		Model:           model,
 		Reasoning:       f.reasoning,
@@ -161,10 +199,10 @@ func runDeepOnBox(args []string) error {
 		TaskTimeoutSec:  int(f.taskTimeout.Seconds()),
 		AllowedCommands: f.allowCommands,
 	}
-	if err := state.SaveDir(paths.StateDir); err != nil {
+	if err := deep.SaveMissionCopy(paths.StateDir, sessionID, f.missionPath); err != nil {
 		return err
 	}
-	if err := deep.SaveMissionCopy(paths.StateDir, sessionID, f.missionPath); err != nil {
+	if err := state.SaveDir(paths.StateDir); err != nil {
 		return err
 	}
 	if err := writeOnBoxReady(f.readyFile, state); err != nil {
@@ -173,7 +211,6 @@ func runDeepOnBox(args []string) error {
 
 	return deepRunSession(paths.StateDir, &state, &deepRunConfig{
 		worker:          workerHermesOnBox,
-		autoApprove:     f.autoApprove,
 		allowedCommands: f.allowCommands,
 		provider:        f.provider,
 		model:           model,
@@ -181,7 +218,7 @@ func runDeepOnBox(args []string) error {
 		actionPlan:      f.actionPlan,
 		taskTimeout:     f.taskTimeout,
 		missionName:     mission.Name,
-		taskCount:       len(mission.Tasks),
+		taskCount:       len(state.Tasks),
 		paths:           paths,
 	}, git, false)
 }
@@ -238,14 +275,22 @@ func writeOnBoxReady(path string, state deep.DeepState) error {
 }
 
 func firstOnBoxEndpointModel() (string, error) {
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://127.0.0.1:8080/v1/models")
+	ids, err := onBoxEndpointModelIDs()
 	if err != nil {
 		return "", err
 	}
+	return ids[0], nil
+}
+
+func onBoxEndpointModelIDs() ([]string, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:8080/v1/models")
+	if err != nil {
+		return nil, err
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("on-box model endpoint returned %s", resp.Status)
+		return nil, fmt.Errorf("on-box model endpoint returned %s", resp.Status)
 	}
 	var body struct {
 		Data []struct {
@@ -253,12 +298,18 @@ func firstOnBoxEndpointModel() (string, error) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", err
+		return nil, err
 	}
-	if len(body.Data) == 0 || strings.TrimSpace(body.Data[0].ID) == "" {
-		return "", errors.New("the on-box model endpoint reported no models")
+	ids := make([]string, 0, len(body.Data))
+	for _, model := range body.Data {
+		if id := strings.TrimSpace(model.ID); id != "" {
+			ids = append(ids, id)
+		}
 	}
-	return body.Data[0].ID, nil
+	if len(ids) == 0 {
+		return nil, errors.New("the on-box model endpoint reported no models")
+	}
+	return ids, nil
 }
 
 func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags) error {
@@ -268,6 +319,20 @@ func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags) error {
 	}
 	if state.Exec == nil || state.Exec.Worker != workerHermesOnBox {
 		return errors.New("latest Deep Work session is not an on-box Hermes session")
+	}
+	compute, err := sessionstate.Load(paths)
+	if err != nil {
+		return fmt.Errorf("on-box compute identity is unavailable: %w", err)
+	}
+	if state.ComputeBinding == nil || state.ComputeBinding.InstanceID != compute.InstanceID {
+		bound := int64(0)
+		if state.ComputeBinding != nil {
+			bound = state.ComputeBinding.InstanceID
+		}
+		return fmt.Errorf("on-box session is bound to instance %d, current instance is %d", bound, compute.InstanceID)
+	}
+	if err := preflightLocalVerifyTools(deep.Mission{Verify: state.Verify, Tasks: state.Tasks}); err != nil {
+		return err
 	}
 	if _, err := assertNoLiveCoordinator(paths.StateDir, state.SessionID); err != nil {
 		return err
@@ -285,21 +350,25 @@ func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags) error {
 		state.Phase = deep.PhaseExecuting
 		state.LandedAt = nil
 	}
+	modelIDs, err := onBoxEndpointModelIDs()
+	if err != nil {
+		return fmt.Errorf("read on-box model endpoint: %w", err)
+	}
 	model := state.Exec.Model
 	if strings.TrimSpace(f.model) != "" {
 		model = f.model
 	}
 	if strings.TrimSpace(model) == "" {
-		model, err = firstOnBoxEndpointModel()
-		if err != nil {
-			return err
-		}
+		model = modelIDs[0]
+	}
+	if !containsString(modelIDs, model) {
+		return fmt.Errorf("model %q is not served by the on-box endpoint (available: %s)", model, strings.Join(modelIDs, ", "))
 	}
 	state.Exec.Model = model
-	if f.reasoning != "" {
+	if f.reasoningSet {
 		state.Exec.Reasoning = f.reasoning
 	}
-	if f.taskTimeout > 0 {
+	if f.taskTimeoutSet {
 		state.Exec.TaskTimeoutSec = int(f.taskTimeout.Seconds())
 	}
 	if err := state.SaveDir(paths.StateDir); err != nil {
@@ -307,7 +376,6 @@ func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags) error {
 	}
 	return deepRunSession(paths.StateDir, &state, &deepRunConfig{
 		worker:          workerHermesOnBox,
-		autoApprove:     state.Exec.AutoApprove,
 		allowedCommands: state.Exec.AllowedCommands,
 		provider:        state.Exec.Provider,
 		model:           model,

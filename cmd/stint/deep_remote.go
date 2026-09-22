@@ -16,12 +16,9 @@ import (
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
-// gitOps is the git surface the Deep Work coordinator drives. Both the local
-// *gitRunner (Cline worker, worktree on the operator's machine) and the remote
-// *remoteGit (Hermes worker, worktree on the compute box) implement it, so the
-// coordinator's acceptance, checkpoint, summary, and recovery logic is
-// worker-agnostic: the same code path runs whether the worktree is local or on
-// the box.
+// gitOps is the git surface the Deep Work coordinator drives. *gitRunner
+// handles a co-located on-box run, while *remoteGit runs the same operations
+// over SSH for the operator-side coordinator.
 type gitOps interface {
 	repoHead(dir string) (string, error)
 	cleanTracked(dir string) (bool, string)
@@ -188,12 +185,6 @@ func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir 
 	return out, err == nil, nil
 }
 
-// hermesPromptFile is the on-box staging path for the reconstructed prompt.
-// It lives outside the worktree so the coordinator's `git add -A` checkpoint
-// never captures it, and a fixed path is safe because a session runs one
-// invocation at a time on one box.
-const hermesPromptFile = "/tmp/stint-deep-prompt.md"
-
 // hermesExitMarker delimits the Hermes invocation's exit code in the remote
 // output: the box shell appends "<marker><code>" after the run so the exit
 // code survives the SSH channel (runSSH reports a non-zero remote exit as an
@@ -214,9 +205,8 @@ func writeRemoteFile(remote remoteCmd, path string, data []byte) error {
 // hermesExecutor runs one bounded agent invocation ON THE COMPUTE BOX: it
 // stages the reconstructed prompt, runs headless Hermes (pointed at the box's
 // local model endpoint), and reports the invocation's exit code and output
-// tail. The coordinator still decides acceptance from repository evidence
-// (the remote verify command) — the exit code only feeds the blocker reason,
-// mirroring the Cline executor's contract.
+// tail. The coordinator still decides acceptance from repository evidence;
+// the exit code only feeds the blocker reason.
 type hermesExecutor struct {
 	remote remoteCmd
 }
@@ -235,8 +225,7 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 
 	b64 := base64.StdEncoding.EncodeToString([]byte(in.prompt))
 	secs := int(in.timeout.Seconds())
-	hermesArgs := "hermes chat --query-file " + shellQuote(hermesPromptFile) +
-		" --oneshot -Q"
+	hermesArgs := "hermes chat --query-file \"$stint_prompt_file\" --oneshot"
 	if in.model != "" {
 		provider := in.provider
 		if provider == "" {
@@ -252,16 +241,16 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 			// Preserve the established smoke/diagnostic command shape.
 			providerArg = provider
 		}
-		hermesArgs = "hermes chat --query-file " + shellQuote(hermesPromptFile) +
-			" --oneshot -Q --provider " + providerArg + " -m " + shellQuote(in.model)
+		hermesArgs += " --provider " + providerArg + " -m " + shellQuote(in.model)
 		if in.reasoning != "" {
 			hermesArgs += " --reasoning " + shellQuote(in.reasoning)
 		}
 	}
 	line := fmt.Sprintf(
-		"printf %%s %s | base64 -d > %s; cd %s; timeout %d %s 2>&1; ec=$?; echo %s$ec",
-		shellQuote(b64), shellQuote(hermesPromptFile), shellQuote(in.workdir),
-		secs, hermesArgs, hermesExitMarker)
+		"umask 077; stint_prompt_file=$(mktemp /tmp/stint-deep-prompt.XXXXXX) || exit $?; "+
+			"trap 'rm -f \"$stint_prompt_file\"' EXIT; printf %%s %s | base64 -d > \"$stint_prompt_file\" && "+
+			"cd %s && timeout %d %s 2>&1; ec=$?; echo %s$ec",
+		shellQuote(b64), shellQuote(in.workdir), secs, hermesArgs, hermesExitMarker)
 
 	out, err := e.remote(ctx, line)
 	res := execResult{duration: time.Since(start), stderrTail: tailLine(out, 5)}
@@ -337,7 +326,7 @@ func (e *localHermesExecutor) run(ctx context.Context, in execInput) (execResult
 		provider = "custom"
 	}
 	provider = strings.ReplaceAll(provider, "{reasoning}", in.reasoning)
-	argv := []string{"chat", "--query-file", promptPath, "--oneshot", "-Q", "--provider", provider}
+	argv := []string{"chat", "--query-file", promptPath, "--oneshot", "--provider", provider}
 	if in.model != "" {
 		argv = append(argv, "-m", in.model)
 	}

@@ -35,12 +35,12 @@ type Compute struct {
 }
 
 type Worker struct {
-	Observed, Reachable                                bool
-	NInferContext, NInferKV, NInferDefaultMaxTokens    int
-	XHighRequests, MediumRequests                      int
-	LatestPhase, LatestAt, Compression, CompressionAt  string
-	CompressionCompleted, CompressionFailed, Truncated int
-	Error                                              string
+	Observed, Reachable                                      bool
+	NInferContext, NInferKV, NInferDefaultMaxTokens          int
+	XHighRequests, MediumRequests                            int
+	Scope, LatestPhase, LatestAt, Compression, CompressionAt string
+	CompressionCompleted, CompressionFailed, Truncated       int
+	Error                                                    string
 }
 
 type Modal struct {
@@ -246,6 +246,9 @@ func workerView(m Model, p palette) string {
 		return b.String()
 	}
 	fmt.Fprintf(&b, "\nNInfer           context %d · KV %d · completion budget %d\n", m.Worker.NInferContext, m.Worker.NInferKV, m.Worker.NInferDefaultMaxTokens)
+	if m.Worker.Scope != "" {
+		b.WriteString(p.warn(compact(m.Worker.Scope, m.Width)) + "\n")
+	}
 	fmt.Fprintf(&b, "Phase routes      xhigh %d · medium %d", m.Worker.XHighRequests, m.Worker.MediumRequests)
 	if m.Worker.LatestPhase != "" {
 		fmt.Fprintf(&b, " · latest %s", m.Worker.LatestPhase)

@@ -80,6 +80,15 @@ func TestParseMissionRejectsDuplicateIDs(t *testing.T) {
 	}
 }
 
+func TestParseMissionRejectsReservedCoordinatorTaskIDs(t *testing.T) {
+	for _, id := range []string{"STINT-PLAN-001", "STINT-CLOSE-001"} {
+		content := "# x\n\n## Objective\no\n\n## Tasks\n- [ ] " + id + ": user task\n"
+		if _, err := ParseMission(content); err == nil || !strings.Contains(err.Error(), "reserved STINT coordinator namespace") {
+			t.Errorf("ParseMission(%q) err = %v, want reserved namespace rejection", id, err)
+		}
+	}
+}
+
 func TestParseMissionFencedVerification(t *testing.T) {
 	m, err := ParseMission("# x\n\n## Objective\no\n\n## Verification\n```\nmake check\n```\n\n## Tasks\n- [ ] T1: a\n")
 	if err != nil {
@@ -91,18 +100,14 @@ func TestParseMissionFencedVerification(t *testing.T) {
 }
 
 func TestCommandPolicySection(t *testing.T) {
-	if CommandPolicySection(nil, false) != "" {
+	if CommandPolicySection(nil) != "" {
 		t.Error("no allow-list: no policy section (legacy missions unchanged)")
 	}
-	off := CommandPolicySection([]string{"go test", "git status"}, false)
-	for _, want := range []string{"COMMAND POLICY", "- go test", "- git status", "auto-approval is OFF"} {
-		if !strings.Contains(off, want) {
-			t.Errorf("policy section (auto-approve off) missing %q:\n%s", want, off)
+	section := CommandPolicySection([]string{"go test", "git status"})
+	for _, want := range []string{"COMMAND GUIDANCE (ADVISORY ONLY", "- go test", "- git status", "not a security boundary", "does not enforce"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("policy section missing %q:\n%s", want, section)
 		}
-	}
-	on := CommandPolicySection([]string{"go test"}, true)
-	if !strings.Contains(on, "advisory") {
-		t.Errorf("policy section (auto-approve on) must say the list is advisory:\n%s", on)
 	}
 }
 
@@ -155,7 +160,7 @@ func TestExecSettingsAllowedCommandsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := NewState(NewSessionID(now), m, "/repo", "/worktree", now.Add(time.Hour), now.Add(50*time.Minute), 3, now)
-	state.Exec = &ExecSettings{AutoApprove: false, AllowedCommands: []string{"go test ./...", "git status"}}
+	state.Exec = &ExecSettings{AllowedCommands: []string{"go test ./...", "git status"}}
 	if err := state.SaveDir(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +366,7 @@ func TestExecSettingsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := NewState(NewSessionID(now), m, "/repo", "/worktree", now.Add(time.Hour), now.Add(50*time.Minute), 3, now)
-	state.Exec = &ExecSettings{AutoApprove: false, Provider: "openai-compatible", Model: "qwen3.8-27b", Reasoning: ReasoningMedium, ActionPlanPath: "deep-work/action-plan.md", ClineConfig: "/cfg", TaskTimeoutSec: 900}
+	state.Exec = &ExecSettings{Provider: "custom:qwen-stint-{reasoning}", Model: "qwen3.8-27b", Reasoning: ReasoningMedium, ActionPlanPath: "deep-work/action-plan.md", TaskTimeoutSec: 900}
 	if err := state.SaveDir(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +377,7 @@ func TestExecSettingsRoundTrip(t *testing.T) {
 	if loaded.Exec == nil {
 		t.Fatal("Exec settings were not persisted")
 	}
-	if loaded.Exec.AutoApprove || loaded.Exec.Model != "qwen3.8-27b" || loaded.Exec.Reasoning != ReasoningMedium || loaded.Exec.ActionPlanPath != "deep-work/action-plan.md" || loaded.Exec.TaskTimeoutSec != 900 {
+	if loaded.Exec.Provider != "custom:qwen-stint-{reasoning}" || loaded.Exec.Model != "qwen3.8-27b" || loaded.Exec.Reasoning != ReasoningMedium || loaded.Exec.ActionPlanPath != "deep-work/action-plan.md" || loaded.Exec.TaskTimeoutSec != 900 {
 		t.Errorf("exec = %+v", loaded.Exec)
 	}
 

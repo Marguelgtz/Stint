@@ -56,7 +56,7 @@ func (c *deepCoordinator) execInputFor(t deep.Task) execInput {
 	// The session's command policy is part of the reconstructed context: the
 	// worker must know exactly which commands it may run and what will
 	// happen to the rest.
-	if sec := deep.CommandPolicySection(in.allowedCommands, in.autoApprove); sec != "" {
+	if sec := deep.CommandPolicySection(in.allowedCommands); sec != "" {
 		in.prompt += sec
 	}
 	return in
@@ -95,9 +95,9 @@ func (c *deepCoordinator) incident(kind, taskID, detail string) {
 // policySummary is the compact command-policy description used in incidents.
 func policySummary(in execInput) string {
 	if len(in.allowedCommands) == 0 {
-		return fmt.Sprintf("autoApprove=%t allow=<none>", in.autoApprove)
+		return "allow=<none> (Hermes command execution is not restricted by Stint)"
 	}
-	return fmt.Sprintf("autoApprove=%t reasoning=%s allow=[%s]", in.autoApprove, in.reasoning, strings.Join(in.allowedCommands, ", "))
+	return fmt.Sprintf("reasoning=%s advisory-allow=[%s]", in.reasoning, strings.Join(in.allowedCommands, ", "))
 }
 
 // stillExecuting re-reads the durable phase. An external `stint deep stop`

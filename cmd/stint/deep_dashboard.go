@@ -252,7 +252,16 @@ func (c *deepDashboardController) handleKey(key byte) (quit, changed, land bool)
 
 func (c *deepDashboardController) isLatest() bool {
 	latest, err := deep.LoadLatestState(c.paths.StateDir)
-	return err == nil && latest.SessionID == c.snapshot.State.SessionID
+	if err != nil || latest.SessionID != c.snapshot.State.SessionID {
+		return false
+	}
+	compute, err := sessionstate.Load(c.paths)
+	return err == nil && compute.Status == sessionstate.StatusReady && deepStateMatchesCompute(latest, compute)
+}
+
+func deepStateMatchesCompute(state deep.DeepState, compute sessionstate.State) bool {
+	return state.ComputeBinding != nil && state.ComputeBinding.Provider == "vast" &&
+		state.ComputeBinding.InstanceID > 0 && state.ComputeBinding.InstanceID == compute.InstanceID
 }
 
 func (c *deepDashboardController) loadLocal() {
@@ -273,13 +282,9 @@ func (c *deepDashboardController) project() {
 	m.SessionID = s.SessionID
 	m.Mission = s.MissionName
 	m.Phase = string(s.Phase)
-	m.WorkerName = "Cline on operator machine"
+	m.WorkerName = "Hermes on compute box"
 	if s.Exec != nil && s.Exec.Worker != "" {
-		if s.Exec.Worker == workerHermes || s.Exec.Worker == workerHermesOnBox {
-			m.WorkerName = "Hermes on GPU"
-		} else {
-			m.WorkerName = s.Exec.Worker
-		}
+		m.WorkerName = "Hermes on compute box"
 	}
 	m.Coordinator = c.snapshot.Coordinator
 	m.StartedAt, m.Deadline, m.LandBefore = s.StartedAt, s.Deadline, s.LandBefore
@@ -312,6 +317,16 @@ func (c *deepDashboardController) startRefresh() {
 		}
 		if err != nil {
 			result.ComputeErr = err
+			c.refreshCh <- result
+			return
+		}
+		if ssn.Status != sessionstate.StatusReady {
+			result.ComputeErr = fmt.Errorf("active compute session is %s, not READY", ssn.Status)
+			c.refreshCh <- result
+			return
+		}
+		if !deepStateMatchesCompute(state, ssn) {
+			result.ComputeErr = fmt.Errorf("active Vast instance %d does not match the compute instance bound to this Deep Work session", ssn.InstanceID)
 			c.refreshCh <- result
 			return
 		}
@@ -366,7 +381,7 @@ func (c *deepDashboardController) applyRemote(result deepDashboardRemoteResult) 
 	c.compute, c.computeLive = result.Compute, result.ComputeAvailable
 	if result.ComputeErr != nil {
 		c.computeLive = false
-		c.worker.Error = compactTelemetryError(result.ComputeErr)
+		c.worker = deepdash.Worker{Error: compactTelemetryError(result.ComputeErr)}
 	} else if result.Worker.Observed || result.Worker.Error != "" {
 		c.worker = result.Worker
 	}
@@ -475,7 +490,7 @@ func parseDeepWorkerObservation(raw string) (deepdash.Worker, error) {
 	if !wire.NInfer.Running {
 		return deepdash.Worker{}, errors.New("NInfer was not running on the GPU box")
 	}
-	worker := deepdash.Worker{Observed: true, Reachable: true, NInferContext: wire.NInfer.MaxContext, NInferKV: wire.NInfer.KVCapacity, NInferDefaultMaxTokens: wire.NInfer.DefaultMaxTokens, XHighRequests: wire.PhaseRoutes.XHighRequests, MediumRequests: wire.PhaseRoutes.MediumRequests, LatestPhase: wire.PhaseRoutes.LatestPhase, LatestAt: wire.PhaseRoutes.LatestAt, Compression: wire.Compression.State, CompressionAt: wire.Compression.LastAt, CompressionCompleted: wire.Compression.Completed, CompressionFailed: wire.Compression.Failed, Truncated: wire.Compression.Truncated}
+	worker := deepdash.Worker{Observed: true, Reachable: true, Scope: "Shared host logs since session start; counts are not attributed to this session", NInferContext: wire.NInfer.MaxContext, NInferKV: wire.NInfer.KVCapacity, NInferDefaultMaxTokens: wire.NInfer.DefaultMaxTokens, XHighRequests: wire.PhaseRoutes.XHighRequests, MediumRequests: wire.PhaseRoutes.MediumRequests, LatestPhase: wire.PhaseRoutes.LatestPhase, LatestAt: wire.PhaseRoutes.LatestAt, Compression: wire.Compression.State, CompressionAt: wire.Compression.LastAt, CompressionCompleted: wire.Compression.Completed, CompressionFailed: wire.Compression.Failed, Truncated: wire.Compression.Truncated}
 	if worker.Compression == "" {
 		worker.Compression = "not_observed"
 	}

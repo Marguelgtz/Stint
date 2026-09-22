@@ -255,8 +255,7 @@ Subcommands:
 			{name: "--action-plan", argument: "<path>", purpose: "worktree-relative living action plan"},
 			{name: "--provider", argument: "<id>", defaultVal: "custom:qwen-stint-{reasoning}", purpose: "configured Hermes provider or reasoning template"},
 			{name: "--model", argument: "<id>", purpose: "Hermes model id"},
-			{name: "--auto-approve", defaultVal: "false", purpose: "Hermes approval setting persisted with the session"},
-			{name: "--allow-command", argument: "<prefix>", purpose: "advisory command guidance included in the worker prompt"},
+			{name: "--allow-command", argument: "<prefix>", purpose: "advisory command guidance; Hermes does not enforce it"},
 			{name: "--json", defaultVal: "false", purpose: "status: print machine-readable state"},
 			{name: "--session", argument: "<id>", defaultVal: "latest", purpose: "status/dashboard: session to inspect"},
 			{name: "--ready-file", argument: "<path>", purpose: "onbox: write RUNNING only after preflight and durable state"},
@@ -270,7 +269,7 @@ Subcommands:
 		notes: []string{
 			"The on-box coordinator uses a Stint-owned worktree and persists session state under the configured Stint state directory.",
 			"Independent verification and checkpoint persistence are coordinator decisions; a Hermes completion response alone is not VERIFIED.",
-			"Command prefixes are prompt guidance unless an explicit Stint-side enforcement boundary reports otherwise.",
+			"Command prefixes are advisory prompt guidance; Stint does not enforce Hermes tool execution.",
 		},
 	}
 

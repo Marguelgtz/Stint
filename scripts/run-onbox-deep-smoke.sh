@@ -167,7 +167,7 @@ publication = json.load(open(sys.argv[3], encoding="utf-8"))
 tasks = {task.get("id"): task.get("status") for task in state.get("tasks", [])}
 if state.get("phase") != "landed":
     raise SystemExit(f"on-box session did not land: {state.get('phase')}")
-if tasks.get("PLAN-001") != "verified" or tasks.get("PHASE-001") != "verified" or tasks.get("PHASE-002") != "verified":
+if tasks.get("STINT-PLAN-001") != "verified" or tasks.get("PHASE-001") != "verified" or tasks.get("PHASE-002") != "verified":
     raise SystemExit(f"on-box tasks not verified: {tasks}")
 if not open(sys.argv[2], encoding="utf-8", errors="replace").read().strip():
     raise SystemExit("on-box handoff missing")

@@ -140,7 +140,7 @@ func newTestEnv(t *testing.T, script map[int]execResult, maxAttempts int) *testE
 }
 
 func completedResult() execResult {
-	return execResult{exitCode: 0, completed: true, finishReason: "completed", iterations: 1}
+	return execResult{exitCode: 0, completed: true, finishReason: "completed"}
 }
 
 func failedResult() execResult {
@@ -701,8 +701,8 @@ func TestDeepLoopVerifyBounded(t *testing.T) {
 	}
 }
 
-// The session's command policy must reach the worker: the reconstructed
-// prompt names the allow-list and its enforcement mode.
+// The session's command guidance must reach the worker without claiming Stint
+// enforces Hermes tool execution.
 func TestDeepLoopPolicyInPrompt(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
 	env.coord.execCfg.allowedCommands = []string{"go test", "git status"}
@@ -713,7 +713,7 @@ func TestDeepLoopPolicyInPrompt(t *testing.T) {
 		t.Fatal("no executor invocations")
 	}
 	prompt := env.fake.prompts[0]
-	for _, want := range []string{"COMMAND POLICY", "- go test", "- git status", "auto-approval is OFF"} {
+	for _, want := range []string{"COMMAND GUIDANCE (ADVISORY ONLY", "- go test", "- git status", "Stint does not enforce this list"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}

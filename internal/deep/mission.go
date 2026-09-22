@@ -102,6 +102,9 @@ func ParseMission(content string) (Mission, error) {
 				if !taskIDRe.MatchString(id) {
 					return m, fmt.Errorf("task ID %q is invalid (use letters, digits, _ or -)", id)
 				}
+				if isReservedTaskID(id) {
+					return m, fmt.Errorf("task ID %q uses the reserved STINT coordinator namespace", id)
+				}
 				for _, existing := range m.Tasks {
 					if existing.ID == id {
 						return m, fmt.Errorf("duplicate task ID %q", id)
@@ -120,6 +123,10 @@ func ParseMission(content string) (Mission, error) {
 		return m, fmt.Errorf("mission requires at least one task (## Tasks: '- [ ] ID: objective')")
 	}
 	return m, nil
+}
+
+func isReservedTaskID(id string) bool {
+	return strings.HasPrefix(id, "STINT-PLAN-") || strings.HasPrefix(id, "STINT-CLOSE-")
 }
 
 func ParseMissionFile(path string) (Mission, error) {

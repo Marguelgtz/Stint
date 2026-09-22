@@ -60,11 +60,11 @@ func runDeepStatus(args []string) error {
 		fmt.Printf("  coordinator: not running (continue with `stint deep resume`)\n")
 	}
 	if state.Exec != nil {
-		line := fmt.Sprintf("  policy:     auto-approve=%t", state.Exec.AutoApprove)
+		line := fmt.Sprintf("  worker:     %s", state.Exec.Worker)
 		if len(state.Exec.AllowedCommands) > 0 {
-			line += fmt.Sprintf("  allowed=[%s]", strings.Join(state.Exec.AllowedCommands, ", "))
+			line += fmt.Sprintf("; advisory commands=[%s]", strings.Join(state.Exec.AllowedCommands, ", "))
 		} else {
-			line += "  allowed=<none>"
+			line += "; command execution is not restricted by Stint"
 		}
 		fmt.Println(line)
 	}
