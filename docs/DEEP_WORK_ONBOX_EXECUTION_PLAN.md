@@ -4,7 +4,7 @@
 **Canonical plan:** This file is the single living action plan for the Deep Work
 integration mission. The dashboard plan and per-run action plans are historical or
 run-scoped evidence, not competing integration plans.
-**Last reconciled:** 2026-09-22.
+**Last reconciled:** 2026-09-23.
 
 This plan was recovered from `origin/fix/deep-work-onbox-publishing` at
 `62f89ddcd0b98962f6b5f7c0d1360ac43e5ff3a6` (`docs/DEEP_WORK_ONBOX_EXECUTION_PLAN.md`)
@@ -34,8 +34,11 @@ not the target design.
   `5401752` for compute identity, Hermes-only execution, and dashboard safety.
   Draft PR #100 (https://github.com/Marguelgtz/Stint/pull/100), branch
   `integrate/deep-work-bootstrap-20260922`, stacks on #99 with commit
-  `453c91f` for fresh-box qualification and current operator docs. PR #100 is
-  open/draft and reports no checks yet. None of these drafts are merged.
+  `453c91f` for fresh-box qualification and current operator docs. Draft PR #101
+  (https://github.com/Marguelgtz/Stint/pull/101), branch
+  `integrate/deep-work-onbox-recovery-20260922`, stacks on #100 with commit
+  `1356ef4` for durable resume/rebind on restored compute. PR #100 previously
+  reported no checks; PR #101 is open/draft. None of these drafts are merged.
 - All historical Deep Work feature PRs remain open. Their source heads share an
   old base (`d34cb2b...`) and are not safe merge units against current `main`.
   Use their code and evidence selectively on this clean integration branch.
@@ -176,12 +179,19 @@ not the target design.
   pre-invocation state failure, checkpoint failure, handoff write failure, and
   recovery after the final state save fails. Dashboard tunnel probes no longer
   mutate the process-wide port or fall back to the default endpoint. The current
-  working slice persists the Vast instance ID, requires an explicit reason for
-  replacement-compute rebinds, verifies the worktree before rebinding, rejects
-  coordinator-reserved mission IDs, and preserves omitted on-box resume fields.
-  Focused regressions cover compute mismatch/rebind persistence, ID reservation,
-  and dashboard detach/landing behavior. Commit `5401752` is pushed in draft PR
-  #99; it is not merged.
+  PR #99 persists the Vast instance ID, requires an explicit reason for
+  replacement-compute rebinds, rejects coordinator-reserved mission IDs, and
+  makes dashboard controls identity-aware. PR #101 completes the on-box recovery
+  side: the launcher preserves restored state/repository, validates the exact
+  session branch/worktree and current compute before qualification, and requires
+  an explicit audited rebind on mismatch. The coordinator recovers the saved
+  branch before binding, reanchors deadline to the READY compute deadline,
+  preserves omitted settings, and writes RUNNING after durable state and checks.
+  Tests cover settings overrides, plan retargeting, resume deadline/rebind,
+  implicit-rebind refusal, and readiness JSON. Commit `1356ef4` is in draft PR
+  #101; neither #99 nor #101 is merged. Actual volume restore remains external:
+  resume requires the durable state and repository to be mounted at the same
+  configured root; the launcher does not copy lost disks or restore R2 objects.
 
 ### [~] Make worker evidence and workspace handling truthful
 
@@ -264,7 +274,12 @@ not the target design.
 - PR #99 commit `5401752`: `go test ./cmd/stint ./internal/deep ./internal/deepdashboard` and `git diff --check` — PASS.
 - PR #100 commit `453c91f`: `go test ./...` — PASS; `bash -n` for the launcher, provisioner, phase setup, smoke, and supervisor scripts — PASS; Python byte-compilation for phase proxy, observer, and publisher — PASS; `git diff --check` — PASS. ShellCheck is unavailable.
 - PR #100 currently reports no GitHub checks. No fresh GPU validation has been run against PR #100. Local static checks do not prove package installs, Hermes configuration compatibility, route inference, watchdog startup, or supervisor recovery on a clean GPU.
+- PR #101 commit `1356ef4`: `go test -count=1 ./cmd/stint ./internal/deep ./internal/session` — PASS; `go test ./...` — PASS; Bash syntax for launcher, supervisor, provisioner, and live-smoke scripts — PASS; embedded resume-preflight Python compile and fixture checks (same identity, implicit mismatch refusal, explicit mismatch allowance, missing branch refusal) — PASS; `git diff --check` — PASS. GitHub `build-check`, `go-vet`, `race-tests`, `spark-profile`, and `unit-tests` — PASS. No live replacement-compute or volume-restore run has been performed.
 
 ## Next action
 
-Add an explicit, durable on-box resume/rebind path for replacement compute. Ensure the launcher can resume without deleting the saved repo/state and that a resumed session writes the readiness handshake only after its identity and recovery checks pass. Then audit publisher policy authority, push restrictions, pagination, and landing/publication identity before a live GPU run.
+Audit publisher policy authority, push restrictions, pagination, and
+landing/publication identity before attempting the authorized fresh-GPU smoke.
+PR #101 provides the explicit compute-resume gate but does not restore state
+volumes; confirm a durable-volume restoration path before treating replacement
+compute recovery as operationally complete.
