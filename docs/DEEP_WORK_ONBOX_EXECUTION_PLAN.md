@@ -171,8 +171,12 @@ not the target design.
   paginate relevant GitHub collections or fail closed.
 - **Acceptance:** Fallback-cost, authority-mismatch, adversarial base-push, and
   pagination/completeness fixtures pass; deterministic merge gates remain intact.
-- **Outcome / uncertainty:** Audit and implementation pending. #85 remains deferred
-  pending dependency and gate inspection.
+- **Outcome / uncertainty:** The rental loop now repeats the full-session budget
+  check directly before `CreateInstance`; a candidate can satisfy the hourly cap
+  and still be rejected for the requested duration. The focused regression uses a
+  $0.30/hour initial offer and a $0.40/hour fallback over seven hours against the
+  $2.50 ceiling. GitHub publisher authority and pagination remain under audit;
+  #85 remains deferred pending dependency and gate inspection.
 
 ### [~] Reconcile immutable NInfer revision and transfer recovery
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,6 +21,23 @@ import (
 )
 
 const providerStartupTimeout = 6 * time.Minute
+
+// candidateWithinSessionBudget repeats the requested-duration ceiling at the
+// rental boundary. The initial plan does not cover later network-ranked
+// fallback candidates.
+func candidateWithinSessionBudget(profile core.Profile, candidate core.Offer, hours float64) bool {
+	if profile.Session.MaxCostUSD <= 0 {
+		return true
+	}
+	if candidate.HourlyUSD <= 0 || hours <= 0 {
+		return false
+	}
+	return estimatedCandidateSessionCost(candidate, hours) <= profile.Session.MaxCostUSD
+}
+
+func estimatedCandidateSessionCost(candidate core.Offer, hours float64) float64 {
+	return math.Round(candidate.HourlyUSD*hours*100) / 100
+}
 
 // runStartResumable is the paid interactive start path with explicit recovery
 // checkpoints. Provider/SSH startup failures reject the host and move to the
@@ -231,6 +249,8 @@ func runStartResumable(args []string) (retErr error) {
 	}()
 
 	qualified := false
+	costRejected := 0
+	rentalAttempts := 0
 	for attempt, candidate := range candidates {
 		candidateRuntime, candidateErr := selectInteractiveRuntime(runtimeRequest, candidate.GPUModel)
 		if candidateErr != nil {
@@ -265,11 +285,20 @@ func runStartResumable(args []string) (retErr error) {
 			Status: sessionstate.StatusRenting,
 		}
 
+		// This check sits immediately before every provider rental mutation so
+		// fallbacks cannot pass hourly policy while exceeding the session cap.
+		if !candidateWithinSessionBudget(profile, selected, hours) {
+			costRejected++
+			fmt.Printf("Rejected        candidate %d/%d (estimated session cost $%.2f exceeds $%.2f ceiling)\n",
+				attempt+1, len(candidates), estimatedCandidateSessionCost(selected, hours), profile.Session.MaxCostUSD)
+			continue
+		}
 		if len(candidates) > 1 {
 			fmt.Printf("Renting candidate %d/%d (%s, %s, %.0f Mbps advertised)...\n", attempt+1, len(candidates), selected.GPUModel, valueOr(selected.Geolocation, "unknown"), selected.InetDownMBps)
 		} else {
 			fmt.Println("Renting selected offer...")
 		}
+		rentalAttempts++
 		instanceID, createErr := client.CreateInstance(rootCtx, selected.ID, vast.CreateInstanceOptions{
 			Image:   vastImageForRuntime(runtimeRequest),
 			DiskGB:  profile.Session.StorageGB,
@@ -397,6 +426,9 @@ func runStartResumable(args []string) (retErr error) {
 		break
 	}
 	if !qualified {
+		if rentalAttempts == 0 && costRejected > 0 {
+			return fmt.Errorf("all %d candidate(s) exceeded the $%.2f requested-session cost ceiling", costRejected, profile.Session.MaxCostUSD)
+		}
 		return errors.New("network qualification did not select a candidate")
 	}
 
