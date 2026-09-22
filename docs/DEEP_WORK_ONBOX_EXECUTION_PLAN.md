@@ -25,8 +25,14 @@ not the target design.
   (https://github.com/Marguelgtz/Stint/pull/96) contains the recovered plan and
   dynamic NInfer artifact fix; draft PR #97
   (https://github.com/Marguelgtz/Stint/pull/97) is based on #96 and adds the
-  pre-rental full-session cost check. The current Hermes core branch is intended
-  to stack on #97; these drafts are review checkpoints, not merged changes.
+  pre-rental full-session cost check. Draft PR #98
+  (https://github.com/Marguelgtz/Stint/pull/98), branch
+  `integrate/deep-work-hermes-core-20260922`, stacks on #97 and ports the Hermes
+  coordinator/dashboard core. Draft PR #99
+  (https://github.com/Marguelgtz/Stint/pull/99), branch
+  `integrate/deep-work-hermes-only-20260922`, stacks on #98 with commit
+  `5401752` for compute identity, Hermes-only execution, and dashboard safety.
+  None of these drafts are merged.
 - All historical Deep Work feature PRs remain open. Their source heads share an
   old base (`d34cb2b...`) and are not safe merge units against current `main`.
   Use their code and evidence selectively on this clean integration branch.
@@ -159,9 +165,13 @@ not the target design.
   data and an exact landing commit SHA. Regression tests cover verifier absence,
   pre-invocation state failure, checkpoint failure, handoff write failure, and
   recovery after the final state save fails. Dashboard tunnel probes no longer
-  mutate the process-wide port or fall back to the default endpoint. Compute
-  identity/rebind history, reserved action-plan task IDs, and explicit resume
-  override semantics remain open.
+  mutate the process-wide port or fall back to the default endpoint. The current
+  working slice persists the Vast instance ID, requires an explicit reason for
+  replacement-compute rebinds, verifies the worktree before rebinding, rejects
+  coordinator-reserved mission IDs, and preserves omitted on-box resume fields.
+  Focused regressions cover compute mismatch/rebind persistence, ID reservation,
+  and dashboard detach/landing behavior. Commit `5401752` is pushed in draft PR
+  #99; it is not merged.
 
 ### [~] Make worker evidence and workspace handling truthful
 
@@ -177,9 +187,12 @@ not the target design.
 - **Acceptance:** Crash-cleanup boundary, unverified worker result, unrelated route
   traffic, and honest compression scope tests pass.
 - **Outcome / uncertainty:** Local Hermes prompt files now use protected system
-  temporary storage rather than the target worktree. The fixed remote prompt path,
-  per-attempt telemetry isolation, compute/session attribution, and compression
-  evidence scope still need repair and regression coverage.
+  temporary storage rather than the target worktree. Remote prompts now use
+  per-invocation protected `/tmp` files with cleanup traps; Hermes quiet mode is
+  omitted. Dashboard phase/compression totals are explicitly labeled as shared
+  host log counts that are not attributed to the session. The telemetry stream
+  still lacks session/task/attempt correlation, so those totals are not
+  coordinator acceptance evidence.
 
 ### [~] Reconcile compute cost, GitHub policy, publisher authority, and pagination
 
@@ -238,13 +251,9 @@ not the target design.
 
 ## Verification so far
 
-- `go test ./cmd/stint ./internal/deep ./internal/deepdashboard` — PASS after
-  coordinator durability changes. This is focused package evidence only; full
-  repository checks and a fresh GPU smoke have not run on this head.
+- On working branch `integrate/deep-work-hermes-only-20260922`, `go test ./cmd/stint ./internal/deep ./internal/deepdashboard` — PASS after the Hermes-only, compute-binding, dashboard identity, reserved task-ID, and model-endpoint changes. `git diff --check` — PASS.
+- These focused package results ran on the tree committed as `5401752` and pushed to draft PR #99. They do not verify the full repository, a fresh-box bootstrap, or a live GPU run.
 
 ## Next action
 
-Finish retiring Cline as a first-class Deep Work execution path, then close the
-fresh-box preflight/provisioning, compute identity, action-plan namespace, and
-resume-override findings. Keep the next source changes stacked as small draft PRs
-and update this plan with each verified checkpoint.
+Continue with the production launcher: install and qualify fresh-box Hermes phase providers, observer, and verifier environment through the same path used by the smoke. Rewrite the stale Cline user guides and audit GitHub publication gates before full-system verification.
