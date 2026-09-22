@@ -61,9 +61,25 @@ go test ./...
 - [ ] PARSE-001: Reject the malformed retry header.
   - acceptance: the parser returns a clear error and keeps valid headers working.
   - verify: go test ./internal/parser
+
+## GitHub
+- mode: engineering
+- repository: owner/repository
+- base: main
+- approval: internal
+- allowed-authors: alice, bob
 ```
 
-The box preflight checks that declared verifier executables are available. For the Stint Go repository, bootstrap runs `go test ./...` before `RUNNING`. Other repositories must provide their own reproducible dependency setup; a present executable does not prove project dependencies are installed.
+Production on-box missions must persist an explicit GitHub policy. The launcher
+configuration (mode, repository, base, allowed authors, and approval) must match
+that mission section exactly or launch fails. The current on-box publisher only
+supports `engineering`; maintenance merge authority remains a separately gated
+feature. The fixture bypass can use `mode: none` with GitHub publishing disabled.
+
+The box preflight checks that declared verifier executables are available. For
+the Stint Go repository, bootstrap runs `go test ./...` before `RUNNING`. Other
+repositories must provide their own reproducible dependency setup; a present
+executable does not prove project dependencies are installed.
 
 Coordinator task IDs beginning `STINT-PLAN-` and `STINT-CLOSE-` are reserved. `--action-plan` adds a coordinator-owned xhigh planning task using the reserved namespace.
 

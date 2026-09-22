@@ -40,6 +40,9 @@ SKIP_WATCHDOG="${STINT_ONBOX_SKIP_WATCHDOG:-0}"
 GITHUB_TOKEN_LOCAL="${STINT_GITHUB_TOKEN_FILE:-}"
 GITHUB_REPOSITORY="${STINT_GITHUB_REPOSITORY:-}"
 GITHUB_BASE="${STINT_GITHUB_BASE:-}"
+GITHUB_MODE="${STINT_GITHUB_MODE:-engineering}"
+GITHUB_APPROVAL="${STINT_GITHUB_APPROVAL:-internal}"
+GITHUB_ALLOWED_AUTHORS="${STINT_GITHUB_ALLOWED_AUTHORS:-}"
 ACTION_PLAN_LOCAL="${STINT_ONBOX_ACTION_PLAN:-}"
 ACTION_PLAN_TARGET="${STINT_ONBOX_ACTION_PLAN_PATH:-}"
 REMOTE_BIN="$ROOT/bin/stint"
@@ -144,6 +147,7 @@ done
 if [ "$SKIP_GITHUB" = 1 ]; then
   echo "WARNING: STINT_ONBOX_SKIP_GITHUB=1 disables checkpoint/PR publishing; fixture use only" >&2
 else
+  [ "$GITHUB_MODE" = engineering ] || die "the on-box checkpoint publisher currently supports STINT_GITHUB_MODE=engineering only"
   [ -x "$GITHUB_PUBLISH_LOCAL" ] || die "GitHub publisher is missing or not executable: $GITHUB_PUBLISH_LOCAL"
   [ -n "$GITHUB_TOKEN_LOCAL" ] && [ -r "$GITHUB_TOKEN_LOCAL" ] || die "STINT_GITHUB_TOKEN_FILE must name a readable least-privilege token file"
   case "$GITHUB_REPOSITORY" in
@@ -241,9 +245,11 @@ fi
 RESUME_MODEL=""
 if [ "$RESUME" = 1 ]; then
   echo "checking durable on-box session, repository branch, and compute binding before qualification"
-  RESUME_DATA="$("${SSH[@]}" python3 - "$ROOT" "$STINT_INSTANCE_ID" "$REBIND_COMPUTE" <<'PY'
+  resume_preflight_cmd="$(printf '%q ' python3 - "$ROOT" "$STINT_INSTANCE_ID" "$REBIND_COMPUTE" \
+    "$GITHUB_MODE" "$GITHUB_REPOSITORY" "$GITHUB_BASE" "$GITHUB_ALLOWED_AUTHORS" "$GITHUB_APPROVAL" "$SKIP_GITHUB")"
+  RESUME_DATA="$("${SSH[@]}" "$resume_preflight_cmd" <<'PY'
 import json, os, re, subprocess, sys
-root, current_raw, rebind_raw = sys.argv[1:]
+root, current_raw, rebind_raw, mode, repository, base, authors_raw, approval, skip_github = sys.argv[1:]
 repo = os.path.join(root, "repo")
 latest = os.path.join(root, "state", "stint", "deep", "latest")
 if not os.path.isfile(latest):
@@ -285,6 +291,24 @@ if needs_rebind and rebind_raw != "1":
     raise SystemExit(f"saved session is bound to Vast instance {bound_id}, current instance is {current_id}; set STINT_ONBOX_REBIND_COMPUTE=1 and STINT_ONBOX_REBIND_REASON after verifying restored state")
 if not needs_rebind and rebind_raw == "1":
     raise SystemExit("compute already matches saved session; do not request a rebind")
+policy = state.get("github") or {}
+if skip_github == "1":
+    if str(policy.get("mode", "")).strip().lower() != "none":
+        raise SystemExit("GitHub publishing cannot be disabled for a session whose persisted policy enables it")
+else:
+    mode = mode.strip().lower()
+    repository = repository.strip()
+    base = base.strip()
+    approval = approval.strip().lower()
+    authors = sorted(author.strip().lower() for author in authors_raw.split(",") if author.strip())
+    saved_authors = sorted(str(author).strip().lower() for author in policy.get("allowedAuthors", []))
+    expected = (str(policy.get("mode", "")), str(policy.get("repository", "")),
+                str(policy.get("base", "")), saved_authors, str(policy.get("approval", "")))
+    actual = (mode, repository, base, authors, approval)
+    if expected != actual:
+        raise SystemExit("publisher GitHub configuration differs from persisted mission policy (mode, repository, base, allowed authors, approval)")
+    if mode != "engineering":
+        raise SystemExit(f"on-box checkpoint publishing does not support GitHub mode {mode!r}")
 model = str(execution.get("model", "")).strip()
 print(model)
 print(session)
@@ -342,6 +366,9 @@ if [ "$SKIP_GITHUB" != 1 ]; then
     "STINT_GITHUB_TOKEN_FILE=$REMOTE_GITHUB_TOKEN" \
     "STINT_GITHUB_REPOSITORY=$GITHUB_REPOSITORY" \
     "STINT_GITHUB_BASE=$GITHUB_BASE" \
+    "STINT_GITHUB_MODE=$GITHUB_MODE" \
+    "STINT_GITHUB_ALLOWED_AUTHORS=$GITHUB_ALLOWED_AUTHORS" \
+    "STINT_GITHUB_APPROVAL=$GITHUB_APPROVAL" \
     "STINT_ONBOX_ORIGIN=gpu-instance" \
     "STINT_ONBOX_INSTANCE_ID=$STINT_INSTANCE_ID" \
     "$REMOTE_GITHUB_PUBLISH" preflight "$REMOTE_REPO")
@@ -450,6 +477,9 @@ else
     "STINT_GITHUB_TOKEN_FILE=$REMOTE_GITHUB_TOKEN" \
     "STINT_GITHUB_REPOSITORY=$GITHUB_REPOSITORY" \
     "STINT_GITHUB_BASE=$GITHUB_BASE" \
+    "STINT_GITHUB_MODE=$GITHUB_MODE" \
+    "STINT_GITHUB_ALLOWED_AUTHORS=$GITHUB_ALLOWED_AUTHORS" \
+    "STINT_GITHUB_APPROVAL=$GITHUB_APPROVAL" \
     "STINT_GITHUB_PR_DRAFT=${STINT_GITHUB_PR_DRAFT:-1}")
 fi
 [ -n "${STINT_R2_ENV_FILE:-}" ] && remote_env+=("STINT_ONBOX_R2_SYNC=$REMOTE_R2_SYNC" "STINT_ONBOX_R2_ARCHIVE=$REMOTE_R2_ARCHIVE" "STINT_R2_ENV_FILE=$ROOT/config/r2.env")

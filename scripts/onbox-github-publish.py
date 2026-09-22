@@ -24,6 +24,7 @@ from pathlib import Path
 
 SAFE_SESSION = re.compile(r"^[A-Za-z0-9_-]+$")
 SAFE_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+SAFE_AUTHOR = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 
 
 def utc_now() -> str:
@@ -61,14 +62,35 @@ def config() -> dict:
         raise RuntimeError("STINT_GITHUB_REPOSITORY must be owner/name")
     if not base or any(ch in base for ch in "\r\n\x00"):
         raise RuntimeError("STINT_GITHUB_BASE is required")
+    api = os.environ.get("STINT_GITHUB_API_URL", "https://api.github.com").rstrip("/")
+    parsed_api = urllib.parse.urlsplit(api)
+    if parsed_api.scheme != "https" or parsed_api.netloc != "api.github.com" or parsed_api.path or parsed_api.query or parsed_api.fragment:
+        raise RuntimeError("STINT_GITHUB_API_URL must be https://api.github.com; refusing to send the token elsewhere")
+    git_url = os.environ.get("STINT_GITHUB_GIT_URL", f"https://github.com/{repository}.git")
+    if normalize_github_repo(git_url) != repository:
+        raise RuntimeError("STINT_GITHUB_GIT_URL must point to STINT_GITHUB_REPOSITORY")
+    mode = os.environ.get("STINT_GITHUB_MODE", "engineering").strip().lower()
+    if mode not in {"none", "engineering", "maintenance"}:
+        raise RuntimeError("STINT_GITHUB_MODE must be none, engineering, or maintenance")
+    approval = os.environ.get("STINT_GITHUB_APPROVAL", "internal").strip().lower()
+    if approval not in {"internal", "github", "bot"}:
+        raise RuntimeError("STINT_GITHUB_APPROVAL must be internal, github, or bot")
+    allowed_authors = [author.strip() for author in os.environ.get("STINT_GITHUB_ALLOWED_AUTHORS", "").split(",") if author.strip()]
+    if any(not SAFE_AUTHOR.fullmatch(author) for author in allowed_authors):
+        raise RuntimeError("STINT_GITHUB_ALLOWED_AUTHORS contains an invalid GitHub login")
+    if len({author.lower() for author in allowed_authors}) != len(allowed_authors):
+        raise RuntimeError("STINT_GITHUB_ALLOWED_AUTHORS contains duplicates")
     return {
         "token_file": token_file,
         "token": read_token(token_file),
         "repository": repository,
         "base": base,
-        "api": os.environ.get("STINT_GITHUB_API_URL", "https://api.github.com").rstrip("/"),
-        "git_url": os.environ.get("STINT_GITHUB_GIT_URL", f"https://github.com/{repository}.git"),
+        "api": api,
+        "git_url": git_url,
         "draft": os.environ.get("STINT_GITHUB_PR_DRAFT", "1") != "0",
+        "mode": mode,
+        "allowed_authors": allowed_authors,
+        "approval": approval,
     }
 
 
@@ -93,6 +115,51 @@ def api_request(cfg: dict, method: str, path: str, payload=None):
     if not body:
         return None
     return json.loads(body.decode("utf-8"))
+
+
+def api_paginated(cfg: dict, path: str, *, per_page: int = 100, max_pages: int = 100) -> list:
+    """Fetch a full REST collection or fail closed when its size is unbounded."""
+    split = urllib.parse.urlsplit(path)
+    original = dict(urllib.parse.parse_qsl(split.query, keep_blank_values=True))
+    result = []
+    for page in range(1, max_pages + 1):
+        params = {**original, "per_page": per_page, "page": page}
+        page_path = urllib.parse.urlunsplit(("", "", split.path, urllib.parse.urlencode(params), ""))
+        batch = api_request(cfg, "GET", page_path)
+        if not isinstance(batch, list):
+            raise RuntimeError(f"GitHub collection {split.path} returned a non-list response")
+        result.extend(batch)
+        if len(batch) < per_page:
+            return result
+    # One look-ahead distinguishes an exactly-full final page from truncation.
+    params = {**original, "per_page": per_page, "page": max_pages + 1}
+    page_path = urllib.parse.urlunsplit(("", "", split.path, urllib.parse.urlencode(params), ""))
+    batch = api_request(cfg, "GET", page_path)
+    if not isinstance(batch, list):
+        raise RuntimeError(f"GitHub collection {split.path} returned a non-list response")
+    if batch:
+        raise RuntimeError(f"GitHub collection {split.path} exceeds the {max_pages * per_page}-item completeness limit")
+    return result
+
+
+def assert_session_github_policy(cfg: dict, state: dict) -> None:
+    saved = state.get("github")
+    if not isinstance(saved, dict):
+        raise RuntimeError("deep.json has no persisted GitHub policy")
+    saved_authors = sorted(str(author).strip().lower() for author in saved.get("allowedAuthors", []))
+    configured_authors = sorted(str(author).strip().lower() for author in cfg.get("allowed_authors", []))
+    expected = (
+        str(saved.get("mode", "")).strip().lower(),
+        str(saved.get("repository", "")).strip(),
+        str(saved.get("base", "")).strip(),
+        saved_authors,
+        str(saved.get("approval", "")).strip().lower() or "internal",
+    )
+    actual = (cfg["mode"], cfg["repository"], cfg["base"], configured_authors, cfg["approval"])
+    if expected != actual:
+        raise RuntimeError("publisher GitHub configuration differs from persisted mission policy (mode, repository, base, allowed authors, approval)")
+    if cfg["mode"] != "engineering":
+        raise RuntimeError(f"on-box checkpoint publisher does not implement GitHub mode {cfg['mode']!r}")
 
 
 def git(repo: str, *args: str, env=None) -> str:
@@ -126,6 +193,8 @@ def normalize_github_repo(remote: str) -> str:
 
 def preflight(repo_path: str) -> None:
     cfg = config()
+    if cfg["mode"] != "engineering":
+        raise RuntimeError(f"on-box checkpoint publisher does not implement GitHub mode {cfg['mode']!r}")
     local_head = git(repo_path, "rev-parse", "HEAD")
     if not re.fullmatch(r"[0-9a-f]{40}", local_head):
         raise RuntimeError("repository HEAD is not a full commit SHA")
@@ -198,7 +267,20 @@ def askpass_env(cfg: dict):
     return env, path
 
 
-def push_commit(cfg: dict, worktree: str, commit: str, branch: str) -> None:
+def push_commit(cfg: dict, worktree: str, commit: str, branch: str, session: str) -> None:
+    if branch == cfg["base"] or branch in {"main", "master", "develop", "default"}:
+        raise RuntimeError("publisher cannot push the configured base or a default branch")
+    match = re.fullmatch(r"stint/deep-([A-Za-z0-9_-]+)-(?:[0-9]{2,}-[a-z0-9._-]{1,40}|handoff)", branch)
+    if not match:
+        raise RuntimeError("publisher push is restricted to generated session checkpoint/handoff branches")
+    if match.group(1) != session:
+        raise RuntimeError("publisher push branch does not belong to the durable session")
+    if normalize_github_repo(cfg["git_url"]) != cfg["repository"]:
+        raise RuntimeError("publisher push URL differs from the persisted repository policy")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise RuntimeError("publisher only pushes a full immutable commit SHA")
+    git(worktree, "cat-file", "-e", commit + "^{commit}")
+    git(worktree, "merge-base", "--is-ancestor", commit, "HEAD")
     env, askpass = askpass_env(cfg)
     try:
         git(worktree, "push", "--porcelain", cfg["git_url"], f"{commit}:refs/heads/{branch}", env=env)
@@ -211,15 +293,15 @@ def push_commit(cfg: dict, worktree: str, commit: str, branch: str) -> None:
 
 def existing_pr(cfg: dict, branch: str):
     owner = cfg["repository"].split("/", 1)[0]
-    query = urllib.parse.urlencode({"state": "all", "head": f"{owner}:{branch}", "per_page": 10})
-    prs = api_request(cfg, "GET", f"/repos/{cfg['repository']}/pulls?{query}") or []
+    query = urllib.parse.urlencode({"state": "all", "head": f"{owner}:{branch}"})
+    prs = api_paginated(cfg, f"/repos/{cfg['repository']}/pulls?{query}")
     for pr in prs:
         if pr.get("head", {}).get("ref") == branch:
             return pr
     return None
 
 
-def ensure_pr(cfg: dict, *, session: str, branch: str, base: str, title: str, body: str):
+def ensure_pr(cfg: dict, *, session: str, branch: str, base: str, title: str, body: str, expected_head: str):
     pr = existing_pr(cfg, branch)
     if pr is None:
         pr = api_request(cfg, "POST", f"/repos/{cfg['repository']}/pulls", {
@@ -229,18 +311,70 @@ def ensure_pr(cfg: dict, *, session: str, branch: str, base: str, title: str, bo
             "body": body,
             "draft": cfg["draft"],
         })
+    if not isinstance(pr, dict):
+        raise RuntimeError(f"GitHub did not return a PR record for {branch}")
+    actual_base = str((pr.get("base") or {}).get("ref", ""))
+    actual_branch = str((pr.get("head") or {}).get("ref", ""))
+    actual_head = str((pr.get("head") or {}).get("sha", ""))
+    actual_repository = str(((pr.get("head") or {}).get("repo") or {}).get("full_name", ""))
+    if actual_base != base:
+        raise RuntimeError(f"existing PR #{pr.get('number')} base {actual_base!r} differs from {base!r}")
+    if actual_repository != cfg["repository"] or actual_branch != branch or actual_head != expected_head:
+        raise RuntimeError(f"existing PR #{pr.get('number')} head identity differs from checkpoint {branch}@{expected_head}")
     return {
         "number": pr.get("number"),
         "url": pr.get("html_url", ""),
     }
 
 
+def validate_published_pr(cfg: dict, entry: dict, *, branch: str, base: str, commit: str) -> None:
+    try:
+        number = int(entry.get("prNumber", 0))
+    except (TypeError, ValueError):
+        number = 0
+    if number <= 0:
+        raise RuntimeError(f"publication record for {branch} has no valid PR number")
+    pr = api_request(cfg, "GET", f"/repos/{cfg['repository']}/pulls/{number}") or {}
+    head = pr.get("head") or {}
+    actual_base = str((pr.get("base") or {}).get("ref", ""))
+    actual_repository = str((head.get("repo") or {}).get("full_name", ""))
+    if actual_repository != cfg["repository"] or str(head.get("ref", "")) != branch or str(head.get("sha", "")) != commit or actual_base != base:
+        raise RuntimeError(f"published PR #{number} no longer matches durable identity {branch}@{commit} -> {base}")
+    if entry.get("prUrl") and entry["prUrl"] != pr.get("html_url", ""):
+        raise RuntimeError(f"published PR URL for {branch} differs from GitHub's record")
+
+
+def exact_landing_commit(state: dict, worktree: str) -> str:
+    if state.get("phase") != "landed":
+        raise RuntimeError("final handoff publication requires landed durable state")
+    if state.get("landingVerifyDone") is not True or not str(state.get("landingHandoff", "")).strip():
+        raise RuntimeError("landed state has no completed final verification/handoff record")
+    commit = str(state.get("landingCommit", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise RuntimeError("landed state has no valid durable landingCommit SHA")
+    head = git(worktree, "rev-parse", "HEAD")
+    if head != commit:
+        raise RuntimeError(f"worktree HEAD {head} differs from durable landingCommit {commit}")
+    git(worktree, "cat-file", "-e", commit + "^{commit}")
+    if git(worktree, "status", "--porcelain"):
+        raise RuntimeError("landed worktree has uncommitted changes")
+    handoff_path = str(state.get("handoffPath", ""))
+    if not handoff_path or not os.path.isfile(handoff_path):
+        raise RuntimeError("durable handoff file is missing")
+    if Path(handoff_path).read_text(encoding="utf-8") != state["landingHandoff"]:
+        raise RuntimeError("durable handoff file differs from persisted landingHandoff")
+    return commit
+
+
 def initial_publication(cfg: dict, state: dict) -> dict:
     return {
-        "version": 1,
+        "version": 2,
         "session": state.get("sessionId", ""),
         "repository": cfg["repository"],
         "base": cfg["base"],
+        "mode": cfg["mode"],
+        "allowedAuthors": sorted(cfg["allowed_authors"], key=str.lower),
+        "approval": cfg["approval"],
         "origin": os.environ.get("STINT_ONBOX_ORIGIN", "unknown"),
         "instanceId": os.environ.get("STINT_ONBOX_INSTANCE_ID", ""),
         "hostname": socket.gethostname(),
@@ -254,18 +388,36 @@ def initial_publication(cfg: dict, state: dict) -> dict:
 def load_publication(path: Path, cfg: dict, state: dict) -> dict:
     if path.is_file():
         payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("version") != 2:
+            raise RuntimeError("publication.json lacks the persisted GitHub policy schema; refusing an implicit authority upgrade")
         if payload.get("session") != state.get("sessionId"):
             raise RuntimeError("publication.json session does not match deep.json")
         if payload.get("repository") != cfg["repository"] or payload.get("base") != cfg["base"]:
             raise RuntimeError("publication.json GitHub repository/base differs from launch configuration")
+        if payload.get("mode") != cfg["mode"] or payload.get("approval", "internal") != cfg["approval"]:
+            raise RuntimeError("publication.json GitHub mode/approval differs from launch configuration")
+        saved_authors = sorted(payload.get("allowedAuthors", []), key=str.lower)
+        configured_authors = sorted(cfg["allowed_authors"], key=str.lower)
+        if saved_authors != configured_authors:
+            raise RuntimeError("publication.json allowed authors differ from launch configuration")
         return payload
     return initial_publication(cfg, state)
 
 
 def record_error(path: Path, cfg: dict, state: dict, exc: Exception) -> None:
-    try:
-        payload = load_publication(path, cfg, state)
-    except Exception:
+    if path.is_file():
+        try:
+            payload = load_publication(path, cfg, state)
+        except Exception:
+            # A policy or identity mismatch must not be rewritten with the
+            # current environment: that would destroy the evidence of drift.
+            atomic_json(path.with_name("publication-error.json"), {
+                "session": state.get("sessionId", ""),
+                "error": str(exc)[-2000:],
+                "updatedAt": utc_now(),
+            })
+            return
+    else:
         payload = initial_publication(cfg, state)
     payload["lastError"] = str(exc)[-2000:]
     payload["updatedAt"] = utc_now()
@@ -279,6 +431,7 @@ def sync(state_dir: str) -> None:
     if not state_path.is_file():
         raise RuntimeError(f"deep state is missing: {state_path}")
     state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert_session_github_policy(cfg, state)
     session = state.get("sessionId", "")
     if not SAFE_SESSION.fullmatch(session):
         raise RuntimeError("invalid Deep Work session id")
@@ -288,6 +441,9 @@ def sync(state_dir: str) -> None:
     publication_path = root / "publication.json"
     publication = load_publication(publication_path, cfg, state)
     existing = {entry.get("taskId"): entry for entry in publication.get("checkpoints", [])}
+    task_ids = [str(task.get("id", "")) for task in state.get("tasks", [])]
+    if any(not task_id for task_id in task_ids) or len(set(task_ids)) != len(task_ids):
+        raise RuntimeError("durable task identity is empty or duplicated")
     previous_branch = cfg["base"]
     checkpoints = []
 
@@ -301,8 +457,9 @@ def sync(state_dir: str) -> None:
         if entry is not None:
             if entry.get("commit") != commit or entry.get("branch") != branch or entry.get("base") != previous_branch:
                 raise RuntimeError(f"published checkpoint identity changed for {task_id}")
+            validate_published_pr(cfg, entry, branch=branch, base=previous_branch, commit=commit)
         else:
-            push_commit(cfg, worktree, commit, branch)
+            push_commit(cfg, worktree, commit, branch, session)
             objective = str(task.get("objective", "")).strip()
             pr = ensure_pr(
                 cfg,
@@ -317,6 +474,7 @@ def sync(state_dir: str) -> None:
                     f"Objective: {objective}\n\n"
                     "This PR was pushed and opened by the detached on-box supervisor after coordinator verification."
                 ),
+                expected_head=commit,
             )
             entry = {
                 "taskId": task_id,
@@ -337,11 +495,15 @@ def sync(state_dir: str) -> None:
     publication["checkpoints"] = checkpoints
 
     if state.get("phase") == "landed":
-        head = git(worktree, "rev-parse", "HEAD")
+        head = exact_landing_commit(state, worktree)
         handoff_branch = f"stint/deep-{session}-handoff"
         handoff = publication.get("handoff")
-        if handoff is None or handoff.get("commit") != head:
-            push_commit(cfg, worktree, head, handoff_branch)
+        if handoff is not None:
+            if handoff.get("commit") != head or handoff.get("branch") != handoff_branch or handoff.get("base") != previous_branch:
+                raise RuntimeError("published handoff identity differs from durable landing state")
+            validate_published_pr(cfg, handoff, branch=handoff_branch, base=previous_branch, commit=head)
+        else:
+            push_commit(cfg, worktree, head, handoff_branch, session)
             pr = ensure_pr(
                 cfg,
                 session=session,
@@ -353,6 +515,7 @@ def sync(state_dir: str) -> None:
                     f"Handoff commit: `{head}`\n\n"
                     "This final stack layer contains the generated Deep Work handoff and any landing-only evidence."
                 ),
+                expected_head=head,
             )
             handoff = {
                 "commit": head,

@@ -191,6 +191,9 @@ func runDeepOnBox(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateOnBoxGitHubPolicy(mission.GitHub, mission.GitHubConfigured); err != nil {
+		return err
+	}
 	if err := preflightLocalVerifyTools(mission); err != nil {
 		return err
 	}
@@ -342,10 +345,15 @@ func applyDeepOnBoxOverrides(state *deep.DeepState, f *deepOnBoxFlags) error {
 	}
 	if f.actionPlanSet {
 		previous := state.Exec.ActionPlanPath
-		state.Exec.ActionPlanPath = f.actionPlan
 		if previous != f.actionPlan {
+			for _, task := range state.Tasks {
+				if task.Status == deep.StatusVerified {
+					return errors.New("cannot change the action-plan destination after a task checkpoint has been published; start a fresh session to preserve publication identity")
+				}
+			}
 			state.Tasks = retargetOnBoxActionPlanTask(state.Tasks, f.actionPlan)
 		}
+		state.Exec.ActionPlanPath = f.actionPlan
 	}
 	if f.taskTimeoutSet {
 		state.Exec.TaskTimeoutSec = int(f.taskTimeout.Seconds())
@@ -386,6 +394,58 @@ func retargetOnBoxActionPlanTask(tasks []deep.Task, actionPlan string) []deep.Ta
 
 func onBoxComputeRebindNeeded(state *deep.DeepState, instanceID int64) bool {
 	return state.ComputeBinding == nil || state.ComputeBinding.Provider != "vast" || state.ComputeBinding.InstanceID != instanceID
+}
+
+func githubPolicyFromEnvironment() (deep.GitHubPolicy, error) {
+	mode, err := deep.NormalizeGitHubMode(os.Getenv("STINT_GITHUB_MODE"))
+	if err != nil {
+		return deep.GitHubPolicy{}, err
+	}
+	approval, err := deep.NormalizeApprovalPolicy(os.Getenv("STINT_GITHUB_APPROVAL"))
+	if err != nil {
+		return deep.GitHubPolicy{}, err
+	}
+	var authors []string
+	for _, author := range strings.Split(os.Getenv("STINT_GITHUB_ALLOWED_AUTHORS"), ",") {
+		if author = strings.TrimSpace(author); author != "" {
+			authors = append(authors, author)
+		}
+	}
+	policy := deep.GitHubPolicy{
+		Mode: mode, Repository: strings.TrimSpace(os.Getenv("STINT_GITHUB_REPOSITORY")),
+		Base: strings.TrimSpace(os.Getenv("STINT_GITHUB_BASE")), AllowedAuthors: authors, Approval: approval,
+	}
+	if err := policy.Validate(); err != nil {
+		return deep.GitHubPolicy{}, err
+	}
+	return policy, nil
+}
+
+func validateOnBoxGitHubPolicy(policy deep.GitHubPolicy, configured bool) error {
+	if os.Getenv("STINT_ONBOX_SKIP_GITHUB") == "1" {
+		mode, err := deep.NormalizeGitHubMode(string(policy.Mode))
+		if err != nil || mode != deep.GitHubNone {
+			return errors.New("GitHub publishing cannot be disabled for a session whose persisted policy enables it")
+		}
+		return nil
+	}
+	if !configured {
+		return errors.New("production on-box missions must declare an explicit ## GitHub policy")
+	}
+	if err := policy.Validate(); err != nil {
+		return fmt.Errorf("mission GitHub policy: %w", err)
+	}
+	if policy.Mode != deep.GitHubEngineering {
+		return fmt.Errorf("on-box checkpoint publication currently requires GitHub mode engineering; got %q", policy.Mode)
+	}
+	candidate, err := githubPolicyFromEnvironment()
+	if err != nil {
+		return fmt.Errorf("publisher GitHub configuration: %w", err)
+	}
+	if !deep.SameGitHubPolicy(policy, candidate) {
+		return errors.New("publisher GitHub configuration differs from the persisted mission policy (mode, repository, base, allowed authors, approval)")
+	}
+	return nil
 }
 
 func prepareDeepOnBoxResume(state *deep.DeepState, compute sessionstate.State, f *deepOnBoxFlags, git gitOps, now time.Time) (bool, error) {
@@ -470,6 +530,9 @@ func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags) error {
 	}
 	if state.Exec == nil || state.Exec.Worker != workerHermesOnBox {
 		return errors.New("latest Deep Work session is not an on-box Hermes session")
+	}
+	if err := validateOnBoxGitHubPolicy(state.GitHub, true); err != nil {
+		return fmt.Errorf("persisted GitHub policy: %w", err)
 	}
 	compute, err := sessionstate.Load(paths)
 	if err != nil {

@@ -10,11 +10,15 @@ RUN_ROOT="${STINT_ONBOX_RUN_ROOT:-$HOME/.local/state/stint-onbox-smoke-$RUN_ID}"
 CONFIG_ROOT="${STINT_ONBOX_CONFIG_ROOT:-$HOME/.config/stint-onbox-smoke-$RUN_ID}"
 ARTIFACT_DIR="${STINT_ONBOX_ARTIFACT_DIR:-$REPO_ROOT/onbox-deep-smoke-$RUN_ID}"
 MISSION_PATH="${STINT_ONBOX_MISSION:-$REPO_ROOT/deep-work/PHASE_LANE_E2E_MISSION.md}"
+MISSION_RUN_PATH="$ARTIFACT_DIR/mission.md"
 ACTION_PLAN_SOURCE="${STINT_ONBOX_ACTION_PLAN:-$REPO_ROOT/deep-work/PHASE_LANE_E2E_PLAN_SEED.md}"
 ACTION_PLAN_PATH="${STINT_ONBOX_ACTION_PLAN_PATH:-deep-work/phase-plan.md}"
 GITHUB_TOKEN_FILE="${STINT_GITHUB_TOKEN_FILE:-}"
 GITHUB_REPOSITORY="${STINT_GITHUB_REPOSITORY:-}"
 GITHUB_BASE="${STINT_GITHUB_BASE:-}"
+GITHUB_MODE="${STINT_GITHUB_MODE:-engineering}"
+GITHUB_APPROVAL="${STINT_GITHUB_APPROVAL:-internal}"
+GITHUB_ALLOWED_AUTHORS="${STINT_GITHUB_ALLOWED_AUTHORS:-}"
 REMOTE_ROOT="${STINT_REMOTE_ROOT:-/var/lib/stint-onbox}"
 LOG="$ARTIFACT_DIR/launcher.log"
 
@@ -50,6 +54,24 @@ trap cleanup EXIT
 [ -n "$GITHUB_TOKEN_FILE" ] && [ -r "$GITHUB_TOKEN_FILE" ] || die "STINT_GITHUB_TOKEN_FILE must name a readable token file"
 [ -n "$GITHUB_REPOSITORY" ] || die "STINT_GITHUB_REPOSITORY is required"
 [ -n "$GITHUB_BASE" ] || die "STINT_GITHUB_BASE is required"
+
+# Bind the fixture mission to the exact GitHub destination supplied for this
+# smoke. If the caller already authored policy in the mission, keep it verbatim
+# so a mismatch is detected by the same production validator.
+python3 - "$MISSION_PATH" "$MISSION_RUN_PATH" "$GITHUB_REPOSITORY" "$GITHUB_BASE" \
+  "$GITHUB_MODE" "$GITHUB_APPROVAL" "$GITHUB_ALLOWED_AUTHORS" <<'PY'
+import pathlib, sys
+source, destination, repository, base, mode, approval, authors = sys.argv[1:]
+text = pathlib.Path(source).read_text(encoding="utf-8")
+has_policy = any(line.strip().lower() == "## github" for line in text.splitlines())
+if not has_policy:
+    policy = ["", "## GitHub", f"- mode: {mode}", f"- repository: {repository}", f"- base: {base}"]
+    if authors.strip():
+        policy.append(f"- allowed-authors: {authors}")
+    policy.append(f"- approval: {approval}")
+    text = text.rstrip() + "\n" + "\n".join(policy) + "\n"
+pathlib.Path(destination).write_text(text, encoding="utf-8")
+PY
 
 cp "$HOME/.config/stint-dryrun/stint/credentials.json" "$CONFIG_ROOT/stint/credentials.json"
 chmod 600 "$CONFIG_ROOT/stint/credentials.json"
@@ -93,13 +115,15 @@ SSH=(ssh -i "$KEY" -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-n
 
 say "starting detached supervisor through the production launcher; it installs and tests the same fresh-box runtime, phase routes, verifier tools, and compression configuration as every Deep Work run"
 STINT_BOX_HOST="$HOST" STINT_BOX_PORT="$PORT" STINT_BOX_KEY="$KEY" \
-  STINT_MISSION="$MISSION_PATH" STINT_REPO="$REPO_ROOT" \
+  STINT_MISSION="$MISSION_RUN_PATH" STINT_REPO="$REPO_ROOT" \
   STINT_BIN="$STINT_BIN" STINT_REMOTE_ROOT="$REMOTE_ROOT" \
   STINT_INSTANCE_ID="$INSTANCE" STINT_DEADLINE="$DEADLINE" \
   STINT_VAST_CREDENTIALS="$CONFIG_ROOT/stint/credentials.json" \
   STINT_R2_ENV_FILE="$HOME/.config/vanta-r2.env" STINT_ONBOX_CLIENTS=2 \
   STINT_GITHUB_TOKEN_FILE="$GITHUB_TOKEN_FILE" \
   STINT_GITHUB_REPOSITORY="$GITHUB_REPOSITORY" STINT_GITHUB_BASE="$GITHUB_BASE" \
+  STINT_GITHUB_MODE="$GITHUB_MODE" STINT_GITHUB_APPROVAL="$GITHUB_APPROVAL" \
+  STINT_GITHUB_ALLOWED_AUTHORS="$GITHUB_ALLOWED_AUTHORS" \
   STINT_ONBOX_ACTION_PLAN="$ACTION_PLAN_SOURCE" STINT_ONBOX_ACTION_PLAN_PATH="$ACTION_PLAN_PATH" \
   STINT_ONBOX_TASK_TIMEOUT=15m STINT_ONBOX_MAX_ATTEMPTS=1 \
   "$REPO_ROOT/scripts/launch-onbox-deep.sh" >>"$LOG" 2>&1

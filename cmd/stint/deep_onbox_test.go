@@ -114,7 +114,7 @@ func TestApplyDeepOnBoxOverridesPreservesOmittedSettings(t *testing.T) {
 func TestApplyDeepOnBoxOverridesUsesExplicitSettings(t *testing.T) {
 	state := deep.DeepState{
 		TaskAttemptCap: 5,
-		Tasks:          []deep.Task{{ID: "STINT-PLAN-001", Status: deep.StatusVerified, Attempts: 2, CheckpointCommit: "abc"}, {ID: "T-001", Status: deep.StatusQueued}},
+		Tasks:          []deep.Task{{ID: "STINT-PLAN-001", Status: deep.StatusActive, Attempts: 2}, {ID: "T-001", Status: deep.StatusQueued}},
 		Exec:           &deep.ExecSettings{Provider: "old", Model: "old", Reasoning: deep.ReasoningMedium, ActionPlanPath: "plans/old.md", TaskTimeoutSec: 60, AllowedCommands: []string{"old"}},
 	}
 	f := &deepOnBoxFlags{
@@ -141,6 +141,20 @@ func TestApplyDeepOnBoxOverridesUsesExplicitSettings(t *testing.T) {
 	}
 }
 
+func TestApplyDeepOnBoxOverridesRefusesPublishedPlanRetarget(t *testing.T) {
+	state := deep.DeepState{
+		Exec:  &deep.ExecSettings{ActionPlanPath: "plans/old.md"},
+		Tasks: []deep.Task{{ID: "STINT-PLAN-001", Status: deep.StatusVerified, CheckpointCommit: "abc"}},
+	}
+	err := applyDeepOnBoxOverrides(&state, &deepOnBoxFlags{actionPlan: "plans/new.md", actionPlanSet: true})
+	if err == nil || !strings.Contains(err.Error(), "start a fresh session") {
+		t.Fatalf("retargeting a published plan err = %v", err)
+	}
+	if state.Exec.ActionPlanPath != "plans/old.md" {
+		t.Fatalf("failed retarget changed persisted path in memory: %q", state.Exec.ActionPlanPath)
+	}
+}
+
 func TestOnBoxComputeRebindRequiresMismatchAndPersistsReason(t *testing.T) {
 	now := time.Now().UTC()
 	state := deep.DeepState{}
@@ -158,6 +172,33 @@ func TestOnBoxComputeRebindRequiresMismatchAndPersistsReason(t *testing.T) {
 	}
 	if got := state.ComputeBinding.Rebinds; len(got) != 1 || got[0].FromInstanceID != 100 || got[0].ToInstanceID != 101 || got[0].Reason != "restored durable worktree on replacement" {
 		t.Fatalf("rebind history = %+v", got)
+	}
+}
+
+func TestOnBoxPublisherConfigMustMatchPersistedPolicy(t *testing.T) {
+	t.Setenv("STINT_ONBOX_SKIP_GITHUB", "")
+	t.Setenv("STINT_GITHUB_MODE", "engineering")
+	t.Setenv("STINT_GITHUB_REPOSITORY", "owner/repository")
+	t.Setenv("STINT_GITHUB_BASE", "main")
+	t.Setenv("STINT_GITHUB_ALLOWED_AUTHORS", "bob, alice")
+	t.Setenv("STINT_GITHUB_APPROVAL", "internal")
+	policy := deep.GitHubPolicy{Mode: deep.GitHubEngineering, Repository: "owner/repository", Base: "main", AllowedAuthors: []string{"alice", "bob"}, Approval: deep.ApprovalInternal}
+	if err := validateOnBoxGitHubPolicy(policy, true); err != nil {
+		t.Fatalf("matching publisher policy: %v", err)
+	}
+	t.Setenv("STINT_GITHUB_BASE", "release")
+	if err := validateOnBoxGitHubPolicy(policy, true); err == nil || !strings.Contains(err.Error(), "differs from the persisted mission policy") {
+		t.Fatalf("publisher base mismatch err = %v", err)
+	}
+	if err := validateOnBoxGitHubPolicy(policy, false); err == nil || !strings.Contains(err.Error(), "explicit ## GitHub policy") {
+		t.Fatalf("missing mission policy err = %v", err)
+	}
+	t.Setenv("STINT_ONBOX_SKIP_GITHUB", "1")
+	if err := validateOnBoxGitHubPolicy(deep.GitHubPolicy{}, false); err != nil {
+		t.Fatalf("fixture GitHub bypass: %v", err)
+	}
+	if err := validateOnBoxGitHubPolicy(policy, true); err == nil || !strings.Contains(err.Error(), "cannot be disabled") {
+		t.Fatalf("publisher disable overrode persisted policy: %v", err)
 	}
 }
 
