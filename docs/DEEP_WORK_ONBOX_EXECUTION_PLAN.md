@@ -21,6 +21,12 @@ not the target design.
 - The operator checkout remains on `fix/p0-ninfer-session-safety` at
   `792bb508...`; it has untracked run reports, directories, and a `stint` binary.
   They are preserved and excluded from integration commits.
+- Published integration stack: draft PR #96
+  (https://github.com/Marguelgtz/Stint/pull/96) contains the recovered plan and
+  dynamic NInfer artifact fix; draft PR #97
+  (https://github.com/Marguelgtz/Stint/pull/97) is based on #96 and adds the
+  pre-rental full-session cost check. The current Hermes core branch is intended
+  to stack on #97; these drafts are review checkpoints, not merged changes.
 - All historical Deep Work feature PRs remain open. Their source heads share an
   old base (`d34cb2b...`) and are not safe merge units against current `main`.
   Use their code and evidence selectively on this clean integration branch.
@@ -123,7 +129,12 @@ not the target design.
 - **Acceptance:** Fresh-box fixture and exact launcher-path checks establish both
   routes, verification tools, durable state, and supervisor readiness before
   `RUNNING`; restart/disconnect fixture passes.
-- **Outcome / uncertainty:** Not yet ported or verified on current `main`.
+- **Outcome / uncertainty:** Core Deep Work source, on-box launcher/supervisor,
+  phase proxy, and smoke scripts are now in the isolated integration worktree.
+  `go test ./cmd/stint ./internal/deep ./internal/deepdashboard` passes after
+  integration. Fresh-box qualification, proxy installation on a newly provisioned
+  instance, declared verification-tool preflight, and live GPU execution remain
+  open; the old GPU report is historical evidence only.
 
 ### [~] Repair coordinator identity, policy reconstruction, and durable transitions
 
@@ -141,7 +152,16 @@ not the target design.
 - **Acceptance:** Regression tests cover mismatched compute, explicit rebind,
   duplicate task IDs, no-override resume, missing verifier, checkpoint/HEAD/save
   failures, and landing interruption/re-entry.
-- **Outcome / uncertainty:** Audit and implementation pending.
+- **Outcome / uncertainty:** Task acceptance now requires an independent verify
+  command; successful worker completion without one becomes `needs_human`. Active
+  state must persist before a worker starts, failed checkpointing cannot mark a
+  task verified, and landing is a resumable phase with persisted verify/handoff
+  data and an exact landing commit SHA. Regression tests cover verifier absence,
+  pre-invocation state failure, checkpoint failure, handoff write failure, and
+  recovery after the final state save fails. Dashboard tunnel probes no longer
+  mutate the process-wide port or fall back to the default endpoint. Compute
+  identity/rebind history, reserved action-plan task IDs, and explicit resume
+  override semantics remain open.
 
 ### [~] Make worker evidence and workspace handling truthful
 
@@ -156,7 +176,10 @@ not the target design.
   and host-level evidence scope.
 - **Acceptance:** Crash-cleanup boundary, unverified worker result, unrelated route
   traffic, and honest compression scope tests pass.
-- **Outcome / uncertainty:** Audit and implementation pending.
+- **Outcome / uncertainty:** Local Hermes prompt files now use protected system
+  temporary storage rather than the target worktree. The fixed remote prompt path,
+  per-attempt telemetry isolation, compute/session attribution, and compression
+  evidence scope still need repair and regression coverage.
 
 ### [~] Reconcile compute cost, GitHub policy, publisher authority, and pagination
 
@@ -213,8 +236,15 @@ not the target design.
   landed.
 - **Outcome / uncertainty:** Not started.
 
+## Verification so far
+
+- `go test ./cmd/stint ./internal/deep ./internal/deepdashboard` — PASS after
+  coordinator durability changes. This is focused package evidence only; full
+  repository checks and a fresh GPU smoke have not run on this head.
+
 ## Next action
 
-Audit the #80 tree by subsystem against current `main`, beginning with the runtime
-entry points and the concrete unresolved #78/#79 findings. Then port the smallest
-coherent Hermes-on-box core boundary and keep this plan synchronized with evidence.
+Finish retiring Cline as a first-class Deep Work execution path, then close the
+fresh-box preflight/provisioning, compute identity, action-plan namespace, and
+resume-override findings. Keep the next source changes stacked as small draft PRs
+and update this plan with each verified checkpoint.

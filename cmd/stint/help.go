@@ -228,6 +228,52 @@ var (
 		},
 	}
 
+	cmdDeep = cliCommand{
+		name:    "deep",
+		section: "deepwork",
+		summary: "run a bounded Hermes engineering mission",
+		detail: `Deep Work runs bounded repository tasks through Hermes. The production path is ` + "`scripts/launch-onbox-deep.sh`" + `: Stint rents and qualifies compute, bootstraps the box, starts a detached on-box supervisor, and returns after the durable RUNNING handshake. Hermes, verification, checkpoints, and landing then continue on the box.
+
+Use ` + "`stint deep status`" + ` to inspect durable state and ` + "`stint deep resume`" + ` after an interruption. ` + "`stint deep onbox`" + ` is the box-side supervisor entry point; it is not a replacement for the launcher bootstrap.
+
+Subcommands:
+  start   local development/fixture coordinator
+  status  show durable session phase and task evidence
+  dash    open the Deep Work execution cockpit
+  stop    request a graceful landing
+  resume  resume a recoverable coordinator
+  onbox   run or resume the on-box Hermes coordinator`,
+		usage: "stint deep <start|status|dash|stop|resume|onbox> [flags]",
+		args:  []cliArg{{name: "<subcommand>", purpose: "start, status, dash, stop, resume, or onbox"}},
+		flags: []cliFlag{
+			{name: "--mission", argument: "<file>", purpose: "mission Markdown file"},
+			{name: "--repo", argument: "<path>", purpose: "target git repository"},
+			{name: "--hours", argument: "<float>", defaultVal: "session deadline", purpose: "bounded session duration"},
+			{name: "--task-timeout", argument: "<dur>", defaultVal: "10m", purpose: "maximum wall time per Hermes invocation"},
+			{name: "--max-attempts", argument: "<int>", defaultVal: "3", purpose: "maximum attempts per task"},
+			{name: "--reasoning", argument: "<none|low|medium|xhigh>", defaultVal: "medium", purpose: "Hermes reasoning effort; task metadata may override it"},
+			{name: "--action-plan", argument: "<path>", purpose: "worktree-relative living action plan"},
+			{name: "--provider", argument: "<id>", defaultVal: "custom:qwen-stint-{reasoning}", purpose: "configured Hermes provider or reasoning template"},
+			{name: "--model", argument: "<id>", purpose: "Hermes model id"},
+			{name: "--auto-approve", defaultVal: "false", purpose: "Hermes approval setting persisted with the session"},
+			{name: "--allow-command", argument: "<prefix>", purpose: "advisory command guidance included in the worker prompt"},
+			{name: "--json", defaultVal: "false", purpose: "status: print machine-readable state"},
+			{name: "--session", argument: "<id>", defaultVal: "latest", purpose: "status/dashboard: session to inspect"},
+			{name: "--ready-file", argument: "<path>", purpose: "onbox: write RUNNING only after preflight and durable state"},
+			{name: "--resume", defaultVal: "false", purpose: "onbox: resume persisted execution settings"},
+		},
+		examples: []string{
+			"scripts/launch-onbox-deep.sh --mission mission.md --repo /path/to/repo",
+			"stint deep status --json",
+			"stint deep dash",
+		},
+		notes: []string{
+			"The on-box coordinator uses a Stint-owned worktree and persists session state under the configured Stint state directory.",
+			"Independent verification and checkpoint persistence are coordinator decisions; a Hermes completion response alone is not VERIFIED.",
+			"Command prefixes are prompt guidance unless an explicit Stint-side enforcement boundary reports otherwise.",
+		},
+	}
+
 	cmdVersion = cliCommand{
 		name:     "version",
 		aliases:  []string{"--version", "-v"},
@@ -249,13 +295,14 @@ var (
 	}
 )
 
-var cliCommands = []cliCommand{cmdAuth, cmdSetup, cmdDoctor, cmdStatus, cmdOnboard, cmdPlan, cmdStart, cmdResume, cmdDown, cmdPerf, cmdVersion, cmdHelp}
+var cliCommands = []cliCommand{cmdAuth, cmdSetup, cmdDoctor, cmdStatus, cmdOnboard, cmdPlan, cmdStart, cmdResume, cmdDown, cmdPerf, cmdDeep, cmdVersion, cmdHelp}
 
 var helpSections = []helpSection{
 	{title: "Setup & checks", commands: []cliCommand{cmdAuth, cmdSetup, cmdDoctor, cmdStatus, cmdOnboard}},
 	{title: "Planning (read-only)", commands: []cliCommand{cmdPlan}},
 	{title: "Compute (paid)", commands: []cliCommand{cmdStart, cmdResume, cmdDown}},
 	{title: "Diagnostics", commands: []cliCommand{cmdPerf}},
+	{title: "Deep Work", commands: []cliCommand{cmdDeep}},
 	{title: "Reference", commands: []cliCommand{cmdVersion, cmdHelp}},
 }
 
