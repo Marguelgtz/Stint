@@ -41,7 +41,12 @@ not the target design.
   reported no checks; PR #101 is open/draft. None of these drafts are merged.
   Draft PR #102 (https://github.com/Marguelgtz/Stint/pull/102), branch
   `integrate/deep-work-publisher-policy-20260923`, stacks on #101 with commit
-  `04151f5` for persisted GitHub policy and bounded engineering publication.
+  `04151f5` for persisted GitHub policy and bounded engineering publication;
+  plan/evidence commit `4bf3dd1` records its passing exact-head CI. Draft PR #103
+  (https://github.com/Marguelgtz/Stint/pull/103), branch
+  `integrate/deep-work-final-evidence-gate-20260923`, stacks on #102 with commit
+  `8aea2bd` for durable terminal-state checks and fail-closed configured R2
+  archiving.
 - All historical Deep Work feature PRs remain open. Their source heads share an
   old base (`d34cb2b...`) and are not safe merge units against current `main`.
   Use their code and evidence selectively on this clean integration branch.
@@ -275,6 +280,27 @@ not the target design.
   transfer fixture. The task remains active until that behavior fixture and fresh
   GPU transfer evidence exist.
 
+### [~] Gate completion on durable publication and final archive
+
+- **Problem / invariant:** Supervisor success must mean the durable session is
+  terminal, required publication converged, and any configured final evidence
+  archive succeeded before the supervisor exits.
+- **Evidence:** `scripts/onbox-deep-supervisor.sh` previously selected terminal
+  state from an asynchronously refreshed heartbeat and ignored errors from the
+  configured R2 archive both inside `archive_final` and in the EXIT cleanup.
+- **Bounded change:** Read terminal phase directly from `deep.json`; fail if the
+  coordinator exits zero before durable `landed`/`stopped`; require a configured
+  archive helper and durable state, propagate archive failure as an incomplete
+  exit, and preserve on-box state for recovery.
+- **Acceptance:** No-GPU supervisor fixture proves successful archive permits
+  success; archive failure, missing helper, and nonterminal coordinator exit fail;
+  archive-disabled fixture keeps existing optional behavior; source state remains
+  on-box after finalization.
+- **Outcome / uncertainty:** Commit `8aea2bd` in draft PR #103 adds these gates
+  and the fixture. Bash syntax and `bash scripts/test_onbox_supervisor.sh` pass;
+  PR #103 GitHub CI is still running. The live R2 service and actual GPU teardown
+  ordering remain unverified.
+
 ### [ ] Verify the integrated system and write final handoff
 
 - **Problem / invariant:** Unit evidence alone cannot establish production
@@ -295,13 +321,14 @@ not the target design.
 - PR #100 currently reports no GitHub checks. No fresh GPU validation has been run against PR #100. Local static checks do not prove package installs, Hermes configuration compatibility, route inference, watchdog startup, or supervisor recovery on a clean GPU.
 - PR #101 commit `1356ef4`: `go test -count=1 ./cmd/stint ./internal/deep ./internal/session` — PASS; `go test ./...` — PASS; Bash syntax for launcher, supervisor, provisioner, and live-smoke scripts — PASS; embedded resume-preflight Python compile and fixture checks (same identity, implicit mismatch refusal, explicit mismatch allowance, missing branch refusal) — PASS; `git diff --check` — PASS. GitHub `build-check`, `go-vet`, `race-tests`, `spark-profile`, and `unit-tests` — PASS. No live replacement-compute or volume-restore run has been performed.
 - PR #102 implementation commit `04151f5`: `go test -count=1 ./...` — PASS; `python3 scripts/test_onbox_github_publish.py` — PASS (7 tests); Python byte-compilation — PASS; Bash syntax for launcher, smoke, supervisor, and provisioner — PASS; embedded resume-preflight Python compilation — PASS; `git diff --check` — PASS. Draft PR #102 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. No live GPU smoke was run.
+- PR #103 commit `8aea2bd`: `bash -n scripts/onbox-deep-supervisor.sh scripts/test_onbox_supervisor.sh`, `bash scripts/test_onbox_supervisor.sh`, and `git diff --check` — PASS. Draft PR #103 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. No live GPU smoke was run.
 
 ## Next action
 
-Wait for and inspect PR #102 exact-head CI, then continue the remaining fixture
-state-machine and runtime verification against the cumulative head. Audit the
-actual completion/teardown transaction and NInfer corrupt/oversized transfer
-recovery. Before the authorized fresh-GPU smoke, confirm a durable-volume restore
-path: PR #101 provides the explicit compute-resume gate but does not restore state
-volumes. Do not claim replacement-compute recovery is operational until that path
-is exercised or the external dependency is recorded as a blocker.
+Wait for and inspect PR #103 exact-head CI, then continue the remaining fixture
+state-machine and runtime verification against the cumulative head. Add an
+executable NInfer corrupt/oversized transfer recovery fixture. Before the
+authorized fresh-GPU smoke, confirm a durable-volume restore path: PR #101
+provides the explicit compute-resume gate but does not restore state volumes. Do
+not claim replacement-compute recovery is operational until that path is exercised
+or the external dependency is recorded as a blocker.
