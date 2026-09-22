@@ -47,6 +47,8 @@ jobs:
       - run: go test ./...
       - name: Test on-box GitHub publisher safety gates
         run: python3 scripts/test_onbox_github_publish.py
+      - name: Test on-box supervisor completion archive gate
+        run: bash scripts/test_onbox_supervisor.sh
 
   race-tests:
     name: race-tests

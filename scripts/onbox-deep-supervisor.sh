@@ -206,15 +206,39 @@ cleanup_supervisor() {
   fi
   publish_once || true
   snapshot || true
-  archive_final || true
-  return "$rc"
+  if ! archive_final; then
+    echo "$(date -u +%FT%TZ) final R2 archive failed; preserving on-box state and reporting incomplete completion" >>"$LOG_FILE"
+    [ "$rc" -ne 0 ] || rc=1
+  fi
+  exit "$rc"
 }
 
 archive_final() {
-  [ -x "${STINT_ONBOX_R2_ARCHIVE:-}" ] || return 0
+  [ -n "${STINT_ONBOX_R2_ARCHIVE:-}" ] || return 0
+  [ -x "$STINT_ONBOX_R2_ARCHIVE" ] || {
+    echo "configured R2 archive helper is missing or not executable: $STINT_ONBOX_R2_ARCHIVE" >&2
+    return 1
+  }
   local state_dir
-  state_dir="$(latest_state_dir)" || return 0
-  "$STINT_ONBOX_R2_ARCHIVE" "$state_dir" || true
+  state_dir="$(latest_state_dir)" || {
+    echo "configured R2 archive has no durable Deep Work state to archive" >&2
+    return 1
+  }
+  "$STINT_ONBOX_R2_ARCHIVE" "$state_dir"
+}
+
+durable_phase() {
+  local state_dir
+  state_dir="$(latest_state_dir)" || return 1
+  python3 - "$state_dir/deep.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    state = json.load(stream)
+phase = state.get("phase", "")
+if not phase:
+    raise SystemExit("durable Deep Work state has no phase")
+print(phase)
+PY
 }
 
 run_supervisor() {
@@ -225,6 +249,9 @@ run_supervisor() {
     [ -r "${STINT_GITHUB_TOKEN_FILE:-}" ] || die "GPU GitHub token file is required"
     [ -n "${STINT_GITHUB_REPOSITORY:-}" ] || die "STINT_GITHUB_REPOSITORY is required"
     [ -n "${STINT_GITHUB_BASE:-}" ] || die "STINT_GITHUB_BASE is required"
+  fi
+  if [ -n "${STINT_ONBOX_R2_ARCHIVE:-}" ] && [ ! -x "$STINT_ONBOX_R2_ARCHIVE" ]; then
+    die "configured R2 archive helper is missing or not executable: $STINT_ONBOX_R2_ARCHIVE"
   fi
   start_watchdog
   trap cleanup_supervisor EXIT
@@ -244,9 +271,7 @@ run_supervisor() {
     publish_once || true
     snapshot || true
     local phase=""
-    if [ -s "$HEARTBEAT_FILE" ]; then
-      phase="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("phase", ""))' "$HEARTBEAT_FILE" 2>/dev/null || true)"
-    fi
+    phase="$(durable_phase 2>/dev/null || true)"
     case "$phase" in
       landed|stopped)
         if ! publish_final; then
@@ -257,7 +282,8 @@ run_supervisor() {
         ;;
     esac
     if [ "$rc" -eq 0 ]; then
-      return 0
+      echo "$(date -u +%FT%TZ) coordinator exited successfully before durable state reached a terminal phase" >>"$LOG_FILE"
+      return 1
     fi
     if [ ! -r "$STATE_HOME/stint/deep/latest" ]; then
       return "$rc"

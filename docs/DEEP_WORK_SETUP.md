@@ -82,6 +82,11 @@ ssh -t -i "$STINT_BOX_KEY" -p "$STINT_BOX_PORT" "root@$STINT_BOX_HOST" \
 
 The supervisor restarts the coordinator with `stint deep onbox --resume`. Persisted provider, model, reasoning, task timeout, command guidance, and action-plan path remain authoritative unless a supported override is explicitly provided. A different compute instance cannot claim the saved session without an audited rebind.
 
+When R2 final archiving is configured, the supervisor reports successful
+completion only after that archive succeeds. An archive failure leaves the
+on-box state available for recovery and is recorded as an incomplete supervisor
+exit; the deadline watchdog remains the hard upper bound on paid compute.
+
 Every production mission must declare its publisher policy in `## GitHub` with
 `mode: engineering`, the exact owner/repository and base branch, and an approval
 policy (`internal` by default). The launcher values must match the mission's
