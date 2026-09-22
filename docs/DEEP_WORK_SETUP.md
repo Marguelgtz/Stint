@@ -82,6 +82,44 @@ ssh -t -i "$STINT_BOX_KEY" -p "$STINT_BOX_PORT" "root@$STINT_BOX_HOST" \
 
 The supervisor restarts the coordinator with `stint deep onbox --resume`. Persisted provider, model, reasoning, task timeout, command guidance, and action-plan path remain authoritative unless a supported override is explicitly provided. A different compute instance cannot claim the saved session without an audited rebind.
 
+### Resume durable state after compute replacement
+
+The operator launcher can qualify a replacement compute instance and resume a
+previous on-box session, but the saved state and repository must already be
+restored at the same remote root (`/var/lib/stint-onbox/state` and
+`/var/lib/stint-onbox/repo`, or the configured `STINT_REMOTE_ROOT`). The launcher
+checks the session pointer, saved branch, repository/worktree paths, persisted
+model, and current compute ID before provisioning. It does not copy or recreate
+lost state or checkpoint branches; if the prior disk was ephemeral, restore the
+state and repository volume first. A missing saved branch fails closed.
+
+With the restored volume mounted on the replacement instance, set the new
+instance's SSH details and READY session identity, then run:
+
+```sh
+STINT_BOX_HOST=<replacement-ssh-host> \
+STINT_BOX_PORT=<replacement-ssh-port> \
+STINT_BOX_KEY="$HOME/.config/stint/ssh/id_ed25519" \
+STINT_ONBOX_RESUME=1 \
+STINT_ONBOX_REBIND_COMPUTE=1 \
+STINT_ONBOX_REBIND_REASON="restored durable state volume after instance replacement" \
+STINT_GITHUB_TOKEN_FILE="$HOME/.config/stint/github-token" \
+STINT_GITHUB_REPOSITORY=owner/repository \
+STINT_GITHUB_BASE=main \
+STINT_VAST_CREDENTIALS="$HOME/.config/stint/credentials.json" \
+scripts/launch-onbox-deep.sh
+```
+
+Omit `STINT_MISSION` and `STINT_REPO` in resume mode. If the saved compute ID
+still matches the READY session, leave out the two rebind variables; requesting
+a redundant rebind is rejected. Provider, model, reasoning, task timeout, max
+attempts, action-plan path, and command guidance are inherited from durable
+state. Set an individual `STINT_ONBOX_*` variable only to override that value.
+`STINT_ONBOX_ACTION_PLAN_PATH` changes the worktree-relative plan destination;
+`STINT_ONBOX_ALLOW_COMMANDS` accepts newline-separated advisory prefixes, and an
+explicitly empty value clears the persisted list. The resumed coordinator
+rewrites `RUNNING.json` only after it has checked and saved the recovered state.
+
 The watchdog needs the Vast credential at `/root/.config/stint/credentials.json`. The launcher transfers it from `STINT_VAST_CREDENTIALS`. Do not set `STINT_ONBOX_SKIP_WATCHDOG=1` for a production run.
 
 For a detailed operator description of mission files, verification, durable task state, and known telemetry limits, see [Deep Work](DEEP_WORK.md). Current implementation evidence and unresolved items are in the [canonical integration action plan](DEEP_WORK_ONBOX_EXECUTION_PLAN.md).

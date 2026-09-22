@@ -28,7 +28,12 @@ HOST="${STINT_BOX_HOST:-}"
 PORT="${STINT_BOX_PORT:-22}"
 KEY="${STINT_BOX_KEY:-}"
 CLIENTS="${STINT_ONBOX_CLIENTS:-1}"
-ONBOX_MODEL="${STINT_ONBOX_MODEL:-qwen3.8-27b}"
+RESUME="${STINT_ONBOX_RESUME:-0}"
+REBIND_COMPUTE="${STINT_ONBOX_REBIND_COMPUTE:-0}"
+REBIND_REASON="${STINT_ONBOX_REBIND_REASON:-}"
+ONBOX_MODEL="${STINT_ONBOX_MODEL:-}"
+ONBOX_MODEL_SET="${STINT_ONBOX_MODEL+x}"
+if [ "$RESUME" != 1 ] && [ -z "$ONBOX_MODEL" ]; then ONBOX_MODEL="qwen3.8-27b"; fi
 PHASING_DIR="${STINT_PHASING_DIR:-/root/stint-phasing}"
 SKIP_GITHUB="${STINT_ONBOX_SKIP_GITHUB:-0}"
 SKIP_WATCHDOG="${STINT_ONBOX_SKIP_WATCHDOG:-0}"
@@ -83,12 +88,31 @@ trap cleanup_local EXIT
 
 [ -n "$HOST" ] || die "STINT_BOX_HOST is required"
 [ -n "$KEY" ] || die "STINT_BOX_KEY is required"
-[ -n "$MISSION_LOCAL" ] && [ -r "$MISSION_LOCAL" ] || die "STINT_MISSION must name a readable mission"
-[ -n "$REPO_LOCAL" ] && git -C "$REPO_LOCAL" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "STINT_REPO must name a git repository or linked worktree"
+case "$RESUME" in 0|1) ;; *) die "STINT_ONBOX_RESUME must be 0 or 1" ;; esac
+case "$REBIND_COMPUTE" in 0|1) ;; *) die "STINT_ONBOX_REBIND_COMPUTE must be 0 or 1" ;; esac
+if [ "$REBIND_COMPUTE" = 1 ]; then
+  [ "$RESUME" = 1 ] || die "STINT_ONBOX_REBIND_COMPUTE=1 requires STINT_ONBOX_RESUME=1"
+  [ -n "${REBIND_REASON//[[:space:]]/}" ] || die "STINT_ONBOX_REBIND_REASON is required for an audited compute rebind"
+elif [ -n "${REBIND_REASON//[[:space:]]/}" ]; then
+  die "STINT_ONBOX_REBIND_REASON requires STINT_ONBOX_REBIND_COMPUTE=1"
+fi
+if [ "$RESUME" = 1 ]; then
+  [ -z "$MISSION_LOCAL" ] || die "STINT_MISSION must be omitted when resuming durable state"
+  [ -z "$REPO_LOCAL" ] || die "STINT_REPO must be omitted when resuming durable state"
+  [ -z "$ACTION_PLAN_LOCAL" ] || die "STINT_ONBOX_ACTION_PLAN is a seed for new sessions; use STINT_ONBOX_ACTION_PLAN_PATH to override a resumed session"
+  [ -n "$ACTION_PLAN_TARGET" ] || [ -z "${STINT_ONBOX_ACTION_PLAN_PATH+x}" ] || die "STINT_ONBOX_ACTION_PLAN_PATH cannot be empty"
+else
+  [ -n "$MISSION_LOCAL" ] && [ -r "$MISSION_LOCAL" ] || die "STINT_MISSION must name a readable mission"
+  [ -n "$REPO_LOCAL" ] && git -C "$REPO_LOCAL" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "STINT_REPO must name a git repository or linked worktree"
+fi
 [[ "$CLIENTS" =~ ^[1-9][0-9]*$ ]] || die "STINT_ONBOX_CLIENTS must be a positive integer"
-SOURCE_HEAD="$(git -C "$REPO_LOCAL" rev-parse HEAD)"
-SOURCE_ORIGIN="$(git -C "$REPO_LOCAL" remote get-url origin 2>/dev/null || true)"
-[ -n "$SOURCE_ORIGIN" ] || die "STINT_REPO must have an origin remote"
+SOURCE_HEAD=""
+SOURCE_ORIGIN=""
+if [ "$RESUME" = 0 ]; then
+  SOURCE_HEAD="$(git -C "$REPO_LOCAL" rev-parse HEAD)"
+  SOURCE_ORIGIN="$(git -C "$REPO_LOCAL" remote get-url origin 2>/dev/null || true)"
+  [ -n "$SOURCE_ORIGIN" ] || die "STINT_REPO must have an origin remote"
+fi
 if [ -n "$ACTION_PLAN_LOCAL" ]; then
   case "$ACTION_PLAN_LOCAL" in
     /*) ACTION_PLAN_SOURCE="$ACTION_PLAN_LOCAL" ;;
@@ -101,6 +125,8 @@ if [ -n "$ACTION_PLAN_LOCAL" ]; then
       *) ACTION_PLAN_TARGET="$ACTION_PLAN_LOCAL" ;;
     esac
   fi
+fi
+if [ -n "$ACTION_PLAN_TARGET" ]; then
   case "/$ACTION_PLAN_TARGET/" in
     */../*|*/./*|//*|/*$'\n'*|/*$'\r'*) die "STINT_ONBOX_ACTION_PLAN_PATH must stay inside the worktree" ;;
   esac
@@ -212,30 +238,100 @@ fi
 [ -n "${STINT_INSTANCE_ID:-}" ] && [ -n "${STINT_DEADLINE:-}" ] || \
   die "set STINT_INSTANCE_ID and STINT_DEADLINE or provide a READY session file at $session_json"
 
-# Materialize a standalone repository at the exact committed source HEAD. This
-# works for both normal checkouts and linked worktrees, and deliberately excludes
-# dirty/untracked operator files from the GPU baseline.
-REPO_STAGE="$(mktemp -d)"
-git clone --quiet --no-hardlinks --no-checkout "$REPO_LOCAL" "$REPO_STAGE" || die "failed to stage repository baseline"
-git -C "$REPO_STAGE" checkout --quiet --detach "$SOURCE_HEAD" || die "failed to checkout staged repository HEAD"
-git -C "$REPO_STAGE" remote set-url origin "$SOURCE_ORIGIN"
+RESUME_MODEL=""
+if [ "$RESUME" = 1 ]; then
+  echo "checking durable on-box session, repository branch, and compute binding before qualification"
+  RESUME_DATA="$("${SSH[@]}" python3 - "$ROOT" "$STINT_INSTANCE_ID" "$REBIND_COMPUTE" <<'PY'
+import json, os, re, subprocess, sys
+root, current_raw, rebind_raw = sys.argv[1:]
+repo = os.path.join(root, "repo")
+latest = os.path.join(root, "state", "stint", "deep", "latest")
+if not os.path.isfile(latest):
+    raise SystemExit("durable Deep Work state is missing; resume requires a restored state volume")
+session = open(latest, encoding="utf-8").read().strip()
+if not re.fullmatch(r"[A-Za-z0-9_-]+", session):
+    raise SystemExit("durable Deep Work latest pointer is invalid")
+state_path = os.path.join(root, "state", "stint", "deep", session, "deep.json")
+try:
+    state = json.load(open(state_path, encoding="utf-8"))
+except (OSError, ValueError) as exc:
+    raise SystemExit(f"durable Deep Work state is unreadable: {exc}")
+if state.get("sessionId") != session:
+    raise SystemExit("durable Deep Work session id does not match latest pointer")
+execution = state.get("exec") or {}
+if execution.get("worker") != "hermes-onbox":
+    raise SystemExit("latest durable session is not an on-box Hermes session")
+if os.path.realpath(state.get("repoPath", "")) != os.path.realpath(repo):
+    raise SystemExit("saved Deep Work repository path differs from this launch root")
+branch = state.get("branch", "")
+if branch != f"stint/deep-{session}":
+    raise SystemExit("saved Deep Work branch is invalid for its session")
+expected_worktree = os.path.join(repo, ".stint-deep", session)
+if os.path.abspath(state.get("worktreePath", "")) != os.path.abspath(expected_worktree):
+    raise SystemExit("saved Deep Work worktree path differs from its session repository")
+if not os.path.isdir(repo):
+    raise SystemExit("saved Deep Work repository is missing; restore the state and repository volume")
+check = subprocess.run(["git", "-C", repo, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"])
+if check.returncode:
+    raise SystemExit(f"saved Deep Work branch {branch} is missing from the restored repository")
+binding = state.get("computeBinding") or {}
+try:
+    bound_id = int(binding.get("instanceId", 0))
+    current_id = int(current_raw)
+except (TypeError, ValueError):
+    raise SystemExit("saved or current compute identity is invalid")
+needs_rebind = binding.get("provider") != "vast" or bound_id != current_id
+if needs_rebind and rebind_raw != "1":
+    raise SystemExit(f"saved session is bound to Vast instance {bound_id}, current instance is {current_id}; set STINT_ONBOX_REBIND_COMPUTE=1 and STINT_ONBOX_REBIND_REASON after verifying restored state")
+if not needs_rebind and rebind_raw == "1":
+    raise SystemExit("compute already matches saved session; do not request a rebind")
+model = str(execution.get("model", "")).strip()
+print(model)
+print(session)
+print(branch)
+print(bound_id)
+PY
+  )" || die "durable on-box resume preflight failed"
+  mapfile -t resume_values <<<"$RESUME_DATA"
+  RESUME_MODEL="${resume_values[0]:-}"
+  if [ -n "$ONBOX_MODEL_SET" ] && [ -z "$ONBOX_MODEL" ]; then
+    die "STINT_ONBOX_MODEL cannot be empty when resuming"
+  fi
+  [ -n "$RESUME_MODEL" ] || [ -n "$ONBOX_MODEL" ] || die "saved session has no persisted model; set STINT_ONBOX_MODEL explicitly"
+  if [ -z "$ONBOX_MODEL" ]; then ONBOX_MODEL="$RESUME_MODEL"; fi
+fi
 
-echo "transferring pinned Stint runtime and mission repository"
+# New sessions transfer a pinned repository image. Resume uses the already
+# restored state and worktree in place and must never clear the remote repo.
+if [ "$RESUME" = 0 ]; then
+  REPO_STAGE="$(mktemp -d)"
+  git clone --quiet --no-hardlinks --no-checkout "$REPO_LOCAL" "$REPO_STAGE" || die "failed to stage repository baseline"
+  git -C "$REPO_STAGE" checkout --quiet --detach "$SOURCE_HEAD" || die "failed to checkout staged repository HEAD"
+  git -C "$REPO_STAGE" remote set-url origin "$SOURCE_ORIGIN"
+fi
+
+if [ "$RESUME" = 1 ]; then
+  echo "transferring pinned Stint runtime while preserving restored Deep Work state and repository"
+else
+  echo "transferring pinned Stint runtime and mission repository"
+fi
 retry_step "prepare remote directories" "${SSH[@]}" "mkdir -p '$ROOT/bin' '$ROOT/runtime' '$ROOT/config' '$ROOT/state' '$REMOTE_BOOTSTRAP' /root/.config/stint && chmod 700 '$ROOT' '$ROOT/config' '$ROOT/state' '$ROOT/runtime' '$REMOTE_BOOTSTRAP' /root/.config/stint"
 retry_step "transfer Stint binary" "${SCP[@]}" "$BIN" "root@$HOST:$REMOTE_BIN"
 retry_step "transfer supervisor" "${SCP[@]}" "$SUPERVISOR_LOCAL" "root@$HOST:$REMOTE_SUPERVISOR"
-retry_step "transfer mission" "${SCP[@]}" "$MISSION_LOCAL" "root@$HOST:$REMOTE_MISSION"
 retry_step "install remote executables" "${SSH[@]}" "chmod 0755 '$REMOTE_BIN' '$REMOTE_SUPERVISOR'"
+if [ "$RESUME" = 0 ]; then
+  retry_step "transfer mission" "${SCP[@]}" "$MISSION_LOCAL" "root@$HOST:$REMOTE_MISSION"
+fi
 # Install the deadline credential before any potentially slow qualification.
 if [ "$SKIP_WATCHDOG" != 1 ]; then
   retry_step "transfer Vast credentials" "${SCP[@]}" "$STINT_VAST_CREDENTIALS" "root@$HOST:/root/.config/stint/credentials.json"
   retry_step "protect Vast credentials" "${SSH[@]}" "chmod 0600 /root/.config/stint/credentials.json"
 fi
-retry_step "prepare remote repository" "${SSH[@]}" "rm -rf '$REMOTE_REPO' && mkdir -p '$REMOTE_REPO'"
-retry_step "transfer repository" rsync -a --delete -e "$RSYNC_SSH" "$REPO_STAGE/" "root@$HOST:$REMOTE_REPO/"
-# The staged tree preserves the operator UID during rsync. Register the exact
-# validated path for root-side Git commands instead of weakening ownership
-# checks globally or changing the copied repository contents.
+if [ "$RESUME" = 0 ]; then
+  retry_step "prepare remote repository" "${SSH[@]}" "rm -rf '$REMOTE_REPO' && mkdir -p '$REMOTE_REPO'"
+  retry_step "transfer repository" rsync -a --delete -e "$RSYNC_SSH" "$REPO_STAGE/" "root@$HOST:$REMOTE_REPO/"
+fi
+# Register only the exact validated path for root-side Git commands.
 retry_step "register remote repository" "${SSH[@]}" "git config --global --add safe.directory '$REMOTE_REPO'"
 
 if [ "$SKIP_GITHUB" != 1 ]; then
@@ -288,7 +384,7 @@ if [ "$CLIENTS" -eq 2 ]; then
   "${SSH[@]}" "$remote_lane_smoke_cmd" || \
     die "two-lane xhigh/medium concurrency qualification failed"
 fi
-if [ -n "$ACTION_PLAN_LOCAL" ]; then
+if [ "$RESUME" = 0 ] && [ -n "$ACTION_PLAN_LOCAL" ]; then
   retry_step "transfer action-plan seed" "${SCP[@]}" "$ACTION_PLAN_SOURCE" "root@$HOST:$REMOTE_ACTION_PLAN_SEED"
 fi
 
@@ -302,14 +398,44 @@ if [ -n "${STINT_R2_ENV_FILE:-}" ]; then
   retry_step "prepare R2 uploader" "${SSH[@]}" "chmod 0700 '$REMOTE_R2_SYNC' '$REMOTE_R2_ARCHIVE' '$ROOT/config/r2.env' && python3 -c 'import boto3' 2>/dev/null || python3 -m pip install --quiet --user boto3"
 fi
 
-args=(--mission "$REMOTE_MISSION" --repo "$REMOTE_REPO" --deadline "$STINT_DEADLINE" \
-  --provider "${STINT_ONBOX_PROVIDER:-custom:qwen-stint-{reasoning}}" \
-  --model "$ONBOX_MODEL" \
-  --reasoning "${STINT_ONBOX_REASONING:-medium}" \
-  --task-timeout "${STINT_ONBOX_TASK_TIMEOUT:-15m}" \
-  --max-attempts "${STINT_ONBOX_MAX_ATTEMPTS:-2}" \
-  --ready-file "$REMOTE_READY")
-[ -n "$ACTION_PLAN_LOCAL" ] && args+=(--action-plan "$ACTION_PLAN_TARGET" --action-plan-seed "$REMOTE_ACTION_PLAN_SEED")
+if [ "$RESUME" = 1 ]; then
+  args=(--resume --ready-file "$REMOTE_READY")
+  [ -z "$ONBOX_MODEL_SET" ] || args+=(--model "$ONBOX_MODEL")
+  [ -z "${STINT_ONBOX_PROVIDER+x}" ] || args+=(--provider "$STINT_ONBOX_PROVIDER")
+  [ -z "${STINT_ONBOX_REASONING+x}" ] || args+=(--reasoning "$STINT_ONBOX_REASONING")
+  [ -z "${STINT_ONBOX_TASK_TIMEOUT+x}" ] || args+=(--task-timeout "$STINT_ONBOX_TASK_TIMEOUT")
+  [ -z "${STINT_ONBOX_MAX_ATTEMPTS+x}" ] || args+=(--max-attempts "$STINT_ONBOX_MAX_ATTEMPTS")
+  [ -z "${STINT_ONBOX_ACTION_PLAN_PATH+x}" ] || args+=(--action-plan "$ACTION_PLAN_TARGET")
+  if [ -n "${STINT_ONBOX_ALLOW_COMMANDS+x}" ]; then
+    if [ -z "$STINT_ONBOX_ALLOW_COMMANDS" ]; then
+      args+=(--clear-allow-commands)
+    else
+      while IFS= read -r command_prefix; do
+        [ -n "$command_prefix" ] || continue
+        args+=(--allow-command "$command_prefix")
+      done <<<"$STINT_ONBOX_ALLOW_COMMANDS"
+    fi
+  fi
+  if [ "$REBIND_COMPUTE" = 1 ]; then
+    args+=(--rebind-compute --rebind-reason "$REBIND_REASON")
+  fi
+else
+  args=(--mission "$REMOTE_MISSION" --repo "$REMOTE_REPO" --deadline "$STINT_DEADLINE" \
+    --provider "${STINT_ONBOX_PROVIDER:-custom:qwen-stint-{reasoning}}" \
+    --model "$ONBOX_MODEL" \
+    --reasoning "${STINT_ONBOX_REASONING:-medium}" \
+    --task-timeout "${STINT_ONBOX_TASK_TIMEOUT:-15m}" \
+    --max-attempts "${STINT_ONBOX_MAX_ATTEMPTS:-2}" \
+    --ready-file "$REMOTE_READY")
+  [ -z "$ACTION_PLAN_TARGET" ] || args+=(--action-plan "$ACTION_PLAN_TARGET")
+  [ -z "$ACTION_PLAN_LOCAL" ] || args+=(--action-plan-seed "$REMOTE_ACTION_PLAN_SEED")
+  if [ -n "${STINT_ONBOX_ALLOW_COMMANDS:-}" ]; then
+    while IFS= read -r command_prefix; do
+      [ -n "$command_prefix" ] || continue
+      args+=(--allow-command "$command_prefix")
+    done <<<"$STINT_ONBOX_ALLOW_COMMANDS"
+  fi
+fi
 
 echo "starting detached on-box supervisor"
 remote_env=("STINT_ONBOX_BIN=$REMOTE_BIN" "STINT_ONBOX_ROOT=$ROOT" \

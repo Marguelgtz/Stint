@@ -21,22 +21,30 @@ import (
 // still requires session.json so state cannot attach to a replacement instance
 // that happens to have the same worktree path.
 type deepOnBoxFlags struct {
-	missionPath    string
-	repoPath       string
-	actionPlan     string
-	actionPlanSeed string
-	provider       string
-	model          string
-	reasoning      string
-	reasoningSet   bool
-	hours          float64
-	deadline       string
-	taskTimeout    time.Duration
-	taskTimeoutSet bool
-	maxAttempts    int
-	allowCommands  stringSlice
-	readyFile      string
-	resume         bool
+	missionPath        string
+	repoPath           string
+	actionPlan         string
+	actionPlanSeed     string
+	provider           string
+	providerSet        bool
+	model              string
+	modelSet           bool
+	reasoning          string
+	reasoningSet       bool
+	actionPlanSet      bool
+	hours              float64
+	deadline           string
+	taskTimeout        time.Duration
+	taskTimeoutSet     bool
+	maxAttempts        int
+	maxAttemptsSet     bool
+	allowCommands      stringSlice
+	allowCommandsSet   bool
+	clearAllowCommands bool
+	readyFile          string
+	resume             bool
+	rebindCompute      bool
+	rebindReason       string
 }
 
 // runDeepOnBox starts (or resumes) the coordinator in the same instance as
@@ -59,8 +67,11 @@ func runDeepOnBox(args []string) error {
 	fs.DurationVar(&f.taskTimeout, "task-timeout", 0, "maximum wall time per Hermes invocation")
 	fs.IntVar(&f.maxAttempts, "max-attempts", 3, "executor attempts per task before parking")
 	fs.Var(&f.allowCommands, "allow-command", "advisory command prefix included in the Hermes prompt (repeatable)")
+	fs.BoolVar(&f.clearAllowCommands, "clear-allow-commands", false, "clear persisted advisory command guidance when resuming")
 	fs.StringVar(&f.readyFile, "ready-file", "", "write RUNNING after durable state is persisted")
 	fs.BoolVar(&f.resume, "resume", false, "resume the latest on-box session instead of creating one")
+	fs.BoolVar(&f.rebindCompute, "rebind-compute", false, "explicitly bind the saved worktree to the current Vast instance")
+	fs.StringVar(&f.rebindReason, "rebind-reason", "", "required audit reason for --rebind-compute")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -71,7 +82,49 @@ func runDeepOnBox(args []string) error {
 		if flg.Name == "task-timeout" {
 			f.taskTimeoutSet = true
 		}
+		if flg.Name == "provider" {
+			f.providerSet = true
+		}
+		if flg.Name == "model" {
+			f.modelSet = true
+		}
+		if flg.Name == "action-plan" {
+			f.actionPlanSet = true
+		}
+		if flg.Name == "max-attempts" {
+			f.maxAttemptsSet = true
+		}
+		if flg.Name == "allow-command" {
+			f.allowCommandsSet = true
+		}
 	})
+	if f.rebindCompute && !f.resume {
+		return errors.New("--rebind-compute is only valid with --resume")
+	}
+	if f.clearAllowCommands && !f.resume {
+		return errors.New("--clear-allow-commands is only valid with --resume")
+	}
+	if f.clearAllowCommands && f.allowCommandsSet {
+		return errors.New("--clear-allow-commands cannot be combined with --allow-command")
+	}
+	if f.rebindCompute && strings.TrimSpace(f.rebindReason) == "" {
+		return errors.New("--rebind-compute requires --rebind-reason")
+	}
+	if !f.rebindCompute && strings.TrimSpace(f.rebindReason) != "" {
+		return errors.New("--rebind-reason requires --rebind-compute")
+	}
+	if f.resume && f.actionPlanSeed != "" {
+		return errors.New("--action-plan-seed is only valid when creating a new Deep Work session")
+	}
+	if f.resume && f.actionPlanSet && strings.TrimSpace(f.actionPlan) == "" {
+		return errors.New("--action-plan cannot be empty when overriding a resumed session")
+	}
+	if f.resume && f.providerSet && strings.TrimSpace(f.provider) == "" {
+		return errors.New("--provider cannot be empty when overriding a resumed session")
+	}
+	if f.resume && f.modelSet && strings.TrimSpace(f.model) == "" {
+		return errors.New("--model cannot be empty when overriding a resumed session")
+	}
 	if f.resume {
 		if f.taskTimeoutSet && f.taskTimeout <= 0 {
 			return errors.New("--task-timeout must be positive")
@@ -274,6 +327,104 @@ func writeOnBoxReady(path string, state deep.DeepState) error {
 	return os.WriteFile(path, append(payload, '\n'), 0o600)
 }
 
+func applyDeepOnBoxOverrides(state *deep.DeepState, f *deepOnBoxFlags) error {
+	if state.Exec == nil {
+		return errors.New("on-box resume has no persisted Hermes execution settings")
+	}
+	if f.providerSet {
+		state.Exec.Provider = f.provider
+	}
+	if f.modelSet {
+		state.Exec.Model = f.model
+	}
+	if f.reasoningSet {
+		state.Exec.Reasoning = f.reasoning
+	}
+	if f.actionPlanSet {
+		previous := state.Exec.ActionPlanPath
+		state.Exec.ActionPlanPath = f.actionPlan
+		if previous != f.actionPlan {
+			state.Tasks = retargetOnBoxActionPlanTask(state.Tasks, f.actionPlan)
+		}
+	}
+	if f.taskTimeoutSet {
+		state.Exec.TaskTimeoutSec = int(f.taskTimeout.Seconds())
+	}
+	if f.maxAttemptsSet {
+		state.TaskAttemptCap = f.maxAttempts
+	}
+	if f.clearAllowCommands {
+		state.Exec.AllowedCommands = nil
+	} else if f.allowCommandsSet {
+		state.Exec.AllowedCommands = append([]string(nil), f.allowCommands...)
+	}
+	return nil
+}
+
+func retargetOnBoxActionPlanTask(tasks []deep.Task, actionPlan string) []deep.Task {
+	for i := range tasks {
+		if !strings.HasPrefix(tasks[i].ID, "STINT-PLAN-") {
+			continue
+		}
+		tasks[i].Objective = "Create or update the living action plan at " + actionPlan + " before execution begins"
+		tasks[i].Acceptance = "the living action plan exists at the requested path and records decisions, risks, next steps, and evidence pointers consistent with the mission and repository state"
+		tasks[i].Verify = "test -s " + shellQuote(actionPlan)
+		tasks[i].Reasoning = deep.ReasoningXHigh
+		// A changed destination is a new acceptance obligation. Do not retain a
+		// verified marker or prior attempt result from the old file.
+		tasks[i].Status = deep.StatusQueued
+		tasks[i].Attempts = 0
+		tasks[i].Blocker = ""
+		tasks[i].LastResult = ""
+		tasks[i].Findings = nil
+		tasks[i].VerifiedAt = nil
+		tasks[i].CheckpointCommit = ""
+		return tasks
+	}
+	return addActionPlanTask(tasks, actionPlan)
+}
+
+func onBoxComputeRebindNeeded(state *deep.DeepState, instanceID int64) bool {
+	return state.ComputeBinding == nil || state.ComputeBinding.Provider != "vast" || state.ComputeBinding.InstanceID != instanceID
+}
+
+func prepareDeepOnBoxResume(state *deep.DeepState, compute sessionstate.State, f *deepOnBoxFlags, git gitOps, now time.Time) (bool, error) {
+	rebindNeeded := onBoxComputeRebindNeeded(state, compute.InstanceID)
+	if rebindNeeded && !f.rebindCompute {
+		bound := int64(0)
+		if state.ComputeBinding != nil {
+			bound = state.ComputeBinding.InstanceID
+		}
+		return false, fmt.Errorf("on-box session is bound to instance %d, current instance is %d; verify the saved repository and worktree are present, then resume with --rebind-compute --rebind-reason <reason>", bound, compute.InstanceID)
+	}
+	if !rebindNeeded && f.rebindCompute {
+		return false, errors.New("--rebind-compute was supplied, but this Deep Work session is already bound to the current instance")
+	}
+	if _, err := git.repoHead(state.RepoPath); err != nil {
+		return false, fmt.Errorf("on-box repository is unavailable: %w", err)
+	}
+	if err := ensureDeepWorktree(git, false, state); err != nil {
+		return false, err
+	}
+	if rebindNeeded {
+		if err := state.RebindCompute("vast", compute.InstanceID, f.rebindReason, now); err != nil {
+			return false, fmt.Errorf("record explicit compute rebind: %w", err)
+		}
+	}
+	deadlineReset, err := reanchorDeadline(state, compute.Deadline, now)
+	if err != nil {
+		return false, err
+	}
+	if state.Phase != deep.PhaseLanding && state.Phase != deep.PhaseExecuting {
+		state.Phase = deep.PhaseExecuting
+		state.LandedAt = nil
+	}
+	if err := applyDeepOnBoxOverrides(state, f); err != nil {
+		return false, err
+	}
+	return deadlineReset, nil
+}
+
 func firstOnBoxEndpointModel() (string, error) {
 	ids, err := onBoxEndpointModelIDs()
 	if err != nil {
@@ -324,13 +475,6 @@ func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags) error {
 	if err != nil {
 		return fmt.Errorf("on-box compute identity is unavailable: %w", err)
 	}
-	if state.ComputeBinding == nil || state.ComputeBinding.InstanceID != compute.InstanceID {
-		bound := int64(0)
-		if state.ComputeBinding != nil {
-			bound = state.ComputeBinding.InstanceID
-		}
-		return fmt.Errorf("on-box session is bound to instance %d, current instance is %d", bound, compute.InstanceID)
-	}
 	if err := preflightLocalVerifyTools(deep.Mission{Verify: state.Verify, Tasks: state.Tasks}); err != nil {
 		return err
 	}
@@ -338,26 +482,23 @@ func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags) error {
 		return err
 	}
 	git := newGitRunner()
-	if _, err := git.repoHead(state.RepoPath); err != nil {
-		return fmt.Errorf("on-box repository is unavailable: %w", err)
-	}
-	if !state.Deadline.After(time.Now().UTC()) {
-		return errors.New("on-box Deep Work deadline has passed")
+	rebindNeeded := onBoxComputeRebindNeeded(&state, compute.InstanceID)
+	now := time.Now().UTC()
+	deadlineReset, err := prepareDeepOnBoxResume(&state, compute, f, git, now)
+	if err != nil {
+		return err
 	}
 	if state.Phase == deep.PhaseLanding {
 		deep.AppendLog(paths.StateDir, state, "resuming interrupted landing")
-	} else if state.Phase != deep.PhaseExecuting {
-		state.Phase = deep.PhaseExecuting
-		state.LandedAt = nil
 	}
 	modelIDs, err := onBoxEndpointModelIDs()
 	if err != nil {
 		return fmt.Errorf("read on-box model endpoint: %w", err)
 	}
-	model := state.Exec.Model
-	if strings.TrimSpace(f.model) != "" {
-		model = f.model
+	if err := applyDeepOnBoxOverrides(&state, f); err != nil {
+		return err
 	}
+	model := state.Exec.Model
 	if strings.TrimSpace(model) == "" {
 		model = modelIDs[0]
 	}
@@ -365,13 +506,19 @@ func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags) error {
 		return fmt.Errorf("model %q is not served by the on-box endpoint (available: %s)", model, strings.Join(modelIDs, ", "))
 	}
 	state.Exec.Model = model
-	if f.reasoningSet {
-		state.Exec.Reasoning = f.reasoning
-	}
-	if f.taskTimeoutSet {
-		state.Exec.TaskTimeoutSec = int(f.taskTimeout.Seconds())
-	}
 	if err := state.SaveDir(paths.StateDir); err != nil {
+		return err
+	}
+	resumeNote := "deadline re-anchored to min(saved Deep Work, compute)"
+	if deadlineReset {
+		resumeNote = "expired Deep Work deadline reset to current compute deadline"
+	}
+	deep.AppendLog(paths.StateDir, state, "resumed on box: %s (deadline %s)", resumeNote, state.Deadline.Format(time.RFC3339))
+	deep.AppendIncident(paths.StateDir, state, deep.IncidentResumed, "", resumeNote)
+	if rebindNeeded {
+		deep.AppendIncident(paths.StateDir, state, deep.IncidentComputeRebind, "", fmt.Sprintf("Vast instance %d: %s", compute.InstanceID, f.rebindReason))
+	}
+	if err := writeOnBoxReady(f.readyFile, state); err != nil {
 		return err
 	}
 	return deepRunSession(paths.StateDir, &state, &deepRunConfig{
