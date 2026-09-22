@@ -46,7 +46,10 @@ not the target design.
   (https://github.com/Marguelgtz/Stint/pull/103), branch
   `integrate/deep-work-final-evidence-gate-20260923`, stacks on #102 with commit
   `8aea2bd` for durable terminal-state checks and fail-closed configured R2
-  archiving.
+  archiving; plan/evidence commit `ad55713` records passing exact-head CI. Draft
+  PR #104 (https://github.com/Marguelgtz/Stint/pull/104), branch
+  `integrate/deep-work-ninfer-recovery-fixture-20260923`, stacks on #103 with
+  commit `d971d24` for executable NInfer transfer-recovery evidence.
 - All historical Deep Work feature PRs remain open. Their source heads share an
   old base (`d34cb2b...`) and are not safe merge units against current `main`.
   Use their code and evidence selectively on this clean integration branch.
@@ -276,9 +279,12 @@ not the target design.
 - **Outcome / uncertainty:** The source and static regressions are integrated;
   `go test ./cmd/stint` passed, including revision pinning, absence of fixed-size
   metadata, generated-shell syntax, and checks for dynamic-size/recovery commands.
-  Those tests inspect generated shell text rather than execute a corrupt-artifact
-  transfer fixture. The task remains active until that behavior fixture and fresh
-  GPU transfer evidence exist.
+  Commit `d971d24` in draft PR #104 extracts the production artifact preparation
+  command and adds a no-network execution fixture. The fixture passes dynamic size
+  discovery, valid partial resume, oversized and same-size corrupt artifact
+  replacement, corrupt partial clean retry after SHA mismatch, and a model path
+  containing spaces. Full `go test -count=1 ./...` passes. Actual fresh-GPU
+  transfer remains unverified.
 
 ### [~] Gate completion on durable publication and final archive
 
@@ -298,8 +304,9 @@ not the target design.
   on-box after finalization.
 - **Outcome / uncertainty:** Commit `8aea2bd` in draft PR #103 adds these gates
   and the fixture. Bash syntax and `bash scripts/test_onbox_supervisor.sh` pass;
-  PR #103 GitHub CI is still running. The live R2 service and actual GPU teardown
-  ordering remain unverified.
+  PR #103 exact-head `build-check`, `go-vet`, `unit-tests`, `race-tests`, and
+  `spark-profile` pass. Plan/evidence commit `ad55713` is pushed. The live R2
+  service and actual GPU teardown ordering remain unverified.
 
 ### [ ] Verify the integrated system and write final handoff
 
@@ -321,14 +328,16 @@ not the target design.
 - PR #100 currently reports no GitHub checks. No fresh GPU validation has been run against PR #100. Local static checks do not prove package installs, Hermes configuration compatibility, route inference, watchdog startup, or supervisor recovery on a clean GPU.
 - PR #101 commit `1356ef4`: `go test -count=1 ./cmd/stint ./internal/deep ./internal/session` — PASS; `go test ./...` — PASS; Bash syntax for launcher, supervisor, provisioner, and live-smoke scripts — PASS; embedded resume-preflight Python compile and fixture checks (same identity, implicit mismatch refusal, explicit mismatch allowance, missing branch refusal) — PASS; `git diff --check` — PASS. GitHub `build-check`, `go-vet`, `race-tests`, `spark-profile`, and `unit-tests` — PASS. No live replacement-compute or volume-restore run has been performed.
 - PR #102 implementation commit `04151f5`: `go test -count=1 ./...` — PASS; `python3 scripts/test_onbox_github_publish.py` — PASS (7 tests); Python byte-compilation — PASS; Bash syntax for launcher, smoke, supervisor, and provisioner — PASS; embedded resume-preflight Python compilation — PASS; `git diff --check` — PASS. Draft PR #102 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. No live GPU smoke was run.
-- PR #103 commit `8aea2bd`: `bash -n scripts/onbox-deep-supervisor.sh scripts/test_onbox_supervisor.sh`, `bash scripts/test_onbox_supervisor.sh`, and `git diff --check` — PASS. Draft PR #103 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. No live GPU smoke was run.
+- PR #103 commit `8aea2bd`: `bash -n scripts/onbox-deep-supervisor.sh scripts/test_onbox_supervisor.sh`, `bash scripts/test_onbox_supervisor.sh`, and `git diff --check` — PASS. Draft PR #103 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `ad55713` is pushed. No live GPU smoke was run.
+- PR #104 commit `d971d24`: `go test -count=1 ./...` — PASS, including the five-case local NInfer artifact fixture; publisher safety tests (7) and supervisor completion fixture — PASS; shell syntax and `git diff --check` — PASS. Draft PR #104 is open; exact-head GitHub CI is pending. No live GPU smoke was run.
 
 ## Next action
 
-Wait for and inspect PR #103 exact-head CI, then continue the remaining fixture
-state-machine and runtime verification against the cumulative head. Add an
-executable NInfer corrupt/oversized transfer recovery fixture. Before the
-authorized fresh-GPU smoke, confirm a durable-volume restore path: PR #101
-provides the explicit compute-resume gate but does not restore state volumes. Do
-not claim replacement-compute recovery is operational until that path is exercised
-or the external dependency is recorded as a blocker.
+Wait for and inspect PR #104 exact-head CI, then audit fresh-box readiness and
+exercise the broad no-GPU coordinator/supervisor state-machine fixtures against
+the cumulative head. Before the authorized fresh-GPU smoke, confirm a
+durable-volume restore path: PR #101 provides the explicit compute-resume gate but
+does not restore state volumes. Check required local credentials/artifacts by
+presence only; do not expose their contents. Do not claim replacement-compute
+recovery is operational until that path is exercised or the external dependency
+is recorded as a blocker.
