@@ -180,11 +180,21 @@ not the target design.
   deriving transfer size dynamically and safely recovering corrupt/oversized files.
 - **Evidence:** #74 contains immutable revision/dynamic-size work; #76 adds current
   lifecycle safety. They are open and based on historical branches.
-- **Bounded change:** Compare relevant code against `origin/main`; apply only
-  missing semantic fixes and keep recovery resumable/checksummed.
+- **Bounded change:** Compared current `main` with #74 and applied only
+  `cmd/stint/runtime.go` and its focused tests. The NInfer model URL now pins
+  revision `18dfc887423fa5aabf3cb56fac41490e462b3fab` while preserving SHA
+  `eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e`. Bootstrap
+  discovers remote content length, writes `model-total-bytes`, reports dynamic
+  progress, resumes partial downloads, and discards an invalid completed-sized
+  artifact before retrying. Unrelated current-main model metadata was preserved.
 - **Acceptance:** Runtime tests cover dynamic metadata, progress, oversized/corrupt
   artifact redownload, checksum, and the final immutable revision.
-- **Outcome / uncertainty:** Current-main audit pending.
+- **Outcome / uncertainty:** The source and static regressions are integrated;
+  `go test ./cmd/stint` passed, including revision pinning, absence of fixed-size
+  metadata, generated-shell syntax, and checks for dynamic-size/recovery commands.
+  Those tests inspect generated shell text rather than execute a corrupt-artifact
+  transfer fixture. The task remains active until that behavior fixture and fresh
+  GPU transfer evidence exist.
 
 ### [ ] Verify the integrated system and write final handoff
 

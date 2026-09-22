@@ -18,7 +18,8 @@ const (
 
 	ninferSourceRepository = "https://github.com/sergiuszm/ninfer-4090.git"
 	ninferSourceCommit     = "981b685ea2124fdaed023123d2e63fd29d529ab8"
-	ninferModelURL         = "https://huggingface.co/neroued/Qwen3.8-27B-NInfer/resolve/main/qwen3_8_27b.ninfer"
+	ninferModelRevision    = "18dfc887423fa5aabf3cb56fac41490e462b3fab"
+	ninferModelURL         = "https://huggingface.co/neroued/Qwen3.8-27B-NInfer/resolve/" + ninferModelRevision + "/qwen3_8_27b.ninfer"
 	ninferModelSHA256      = "eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e"
 )
 
@@ -120,6 +121,7 @@ model_dir="$root/models"
 model="$model_dir/qwen3_8_27b.ninfer"
 model_pid="$root/model-download.pid"
 model_log="$root/model-download.log"
+model_size_file="$root/model-total-bytes"
 model_sha="%s"
 model_url="%s"
 started_prefetch_pid=""
@@ -204,14 +206,24 @@ fi
 prefetch_pid="$(cat "$model_pid" 2>/dev/null || true)"
 if [ -n "$prefetch_pid" ] && kill -0 "$prefetch_pid" 2>/dev/null; then
   echo "NInfer build is ready; waiting for the parallel Qwen model transfer..."
-  last_pct=-1
+  last_reported=""
   while kill -0 "$prefetch_pid" 2>/dev/null; do
     bytes="$(stat -c %%s "$model" 2>/dev/null || echo 0)"
-    pct=$((bytes * 100 / 18210531328))
-    if [ "$pct" -ne "$last_pct" ]; then
-      mib=$((bytes / 1048576))
-      echo "  model: ${pct}%% (${mib} MiB / 17367 MiB)"
-      last_pct="$pct"
+    mib=$((bytes / 1048576))
+    total="$(cat "$model_size_file" 2>/dev/null || true)"
+    case "$total" in
+      ''|*[!0-9]*) total=0 ;;
+    esac
+    if [ "$total" -gt 0 ]; then
+      pct=$((bytes * 100 / total))
+      [ "$pct" -gt 100 ] && pct=100
+      report="${pct}%% (${mib} MiB / $((total / 1048576)) MiB)"
+    else
+      report="${mib} MiB downloaded"
+    fi
+    if [ "$report" != "$last_reported" ]; then
+      echo "  model: $report"
+      last_reported="$report"
     fi
     sleep 5
   done
@@ -252,7 +264,28 @@ func remoteModelLaunchCommandForState(state sessionstate.State) string {
 
 func remoteModelProgressCommandForState(state sessionstate.State) string {
 	if runtimeForState(state) == runtimeNInfer {
-		return `if pgrep -f '[c]url .*qwen3_8_27b.ninfer' >/dev/null 2>&1; then bytes="$(stat -c %s /workspace/stint/models/qwen3_8_27b.ninfer 2>/dev/null || echo 0)"; pct=$((bytes * 100 / 18210531328)); echo "model download ${pct}% ($((bytes / 1048576)) MiB / 17367 MiB)"; elif pgrep -x ninfer-serve >/dev/null 2>&1; then tail -n 1 /workspace/stint/llama.log 2>/dev/null || echo "loading model on GPU"; else tail -n 1 /workspace/stint/model-download.log 2>/dev/null || tail -n 1 /workspace/stint/llama.log 2>/dev/null || true; fi`
+		return `model=/workspace/stint/models/qwen3_8_27b.ninfer
+size_file=/workspace/stint/model-total-bytes
+if pgrep -f '[c]url .*qwen3_8_27b.ninfer' >/dev/null 2>&1; then
+  bytes="$(stat -c %s "$model" 2>/dev/null || echo 0)"
+  total="$(cat "$size_file" 2>/dev/null || true)"
+  case "$total" in
+    ''|*[!0-9]*) total=0 ;;
+  esac
+  if [ "$total" -gt 0 ]; then
+    pct=$((bytes * 100 / total))
+    [ "$pct" -gt 100 ] && pct=100
+    echo "model download ${pct}% ($((bytes / 1048576)) MiB / $((total / 1048576)) MiB)"
+  else
+    echo "model download $((bytes / 1048576)) MiB transferred"
+  fi
+elif pgrep -x sha256sum >/dev/null 2>&1; then
+  echo "model download complete; verifying checksum"
+elif pgrep -x ninfer-serve >/dev/null 2>&1; then
+  tail -n 1 /workspace/stint/llama.log 2>/dev/null || echo "loading model on GPU"
+else
+  tail -n 1 /workspace/stint/model-download.log 2>/dev/null || tail -n 1 /workspace/stint/llama.log 2>/dev/null || true
+fi`
 	}
 
 	return fmt.Sprintf(`model=/workspace/stint/models/%s
@@ -397,11 +430,42 @@ rm -f "$pid_file"
 nohup bash -c '
 set -eu
 model=/workspace/stint/models/qwen3_8_27b.ninfer
-if [ ! -f "$model" ] || ! echo "%s  $model" | sha256sum -c - >/dev/null 2>&1; then
-  echo "Downloading Qwen3.8-27B NInfer artifact..."
-  curl -L -C - --fail --retry 3 --retry-delay 2 --output "$model" %s
+model_size_file=/workspace/stint/model-total-bytes
+model_url="%s"
+model_sha="%s"
+
+discover_model_size() {
+  size="$(curl -fsSLI --retry 3 --retry-delay 1 -o /dev/null -w "%%header{content-length}" "$model_url" 2>/dev/null || true)"
+  case "$size" in
+    ""|*[!0-9]*) size=0 ;;
+  esac
+  printf "%%s\n" "$size"
+}
+
+expected="$(cat "$model_size_file" 2>/dev/null || true)"
+case "$expected" in
+  ""|*[!0-9]*) expected=0 ;;
+esac
+if [ "$expected" -le 0 ]; then
+  expected="$(discover_model_size)"
+  if [ "$expected" -gt 0 ]; then
+    printf "%%s\n" "$expected" > "$model_size_file"
+  fi
 fi
-echo "%s  $model" | sha256sum -c -
+
+if [ -f "$model" ] && ! echo "$model_sha  $model" | sha256sum -c - >/dev/null 2>&1; then
+  bytes="$(stat -c %%s "$model" 2>/dev/null || echo 0)"
+  if [ "$expected" -gt 0 ] && [ "$bytes" -ge "$expected" ]; then
+    echo "Discarding invalid completed/oversized NInfer model artifact before resumable download."
+    rm -f "$model"
+  fi
+fi
+
+if [ ! -f "$model" ] || ! echo "$model_sha  $model" | sha256sum -c - >/dev/null 2>&1; then
+  echo "Downloading Qwen3.8-27B NInfer artifact..."
+  curl -L -C - --fail --retry 10 --retry-all-errors --retry-delay 2 --connect-timeout 20 --output "$model" "$model_url"
+fi
+echo "$model_sha  $model" | sha256sum -c -
 exec /workspace/stint/ninfer/build/apps/ninfer-serve "$model" \
   --host 127.0.0.1 \
   --port %d \
@@ -425,5 +489,5 @@ if ! kill -0 "$new_pid" 2>/dev/null; then
   tail -n 20 "$log_file" >&2 || true
   exit 1
 fi
-`, ninferModelSHA256, ninferModelURL, ninferModelSHA256, clineRemotePort, interactiveModelAlias, contextTokens, contextTokens, clients, config.KVDType)
+`, ninferModelURL, ninferModelSHA256, clineRemotePort, interactiveModelAlias, contextTokens, contextTokens, clients, config.KVDType)
 }
