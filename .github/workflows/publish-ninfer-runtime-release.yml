@@ -59,7 +59,7 @@ jobs:
           expected=(
             stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz
             stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz.sha256
-            stint-ninfer-81b68a20-sm89-linux-amd64.manifest.json
+            manifest.json
           )
           actual=(dist/ninfer-runtime/*)
           test "${#actual[@]}" -eq "${#expected[@]}"
@@ -81,7 +81,7 @@ jobs:
           gh release create ninfer-runtime-81b68a20-sm89 \
             dist/ninfer-runtime/stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz \
             dist/ninfer-runtime/stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz.sha256 \
-            dist/ninfer-runtime/stint-ninfer-81b68a20-sm89-linux-amd64.manifest.json \
+            dist/ninfer-runtime/manifest.json \
             --draft --title 'Stint NInfer runtime 81b68a20 SM89' \
             --notes-file "$RUNNER_TEMP/release-notes.md" --target "$GITHUB_SHA"
 
@@ -96,7 +96,7 @@ jobs:
           for name in \
             stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz \
             stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz.sha256 \
-            stint-ninfer-81b68a20-sm89-linux-amd64.manifest.json; do
+            manifest.json; do
             jq -e --arg name "$name" '.assets[] | select(.name == $name)' <<<"$draft" >/dev/null
           done
           echo "release_id=$(jq -r .id <<<"$draft")" >> "$GITHUB_OUTPUT"

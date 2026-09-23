@@ -39,7 +39,7 @@ def sha256_file(path: Path) -> str:
 def asset_names() -> tuple[str, str, str]:
     prefix = f"stint-ninfer-{SOURCE_COMMIT[:8]}-sm89-linux-amd64"
     archive = f"{prefix}.tar.gz"
-    return archive, f"{archive}.sha256", f"{prefix}.manifest.json"
+    return archive, f"{archive}.sha256", "manifest.json"
 
 
 def expected_manifest(binaries: dict[str, tuple[str, int]]) -> dict[str, object]:

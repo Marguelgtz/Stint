@@ -67,9 +67,8 @@ python3 "$repo_root/scripts/ninfer_runtime_bundle.py" package \
 
 for archive in "$output_dir"/*.tar.gz; do
   [ -e "$archive" ] || { echo "runtime archive was not created" >&2; exit 1; }
-  prefix="${archive%.tar.gz}"
   checksum="$archive.sha256"
-  manifest="${prefix}.manifest.json"
+  manifest="$output_dir/manifest.json"
   python3 "$repo_root/scripts/ninfer_runtime_bundle.py" verify \
     --archive "$archive" --manifest "$manifest" --checksum "$checksum"
   clean_extract="$work_dir/clean-extract"
