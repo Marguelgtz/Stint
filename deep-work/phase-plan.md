@@ -1,9 +1,11 @@
 # Phase/lane E2E — living action plan
 
-Status: planning phase complete (STINT-PLAN-001, xhigh, attempt 1). Medium execution
-has not started. This file is the living plan; it is updated with checkpoint and
-verification evidence as each task completes. Checkpoints below are coordinator
-assertions, not proof — the coordinator's per-task verify commands are the proof.
+Status: planning phase complete (STINT-PLAN-001, xhigh, attempt 1). PHASE-001
+(medium) complete: `phase-lane-smoke/medium-ready.txt` written and its verify
+command passed locally (see evidence). PHASE-002 pending. This file is the living
+plan; it is updated with checkpoint and verification evidence as each task
+completes. Checkpoints below are coordinator assertions, not proof — the
+coordinator's per-task verify commands are the proof.
 
 ## Repository state at planning time
 
@@ -92,8 +94,10 @@ and checkpointed.
 
 - [x] STINT-PLAN-001 (xhigh): this living plan written; coordinator verifies with
       `test -s 'deep-work/phase-plan.md'` and checkpoints.
-- [ ] PHASE-001 (medium): `mkdir -p phase-lane-smoke`, write `medium-ready.txt`
+- [x] PHASE-001 (medium): `mkdir -p phase-lane-smoke`, write `medium-ready.txt`
       (`printf 'medium execution ready\n'`), run its verify command, checkpoint.
+      Done: file written; verify command passed from worktree root; single LF
+      line confirmed via `od -c`.
 - [ ] PHASE-002 (medium): read `phase-lane-smoke/medium-ready.txt` and confirm the
       exact line; write `final.txt` (`printf 'phase lane e2e complete\n'`), run its
       verify command, checkpoint.
@@ -113,6 +117,11 @@ and checkpointed.
 - Worktree layout at planning time: `deep-work/` holds `COMPRESSION_SMOKE_MISSION.md`,
   `PHASE_LANE_E2E_MISSION.md`, `PHASE_LANE_E2E_PLAN_SEED.md`, this plan; no
   `phase-lane-smoke/` directory yet (checked with `ls`).
+- PHASE-001 (medium, this task): `phase-lane-smoke/medium-ready.txt` written via
+  `printf 'medium execution ready\n'`; verify command
+  `test -f phase-lane-smoke/medium-ready.txt && grep -Fqx 'medium execution ready'
+  phase-lane-smoke/medium-ready.txt` passed from the worktree root (exit 0).
+  Byte check via `od -c`: single line, LF terminator, no CR/whitespace.
 
 Checkpoints (filled by the coordinator after each verify command):
 
