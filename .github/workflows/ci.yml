@@ -21,6 +21,10 @@ jobs:
           grep -q 'cmd/stint/\*\*' .spark/profile.yml
           grep -q 'internal/session/\*\*' .spark/profile.yml
           grep -q 'internal/provider/vast/\*\*' .spark/profile.yml
+          grep -q 'internal/deep/\*\*' .spark/profile.yml
+          grep -q 'internal/deepdashboard/\*\*' .spark/profile.yml
+          grep -q 'scripts/\*\*' .spark/profile.yml
+          grep -q 'images/ninfer/\*\*' .spark/profile.yml
           grep -q 'go-vet' .spark/profile.yml
           grep -q 'race-tests' .spark/profile.yml
 

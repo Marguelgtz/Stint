@@ -18,6 +18,18 @@ areas:
       - unit-tests
       - race-tests
 
+  - id: deep-work-execution
+    paths:
+      - "internal/deep/**"
+      - "internal/deepdashboard/**"
+    criticality: high
+    owners:
+      - "@Marguelgtz"
+    expected_evidence:
+      - go-vet
+      - unit-tests
+      - race-tests
+
   - id: vast-compute-provider
     paths:
       - "internal/provider/vast/**"
@@ -31,6 +43,7 @@ areas:
   - id: model-runtime
     paths:
       - "internal/runtime/llama/**"
+      - "images/ninfer/**"
     criticality: high
     owners:
       - "@Marguelgtz"
@@ -64,6 +77,7 @@ areas:
     paths:
       - ".github/workflows/**"
       - ".spark/profile.yml"
+      - "scripts/**"
       - "go.mod"
       - "Makefile"
       - "stint.config.example.yaml"
