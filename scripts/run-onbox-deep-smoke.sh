@@ -20,6 +20,7 @@ GITHUB_MODE="${STINT_GITHUB_MODE:-engineering}"
 GITHUB_APPROVAL="${STINT_GITHUB_APPROVAL:-internal}"
 GITHUB_ALLOWED_AUTHORS="${STINT_GITHUB_ALLOWED_AUTHORS:-}"
 REMOTE_ROOT="${STINT_REMOTE_ROOT:-/var/lib/stint-onbox}"
+PHASING_DIR="${STINT_PHASING_DIR:-/root/stint-phasing}"
 LOG="$ARTIFACT_DIR/launcher.log"
 
 export XDG_STATE_HOME="$RUN_ROOT"
@@ -164,12 +165,34 @@ say "capturing sanitized observer and on-box state"
 : >"$ARTIFACT_DIR/remote-state.json"
 : >"$ARTIFACT_DIR/remote-handoff.md"
 : >"$ARTIFACT_DIR/publication.json"
-"${SSH[@]}" '/root/deep-observe.sh' >"$ARTIFACT_DIR/deep-observe.json" 2>>"$LOG" || true
 session_id="$(${SSH[@]} "cat '$REMOTE_ROOT/state/stint/deep/latest'" 2>/dev/null | tr -d '[:space:]' || true)"
 case "$session_id" in
   ''|*[!A-Za-z0-9_-]*) die "no safe remote deep session id" ;;
 esac
 "${SSH[@]}" "cat '$REMOTE_ROOT/state/stint/deep/$session_id/deep.json'" >"$ARTIFACT_DIR/remote-state.json"
+started_at="$(python3 - "$ARTIFACT_DIR/remote-state.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    print(json.load(stream).get("startedAt", ""))
+PY
+)"
+[ -n "$started_at" ] || die "on-box state has no mission start time for observer attribution"
+observer_cmd=(env "PHASING_DIR=$PHASING_DIR" "STINT_DEEP_STARTED_AT=$started_at" "$PHASING_DIR/deep-observe")
+observer_cmd_q="$(printf '%q ' "${observer_cmd[@]}")"
+"${SSH[@]}" "$observer_cmd_q" >"$ARTIFACT_DIR/deep-observe.json" 2>>"$LOG" || \
+  die "could not capture the on-box worker observer"
+python3 - "$ARTIFACT_DIR/deep-observe.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    observer = json.load(stream)
+routes = observer.get("phaseRoutes") or {}
+for phase in ("xhigh", "medium"):
+    if routes.get(f"{phase}Requests", 0) < 1:
+        raise SystemExit(f"on-box observer recorded no {phase} route traffic: {routes}")
+    if routes.get(f"{phase}Failures", 0) != 0:
+        raise SystemExit(f"on-box observer recorded failed {phase} requests: {routes}")
+print("ONBOX_OBSERVER_PASS", routes)
+PY
 "${SSH[@]}" "cat '$REMOTE_ROOT/state/stint/deep/$session_id/publication.json'" >"$ARTIFACT_DIR/publication.json"
 worktree="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("worktreePath", ""))' "$ARTIFACT_DIR/remote-state.json" 2>/dev/null || true)"
 if [ -n "$worktree" ]; then
