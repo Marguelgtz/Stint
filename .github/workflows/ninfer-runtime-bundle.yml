@@ -89,8 +89,13 @@ jobs:
           set -euo pipefail
           archive="$RUNNER_TEMP/ninfer-runtime/stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz"
           digest="$(sha256sum "$archive" | awk '{print $1}')"
-          draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/ninfer-runtime-81b68a20-sm89")"
+          matching_drafts="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" | \
+            jq -s --arg tag ninfer-runtime-81b68a20-sm89 \
+              '[add[] | select(.tag_name == $tag and .draft == true)]')"
+          test "$(jq 'length' <<<"$matching_drafts")" -eq 1
+          draft="$(jq -c '.[0]' <<<"$matching_drafts")"
           test "$(jq -r .draft <<<"$draft")" = true
+          test "$(jq -r .tag_name <<<"$draft")" = ninfer-runtime-81b68a20-sm89
           test "$(jq -r .target_commitish <<<"$draft")" = "$GITHUB_SHA"
           jq -e --arg run "Candidate build workflow run: $GITHUB_RUN_ID" \
             --arg sha "Candidate Stint commit: $GITHUB_SHA" \
