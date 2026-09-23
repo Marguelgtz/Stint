@@ -8,8 +8,8 @@ under unchanged limits.
 
 ## Authoritative repository and verification
 
-- Current `main` before this final ledger refresh: `3586022bd6b2cc4565a4d94e519398222d85a443`.
-- Exact landed-main push run `35911926414` passed all five required jobs.
+- Current `main` before this PR-state and README refresh: `25eea6fcc4fdbc9d24588599f849a5afe5b4e613` (after #134).
+- Exact landed-main push run `35912925386` passed all five required jobs.
 - PR #131 merged as `2b5f7342093c520175b608a1a64bbce0b9443f31`. Its PR run
   `35905726077` appeared green but physically tested synthetic merge tree
   `45644d2`, not its head tree. That gap is fixed by #132.
@@ -21,6 +21,9 @@ under unchanged limits.
   `58e3a5832dbffdcf683665598e8c0d5335c34760` and synthetic merge tree
   `2f349cf2c57e4cdc5e9809019de963558d0b3069`; all five required checks passed.
   Main push run `35911926414` passed all five required jobs.
+- PR #134 merged as `25eea6fcc4fdbc9d24588599f849a5afe5b4e613`. Its exact-head
+  PR run `35912743074` passed all five required jobs and separately passed its
+  synthetic merge-tree test; main push run `35912925386` passed all five jobs.
 - PR #93 closed unmerged at `2026-09-23T19:51:25Z` after #133 landed. Its
   [replacement comment](https://github.com/Marguelgtz/Stint/pull/93#issuecomment-5801853350)
   records the new docs index and paths. The final open PR set is #85 and
@@ -83,6 +86,11 @@ the same conditions. Record startup/READY time, model loading, single/two lanes,
 Deep Work, teardown, cost, exact tuple, and recovery behavior. Keep release
 deployment opt-in until the complete gate passes. See the
 [grounding plan](STINT_REPOSITORY_GROUNDING_PLAN.md) for details.
+
+The fresh read-only Vast plan at `2026-09-23 20:12 UTC` queried 41 offers and
+selected an RTX 3090 at `$0.379/hour`; its closest rejected RTX 4090 offers
+were over the fixed `$0.40/hour` price ceiling. The output stated
+`mutating: false` and `computeRented: false`; no compute was rented.
 
 The successful current Deep Work session is `20260923-022052`, protected in
 open PRs #110–#113 and not merged. Older #81–#84 are successful 2026-09-08

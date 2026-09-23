@@ -2,7 +2,7 @@
 
 **Historical inventory:** the complete detailed records below were captured on 2026-09-23 after #118 merged (38 open PRs). Their paths, symbols, and recorded check rollups describe that point-in-time snapshot. Base SHAs are observed PR base refs, not claims that stale branches include current `main`.
 
-**Final open snapshot after #133 and #93 closure:** checked on 2026-09-23 after #133 merged and #93 closed. GitHub reported five open PRs: #85 and protected Deep Work evidence #110–#113. Their exact heads and observed base SHAs are recorded in the final snapshot at the end of this ledger. The protected generated PRs #110–#113 remain untouched.
+**Final open snapshot after #134:** checked on 2026-09-23 after #134 merged. GitHub reported five open PRs: #85 and protected Deep Work evidence #110–#113. Their exact heads, observed base SHAs, current mergeability and legacy check runs are recorded in the final snapshot at the end of this ledger. The protected generated PRs #110–#113 remain untouched.
 
 **Purpose:** account for each open PR by semantics. Green checks alone do not make a stale/stacked PR safe to merge. Generated GPU-run artifacts remain outside product `main`.
 
@@ -28,6 +28,7 @@
 - #131 closeout docs: head `09ba98e0f6b6c59c6a4001e8e44e43b6511c5ba3`; merge `2b5f7342093c520175b608a1a64bbce0b9443f31`; run `35905726077` reported all five jobs successful on the PR head SHA and main run `35905880710` passed all five jobs. Post-merge inspection found the pull-request workflow had physically checked out GitHub's synthetic merge commit `45644d2` (head `09ba98e` into base `36d12ac`), despite the run being attached to the PR head SHA. This exposed that prior PR CI did not structurally prove exact-head checkout.
 - #132 CI repair: head `a90b059c81d7a7bfb1fdbc17aff053e40c217429`, base `main` at `2b5f7342093c520175b608a1a64bbce0b9443f31`, merged as `4ff7159c018c75372b31aca7627151e30fed669b`. PR run `35908857053` checked out the exact PR head and passed all five required jobs; `unit-tests` then explicitly checked out synthetic merge tree `1a1b01ba429d8953df2f8519ad31b2ea7bb416cf` and reran Go, Python, and shell suites successfully. Exact landed-main push run `35909255732` passed all five required jobs on `4ff7159…`. Spark Observability was neutral in both pull-request runs.
 - #133 documentation taxonomy/current-grounding port: head `58e3a5832dbffdcf683665598e8c0d5335c34760`, base `main` at `4ff7159c018c75372b31aca7627151e30fed669b`, merged as `3586022bd6b2cc4565a4d94e519398222d85a443`. PR run `35911740797` checked the exact head and passed all five required jobs; its unit job separately tested synthetic merge tree `2f349cf2c57e4cdc5e9809019de963558d0b3069` successfully. Exact landed-main run `35911926414` passed all five required jobs.
+- #134 final ledger refresh: head `f14c42b846aacc6a66fc1a25f2b1104ad5a6473f`, merged as `25eea6fcc4fdbc9d24588599f849a5afe5b4e613`. PR run `35912743074` passed all five required jobs on the exact head and its unit job passed the synthetic merge-tree test; landed-main push run `35912925386` passed all five required jobs.
 - #117 active-lane semantics: `/metrics` `requests_processing`, with `/slots` processing-lane fallback; retained/resident prompt tokens contribute to resident depth, not active count. NInfer cache ratio is prefix-cache hits / (hits + uncached prompt tokens), and NInfer prefill is marked uncached; llama.cpp cache ratio uses cached/total prompt tokens.
 - #117 event history intentionally carries no caller/client identity; `session_digest` is not a stable Stint identity.
 
@@ -1048,16 +1049,16 @@ recorded separately at the end of this ledger.
 
 ## Final current open PR snapshot
 
-Checked on 2026-09-23 after PR #133 merged and #93 closed, before this final
-ledger-refresh PR was opened. GitHub reported exactly five open PRs. For every
-one, the attached legacy PR check rollup is green, but the pre-#132 workflow
-used the synthetic merge tree; **exact-head CI is not established**. Keep #85
-parked and leave #110–#113 open, unmerged, and untouched.
+Checked on 2026-09-23 at `20:12 UTC`, after PR #134 merged and before this
+snapshot-refresh PR was opened. GitHub reported exactly five open PRs. The
+attached legacy PR runs have five required checks green, but the pre-#132
+workflow used the synthetic merge tree; **exact-head CI is not established**.
+Keep #85 parked and leave #110–#113 open, unmerged, and untouched.
 
 | PR | State / merge state | Head branch @ exact SHA | Base branch @ observed SHA | Legacy PR check rollup / exact-head CI | Disposition |
 |---:|---|---|---|---|---|
-| #85 | OPEN, draft / CLEAN | `feat/deep-work-github-modes` @ `dd034898cc1c89138bfc18ddc47e7c3dfc6b34e5` | `fix/deep-work-onbox-publishing` @ `62f89ddcd0b98962f6b5f7c0d1360ac43e5ff3a6` | Five required checks green on legacy synthetic merge tree; exact-head not established; Spark Observability neutral | Parked high-authority maintenance experiment; redesign authority, pagination, and policy gates separately |
-| #110 | OPEN, draft / UNKNOWN | `stint/deep-20260923-022052-01-stint-plan-001` @ `a051c94a0f02b5d65a4e5a4fb2b7b6ee86e892f4` | `main` @ `bdd55c57b7fbdb7a2128c8ed14861cf3f527c04d` | Five required checks green on legacy synthetic merge tree; exact-head not established; Spark Observability neutral | Keep open as protected successful evidence |
-| #111 | OPEN, draft / CLEAN | `stint/deep-20260923-022052-02-phase-001` @ `f7349155788c9ec0b7a0086af9b2a8f66c704cce` | #110 branch @ `a051c94a0f02b5d65a4e5a4fb2b7b6ee86e892f4` | Five required checks green on legacy synthetic merge tree; exact-head not established; Spark Observability neutral | Keep open as protected successful evidence |
-| #112 | OPEN, draft / CLEAN | `stint/deep-20260923-022052-03-phase-002` @ `553c20c49f8c798cbd1074b03870fb63e642ee7a` | #111 branch @ `f7349155788c9ec0b7a0086af9b2a8f66c704cce` | Five required checks green on legacy synthetic merge tree; exact-head not established; Spark Observability neutral | Keep open as protected successful evidence |
-| #113 | OPEN, draft / CLEAN | `stint/deep-20260923-022052-handoff` @ `7f7fd4344e9e470f19c1d2e95d75ec06357fbc00` | #112 branch @ `553c20c49f8c798cbd1074b03870fb63e642ee7a` | Five required checks green on legacy synthetic merge tree; exact-head not established; Spark Observability neutral | Keep open as protected successful evidence |
+| #85 | OPEN, draft / CLEAN | `feat/deep-work-github-modes` @ `dd034898cc1c89138bfc18ddc47e7c3dfc6b34e5` | `fix/deep-work-onbox-publishing` @ `62f89ddcd0b98962f6b5f7c0d1360ac43e5ff3a6` | Five required checks green in run `34299224074` on legacy synthetic merge tree; exact-head not established; Spark Observability skipped | Parked high-authority maintenance experiment; redesign authority, pagination, and policy gates separately |
+| #110 | OPEN, draft / CLEAN | `stint/deep-20260923-022052-01-stint-plan-001` @ `a051c94a0f02b5d65a4e5a4fb2b7b6ee86e892f4` | `main` @ `bdd55c57b7fbdb7a2128c8ed14861cf3f527c04d` | Five required checks green in run `35810117675` on legacy synthetic merge tree; exact-head not established; Spark Observability skipped | Keep open as protected successful evidence |
+| #111 | OPEN, draft / CLEAN | `stint/deep-20260923-022052-02-phase-001` @ `f7349155788c9ec0b7a0086af9b2a8f66c704cce` | #110 branch @ `a051c94a0f02b5d65a4e5a4fb2b7b6ee86e892f4` | Five required checks green in run `35810176615` on legacy synthetic merge tree; exact-head not established; Spark Observability skipped | Keep open as protected successful evidence |
+| #112 | OPEN, draft / CLEAN | `stint/deep-20260923-022052-03-phase-002` @ `553c20c49f8c798cbd1074b03870fb63e642ee7a` | #111 branch @ `f7349155788c9ec0b7a0086af9b2a8f66c704cce` | Five required checks green in run `35810244081` on legacy synthetic merge tree; exact-head not established; Spark Observability skipped | Keep open as protected successful evidence |
+| #113 | OPEN, draft / CLEAN | `stint/deep-20260923-022052-handoff` @ `7f7fd4344e9e470f19c1d2e95d75ec06357fbc00` | #112 branch @ `553c20c49f8c798cbd1074b03870fb63e642ee7a` | Five required checks green in run `35810248016` on legacy synthetic merge tree; exact-head not established; Spark Observability skipped | Keep open as protected successful evidence |
