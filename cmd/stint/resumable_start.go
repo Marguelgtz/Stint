@@ -385,6 +385,7 @@ func runStartResumable(args []string) (retErr error) {
 			fmt.Println("Renting selected offer...")
 		}
 		rentalAttempts++
+		state.RentalStartedAt = time.Now().UTC()
 		instanceID, createErr := client.CreateInstance(rootCtx, selected.ID, vast.CreateInstanceOptions{
 			Image:   vastImageForRuntime(runtimeRequest),
 			DiskGB:  profile.Session.StorageGB,
@@ -516,6 +517,15 @@ func runStartResumable(args []string) (retErr error) {
 			return fmt.Errorf("all %d candidate(s) exceeded the $%.2f requested-session cost ceiling", costRejected, profile.Session.MaxCostUSD)
 		}
 		return errors.New("network qualification did not select a candidate")
+	}
+
+	if *minMeasuredDownloadMBps > 0 {
+		state.StartupPhase = sessionstate.StartupPhaseNetworkQualified
+	} else {
+		state.StartupPhase = sessionstate.StartupPhaseNetworkQualificationSkipped
+	}
+	if err := sessionstate.Save(paths, state); err != nil {
+		return err
 	}
 
 	state.Status = sessionstate.StatusRuntimeBootstrap
