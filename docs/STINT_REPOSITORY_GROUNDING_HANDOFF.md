@@ -1,14 +1,16 @@
 # Stint repository grounding handoff
 
 **Status:** one authoritative `main` is verified through CI, source/runtime and
-historical PR semantics are grounded, the #93 taxonomy proposal was selectively
-ported and closed, and the runtime bundle is immutable and opt-in. The only
-remaining acceptance gate is fresh RTX 4090 runtime/Deep Work qualification
-under unchanged limits.
+historical PR semantics are grounded, and the immutable runtime bundle remains
+opt-in. One fresh RTX 4090 source-build run reached READY and supplied a live
+startup/perf baseline. The remaining acceptance gate is release-bundle and
+Deep Work qualification on RTX 4090.
 
 ## Authoritative repository and verification
 
-- Current `main` before this landing-record refresh: `270caea33fec1b08493312c45b2ced19b21e07d1` (after #135).
+- Product `main` before this evidence-documentation PR:
+  `9638ac6fef4ad81a993a5bf1d73ffeffeb30a1ef` (after #138).
+- Landed-main run `35923648426` passed all five required CI jobs.
 - Exact landed-main push run `35916137793` passed all five required jobs.
 - PR #131 merged as `2b5f7342093c520175b608a1a64bbce0b9443f31`. Its PR run
   `35905726077` appeared green but physically tested synthetic merge tree
@@ -29,10 +31,18 @@ under unchanged limits.
   `35916137793` passed all five required jobs. The Deep Work smoke explicitly
   uses `--runtime ninfer`, a one-candidate limit, and the fixed `$0.40/hour`
   cap, so acceptance selects only an RTX 4090 and has no 3090 fallback.
+- PR #136 merged as `86f124f9c1a5fa3cb0ccf1040ac392e26b09e365`; PR run
+  `35917286961` and landed-main run `35917484715` passed all five jobs.
+- PR #138 fixed a live `stint perf` no-output failure by appending an explicit
+  short completion instruction to its synthetic prompt. Exact-head run
+  `35923353592` and landed-main run `35923648426` passed all five required
+  jobs; merge SHA is the current `main` above.
 - PR #93 closed unmerged at `2026-09-23T19:51:25Z` after #133 landed. Its
   [replacement comment](https://github.com/Marguelgtz/Stint/pull/93#issuecomment-5801853350)
   records the new docs index and paths. The final open PR set is #85 and
   protected generated evidence #110–#113.
+- The current open PR set remains #85 and protected evidence #110–#113; the
+  post-#138 refs and base SHAs are recorded in the ledger.
 - The original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa`
   and all its untracked user files and local binary remain untouched.
 
@@ -79,26 +89,40 @@ under unchanged limits.
 
 ## Live acceptance gate
 
-The exact Vast offer scan at 2026-09-23 18:37 UTC found 39 offers, including
-24 RTX 4090s; none met the current policy. A 19:06 UTC read-only plan selected
-an RTX 3090 at $0.395/hour. No instance was rented and no GPU spend occurred.
-Keep the limits fixed at $0.40/hour, $2.50 per session, at most three distinct
-candidates, 500 Mbps advertised bandwidth, and 40 MB/s measured transfer.
+The normal interactive target remains $0.40/hour and $2.50 per session. The
+user authorized one-off bounded price overrides when an RTX 4090 is necessary
+and no qualifying offer fits the target. Never use a 3090. Set the one-run
+objective, hourly/session ceilings, 500 Mbps advertised floor, 40 MB/s measured
+floor, and one-candidate limit before rental.
 
-On a fresh qualifying RTX 4090, compare source-build and the release bundle on
-the same conditions. Record startup/READY time, model loading, single/two lanes,
-262144 context stability, correctness, prefill/decode, cache reuse, Hermes
-Deep Work, teardown, cost, exact tuple, and recovery behavior. Keep release
-deployment opt-in until the complete gate passes. See the
-[grounding plan](STINT_REPOSITORY_GROUNDING_PLAN.md) for details.
+On 2026-09-23, one fresh RTX 4090 source-build run (offer `40583612`, instance
+`52296599`, rate `$0.4759259/hour`) used one candidate attempt, a one-hour
+schedule capped at `$0.48`, and `$0.50` total session limit. Measured transfer
+was 46.3 MB/s. SSH was ready at 58s, network qualification at 76s, source
+runtime acquisition/build took 23m51s, verification 0.12s, and model transfer
+8m26s overlapped the build. READY arrived 26m17s after rental. Approximate
+prorated cost was `$0.31` (not a reconciled invoice); instance teardown was
+verified.
 
-The generic read-only Vast plan at `2026-09-23 20:12 UTC` queried 41 offers
-and selected an RTX 3090 at `$0.379/hour`. That host is excluded from mission
-acceptance, which must run only on RTX 4090; the closest rejected RTX 4090
-offers were over the fixed `$0.40/hour` ceiling. The output stated
-`mutating: false` and `computeRented: false`; no compute was rented. Use
-`--runtime ninfer` for acceptance, which filters the provider search to RTX
-4090, and never fall back to a 3090.
+With native context 262144 and two configured clients, concurrent chat requests
+returned 42 and 56. Live perf passed at 7,413 actual prompt tokens (TTFT 4.91s,
+164.8 tok/s decode) and 178,904 actual prompt tokens (TTFT 124.59s, 549.0 tok/s
+decode; 22.4/24 GB VRAM, no OOM). The full 262144 context was not filled, the
+two clients were not tested at full context, no release-bundle deployment was
+used, and this run did not execute Deep Work. Source-build now has a measured
+READY baseline; the release-bundle and GHCR paths still lack comparable live
+startup timing.
+
+Keep release deployment opt-in until a fresh RTX 4090 run covers the immutable
+bundle, short two-lane requests, full native-context stability, correctness,
+Hermes xhigh/medium routing, independent verification, checkpoint publication,
+handoff/archive, and teardown. Compare its READY path with this source-build
+baseline. See the [grounding plan](STINT_REPOSITORY_GROUNDING_PLAN.md) for the
+current step-by-step gate.
+
+The generic read-only Vast plan at `2026-09-23 20:12 UTC` selected an excluded
+RTX 3090 at `$0.379/hour`; it did not authorize or trigger a rental. The actual
+acceptance run used explicit `--runtime ninfer` and selected only the RTX 4090.
 
 The successful current Deep Work session is `20260923-022052`, protected in
 open PRs #110–#113 and not merged. Older #81–#84 are successful 2026-09-08
@@ -110,8 +134,10 @@ branches were not modified to rerun them.
 
 ## Next work
 
-1. Recheck Vast under the same limits and run fresh-host RTX 4090 acceptance
-   only when a qualifying offer is available.
-2. Select the startup default from comparable evidence; then reconcile Spark's
-   path-aware profile against the measured runtime/bootstrap design.
-3. Keep #85 parked and #110–#113 open, unmerged, and untouched.
+1. Run the release bundle on one fresh RTX 4090 with the published immutable
+   tuple; complete the remaining runtime and Deep Work acceptance gates while
+   keeping price/candidate limits explicit.
+2. Compare release-bundle startup with the source-build baseline before choosing
+   a production default. Keep source-build as default until qualification passes.
+3. Refresh the open-PR ledger after acceptance; keep #85 parked and #110–#113
+   open, unmerged, and untouched.
