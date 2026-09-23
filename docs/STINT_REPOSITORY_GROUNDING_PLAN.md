@@ -144,6 +144,38 @@ live perf samples. The run did not exercise release-bundle deployment or a
 Deep Work workflow. It establishes a source-build READY-time baseline, not a
 release-bundle A/B result.
 
+### Fresh RTX 4090 release-bundle transfer attempt
+
+On 2026-09-23, a second fresh instance of the same RTX 4090 offer
+(`40583612`, instance `52304590`, Taiwan) started the published immutable
+release-bundle path. The hourly rate was `$0.4759259`; the one-hour schedule
+was capped at `$0.48` with a `$0.50` session ceiling and one candidate. Stint's
+network qualification measured `52.3 MB/s`, and the pinned 18.2 GB model was
+already cached on the node. The selected bundle was
+`ninfer-runtime-81b68a20-sm89`, SHA-256
+`6725e60c8e3edb2982ad828898210868dd98ea1d4fe4d35f97bfa1e625414416`.
+
+The GitHub Release archive is 939,381,613 bytes. Its single-stream asset
+download reached about 428 MiB (48%) after 25 minutes; in the last sampled
+minutes it advanced at roughly 16–17 KB/s. The run was deliberately stopped
+at 26m41s because the remaining transfer could not fit the lease and leave
+time for acceptance. The prorated cost is estimated at `$0.21` (not a
+reconciled provider invoice); scheduled exposure was at most `$0.48`. Stint
+archived the session as STOPPED, confirmed provider teardown, and reported no
+active compute.
+
+This attempt did not finish archive acquisition or verify its SHA. It never
+reached runtime verification, model loading, READY, inference, perf sampling,
+Deep Work, publication, or archive creation. It is not a release-bundle
+acceptance pass and produces no Deep Work evidence PRs. The provider's general
+network qualification is not representative of the GitHub asset route. The
+observed single `curl` transfer points to a per-route or per-connection
+bottleneck; the exact cause (GitHub CDN, path, or transport behavior) remains
+unresolved. Keep `source-build` as default and `release-bundle` opt-in. Next,
+improve and locally verify release asset delivery, then run another bounded
+4090 attempt only after its expected transfer time leaves room for the full
+acceptance gate.
+
 Local deterministic evidence: `go test -count=1 ./...`,
 `go test -race -count=1 ./...`, `go vet ./...`, build, four Python bundle
 tests, shell syntax, `git diff --check`, exact pinned-source binary help/`ldd`,
@@ -273,7 +305,7 @@ bundle path, and teardown evidence remain.
 - [x] Build and clean-base smoke candidate run `35894635094`, pin its uploaded archive via #128, and publish/verify immutable release via #129–#130 (`35902030339`).
 - [x] Inspect the market read-only under existing caps at `18:37 UTC`, recheck the plan at `19:06 UTC`, and refresh it at `20:12 UTC`; no qualifying RTX 4090 was established and no compute was rented.
 - [x] Complete the first fresh RTX 4090 source-build smoke with a one-off hourly exception; record READY time, throughput, chat correctness, perf, cost ceiling and teardown. Merge the visible-output fix in #138.
-- [~] Qualify the immutable release-bundle path on a fresh RTX 4090. Cover model loading, two short lanes, native context, correctness, Hermes Deep Work, publication, final archive, teardown and comparative READY time. Keep release-bundle opt-in until this gate passes.
+- [~] Continue qualifying the immutable release bundle. The first fresh RTX 4090 attempt stopped before runtime verification: GitHub asset transfer reached only about 48% after 25 minutes, despite 52.3 MB/s network qualification and a cached model. Improve and locally verify asset delivery, then repeat the full 4090 acceptance gate; keep release-bundle opt-in and source-build default until it passes.
 - [x] Merge #125 with the canonical docs and verbatim #73 history; then close only #48–#51 and #73 after their replacement/history records landed.
 - [x] Merge #131 and record its landing SHA / main CI; inspect its pull-request run and identify the synthetic-merge checkout gap.
 - [x] Repair CI in #132: required jobs check exact PR head SHA, then `unit-tests` runs again on GitHub's synthetic merge tree; exact-head, merge-tree, and landed-main checks passed.
@@ -288,12 +320,20 @@ bundle path, and teardown evidence remain.
 The exact-main candidate workflow and immutable publication are verified.
 PR #138 passed exact-head CI run `35923353592` and merged as
 `9638ac6fef4ad81a993a5bf1d73ffeffeb30a1ef`; landed-main run `35923648426`
-passed all five required jobs. A one-off source-build run on RTX 4090 measured
-26m17s rental-to-READY, with source runtime acquisition at 23m51s and model
-transfer overlapping at 8m26s. It confirmed 46.3 MB/s, two concurrent short
-chat responses, 8K and 178,904-token perf, no OOM, and verified teardown. It
-did not exercise release-bundle deployment, the full 262,144-token context or
-a Deep Work run. Source-build now has a live READY baseline; the next gate is
-fresh 4090 release-bundle and Deep Work acceptance. The normal `$0.40/hour`
+passed all five required jobs. PR #139 merged as
+`bc368274ab5746a03eaa8c497b83023ddab3f6fe` after exact-head run
+`35924946874` and landed-main run `35925100519` passed. A one-off source-build
+run on RTX 4090 measured 26m17s rental-to-READY, with source runtime
+acquisition at 23m51s and model transfer overlapping at 8m26s. It confirmed
+46.3 MB/s, two concurrent short chat responses, 8K and 178,904-token perf, no
+OOM, and verified teardown. It did not exercise release-bundle deployment,
+the full 262,144-token context or
+a Deep Work run. A fresh release-bundle attempt on the same 4090 offer reached
+only about 48% of the immutable 895 MiB asset after 25 minutes and was stopped
+before READY; the instance was verified destroyed. The exact asset-route
+bottleneck is unknown, so release-bundle has no live acceptance evidence.
+Source-build remains the default; the next gate is to improve and locally
+verify asset delivery before repeating fresh 4090 release-bundle and Deep Work
+acceptance. The normal `$0.40/hour`
 target remains; bounded one-off price overrides are authorized when a 4090 is
 necessary. Never use a 3090.
