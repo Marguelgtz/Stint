@@ -2,7 +2,7 @@
 
 **Historical inventory:** the complete detailed records below were captured on 2026-09-23 after #118 merged (38 open PRs). Their paths, symbols, and recorded check rollups describe that point-in-time snapshot. Base SHAs are observed PR base refs, not claims that stale branches include current `main`.
 
-**Final open snapshot after #134:** checked on 2026-09-23 after #134 merged. GitHub reported five open PRs: #85 and protected Deep Work evidence #110–#113. Their exact heads, observed base SHAs, current mergeability and legacy check runs are recorded in the final snapshot at the end of this ledger. The protected generated PRs #110–#113 remain untouched.
+**Final open snapshot after #135:** checked on 2026-09-23 after #135 merged. GitHub reported five open PRs: #85 and protected Deep Work evidence #110–#113. Their exact heads, observed base SHAs, current mergeability and legacy check runs are recorded in the final snapshot at the end of this ledger. The protected generated PRs #110–#113 remain untouched.
 
 **Purpose:** account for each open PR by semantics. Green checks alone do not make a stale/stacked PR safe to merge. Generated GPU-run artifacts remain outside product `main`.
 
@@ -29,6 +29,7 @@
 - #132 CI repair: head `a90b059c81d7a7bfb1fdbc17aff053e40c217429`, base `main` at `2b5f7342093c520175b608a1a64bbce0b9443f31`, merged as `4ff7159c018c75372b31aca7627151e30fed669b`. PR run `35908857053` checked out the exact PR head and passed all five required jobs; `unit-tests` then explicitly checked out synthetic merge tree `1a1b01ba429d8953df2f8519ad31b2ea7bb416cf` and reran Go, Python, and shell suites successfully. Exact landed-main push run `35909255732` passed all five required jobs on `4ff7159…`. Spark Observability was neutral in both pull-request runs.
 - #133 documentation taxonomy/current-grounding port: head `58e3a5832dbffdcf683665598e8c0d5335c34760`, base `main` at `4ff7159c018c75372b31aca7627151e30fed669b`, merged as `3586022bd6b2cc4565a4d94e519398222d85a443`. PR run `35911740797` checked the exact head and passed all five required jobs; its unit job separately tested synthetic merge tree `2f349cf2c57e4cdc5e9809019de963558d0b3069` successfully. Exact landed-main run `35911926414` passed all five required jobs.
 - #134 final ledger refresh: head `f14c42b846aacc6a66fc1a25f2b1104ad5a6473f`, merged as `25eea6fcc4fdbc9d24588599f849a5afe5b4e613`. PR run `35912743074` passed all five required jobs on the exact head and its unit job passed the synthetic merge-tree test; landed-main push run `35912925386` passed all five required jobs.
+- #135 README/smoke correction: head `e601f169349f37794ffd0c8007b1ed9d734daf3a`, based on main `25eea6fcc4fdbc9d24588599f849a5afe5b4e613`, merged as `270caea33fec1b08493312c45b2ced19b21e07d1`. PR run `35915946946` checked the exact head and its unit job separately passed the synthetic merge-tree test; landed-main run `35916137793` passed all five required jobs. It corrected the stale #93 README status and made the Deep Work smoke use `--runtime ninfer` (single exact RTX 4090 preference), one candidate, and the existing `$0.40/hour`/`$0.40` one-hour session cap. It did not rent compute.
 - #117 active-lane semantics: `/metrics` `requests_processing`, with `/slots` processing-lane fallback; retained/resident prompt tokens contribute to resident depth, not active count. NInfer cache ratio is prefix-cache hits / (hits + uncached prompt tokens), and NInfer prefill is marked uncached; llama.cpp cache ratio uses cached/total prompt tokens.
 - #117 event history intentionally carries no caller/client identity; `session_digest` is not a stable Stint identity.
 
@@ -83,6 +84,8 @@
 | #131 | LANDED | Closeout documentation; PR run `35905726077` exposed a synthetic-merge checkout gap later fixed by #132; exact main CI `35905880710`. |
 | #132 | LANDED | `.github/workflows/ci.yml` now checks exact PR head and reruns integration suite on merge tree; PR run `35908857053`, merge `4ff7159…`, main run `35909255732`. |
 | #133 | LANDED | Selected documentation taxonomy/current-grounding port; PR run `35911740797` verified exact head and synthetic merge tree; main run `35911926414`. |
+| #134 | LANDED | Final PR/evidence snapshot refresh; exact-head PR run `35912743074`, merge `25eea6f…`, landed-main run `35912925386`. |
+| #135 | LANDED | README status and 4090-only smoke correction; exact-head PR run `35915946946`, merge `270caea…`, landed-main run `35916137793`. |
 
 ## Historical open PR snapshot (after #125 merged and #48–#51/#73 closed)
 
@@ -1049,8 +1052,8 @@ recorded separately at the end of this ledger.
 
 ## Final current open PR snapshot
 
-Checked on 2026-09-23 at `20:12 UTC`, after PR #134 merged and before this
-snapshot-refresh PR was opened. GitHub reported exactly five open PRs. The
+Checked on 2026-09-23 at `20:34 UTC`, after PR #135 merged and before this
+landing-record refresh PR was opened. GitHub reported exactly five open PRs. The
 attached legacy PR runs have five required checks green, but the pre-#132
 workflow used the synthetic merge tree; **exact-head CI is not established**.
 Keep #85 parked and leave #110–#113 open, unmerged, and untouched.

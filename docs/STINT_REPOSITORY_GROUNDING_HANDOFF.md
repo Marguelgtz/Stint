@@ -8,8 +8,8 @@ under unchanged limits.
 
 ## Authoritative repository and verification
 
-- Current `main` before this PR-state and README refresh: `25eea6fcc4fdbc9d24588599f849a5afe5b4e613` (after #134).
-- Exact landed-main push run `35912925386` passed all five required jobs.
+- Current `main` before this landing-record refresh: `270caea33fec1b08493312c45b2ced19b21e07d1` (after #135).
+- Exact landed-main push run `35916137793` passed all five required jobs.
 - PR #131 merged as `2b5f7342093c520175b608a1a64bbce0b9443f31`. Its PR run
   `35905726077` appeared green but physically tested synthetic merge tree
   `45644d2`, not its head tree. That gap is fixed by #132.
@@ -24,6 +24,11 @@ under unchanged limits.
 - PR #134 merged as `25eea6fcc4fdbc9d24588599f849a5afe5b4e613`. Its exact-head
   PR run `35912743074` passed all five required jobs and separately passed its
   synthetic merge-tree test; main push run `35912925386` passed all five jobs.
+- PR #135 merged as `270caea33fec1b08493312c45b2ced19b21e07d1`. Its exact-head
+  PR run `35915946946` and synthetic merge-tree test passed; main push run
+  `35916137793` passed all five required jobs. The Deep Work smoke explicitly
+  uses `--runtime ninfer`, a one-candidate limit, and the fixed `$0.40/hour`
+  cap, so acceptance selects only an RTX 4090 and has no 3090 fallback.
 - PR #93 closed unmerged at `2026-09-23T19:51:25Z` after #133 landed. Its
   [replacement comment](https://github.com/Marguelgtz/Stint/pull/93#issuecomment-5801853350)
   records the new docs index and paths. The final open PR set is #85 and
