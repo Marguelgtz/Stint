@@ -81,6 +81,14 @@ func TestSearchOffersBuildsBroadReadOnlyDiscoveryRequest(t *testing.T) {
 	}
 }
 
+func TestDiscoveryPayloadWithSinglePreferredGPUIsExclusive(t *testing.T) {
+	profile := core.BuiltinProfiles["interactive"]
+	profile.GPU.PreferredModels = []string{"RTX 4090"}
+
+	payload := NewClient("test-key").discoveryPayload(profile, 1, 10, 50)
+	assertFilter(t, payload, "gpu_name", "eq", "RTX 4090")
+}
+
 func TestSearchOffersBisectsZeroInventory(t *testing.T) {
 	request := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

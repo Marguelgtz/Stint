@@ -171,9 +171,12 @@ checks were performed under the existing caps; no instance was rented and no
 GPU spend occurred. A fresh read-only one-hour plan at `2026-09-23 20:12 UTC`
 queried 41 offers and reported 8 generic interactive qualifiers, selecting an
 RTX 3090 at `$0.379/hour`. Its closest rejected offers were RTX 4090s beginning
-at `$0.476/hour`, rejected by price. The plan explicitly reported
-`mutating: false` and `computeRented: false`; no qualifying RTX 4090 was
-returned and no compute was rented.
+at `$0.476/hour`, rejected by price. This was a generic interactive plan;
+its RTX 3090 selection is excluded from the runtime/Deep Work mission. The
+plan explicitly reported `mutating: false` and `computeRented: false`; no
+compute was rented. Acceptance must use the explicit `--runtime ninfer` path,
+which constrains the provider query to RTX 4090 only; never rent or test on a
+3090.
 
 The clean-base bundle extraction, CLI, and dynamic-library smoke is not a
 runtime-readiness comparison. No Stint source-build, immutable-release-bundle,
@@ -231,7 +234,7 @@ deployment opt-in and recheck later under the same limits.
 - [x] Replace repeated-build hash assumptions with candidate build and pin-gated promotion (#127); legacy PR merge-tree and landed-main CI passed.
 - [x] Build and clean-base smoke candidate run `35894635094`, pin its uploaded archive via #128, and publish/verify immutable release via #129–#130 (`35902030339`).
 - [x] Inspect the market read-only under existing caps at `18:37 UTC`, recheck the plan at `19:06 UTC`, and refresh it at `20:12 UTC`; no qualifying RTX 4090 was established and no compute was rented.
-- [!] Fresh RTX 4090 runtime and Deep Work acceptance: the 20:12 UTC read-only plan selected an RTX 3090; the closest rejected RTX 4090 offers exceeded the fixed $0.40/hour price ceiling. Do not raise limits.
+- [!] Fresh RTX 4090 runtime and Deep Work acceptance: the 20:12 UTC generic plan's RTX 3090 selection is excluded; the closest rejected RTX 4090 offers exceeded the fixed $0.40/hour ceiling. Run acceptance only through the RTX 4090-filtered `--runtime ninfer` path; never fall back to a 3090 or raise limits.
 - [x] Merge #125 with the canonical docs and verbatim #73 history; then close only #48–#51 and #73 after their replacement/history records landed.
 - [x] Merge #131 and record its landing SHA / main CI; inspect its pull-request run and identify the synthetic-merge checkout gap.
 - [x] Repair CI in #132: required jobs check exact PR head SHA, then `unit-tests` runs again on GitHub's synthetic merge tree; exact-head, merge-tree, and landed-main checks passed.

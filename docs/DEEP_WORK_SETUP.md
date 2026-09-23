@@ -60,7 +60,7 @@ The live smoke calls this exact launcher, rather than maintaining a separate pro
 scripts/run-onbox-deep-smoke.sh
 ```
 
-The smoke uses an isolated Stint state/config root, a single-candidate RTX 4090 session capped at $0.48 for one hour, two clients, and the phase-lane mission. It requires the local Vast credentials and R2 environment files plus GitHub publication settings. It tears down the paid compute session on exit.
+The smoke uses an isolated Stint state/config root, an RTX 4090-only NInfer query, and one candidate attempt. Its one-hour rental is capped at $0.40/hour and $0.40 total, with two clients and the phase-lane mission. The explicit NInfer selection filters the provider query to RTX 4090; do not use a 3090 or another GPU/runtime for this qualification. It requires the local Vast credentials and R2 environment files plus GitHub publication settings. It tears down the paid compute session on exit.
 
 ## Recovery and inspection
 

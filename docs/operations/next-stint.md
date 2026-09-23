@@ -7,11 +7,13 @@ is available as an explicit, fail-closed option, but neither path has a
 comparable fresh-host `READY` measurement. Do not promote the bundle based on
 its successful build or clean-base extraction smoke alone.
 
-The latest read-only Vast plan recheck on 2026-09-23 at 19:06 UTC selected an
-RTX 3090 at $0.395/hour. That host does not qualify the selected SM89/RTX 4090
-runtime objective. An earlier offer scan at 18:37 UTC returned 39 records,
-including 24 RTX 4090 offers; none passed Stint's unchanged price and
-reliability policy. No compute was rented.
+A generic read-only interactive plan at 2026-09-23 20:12 UTC selected an RTX
+3090 at $0.379/hour. That result is explicitly excluded from runtime
+qualification: acceptance runs only on RTX 4090, never on RTX 3090 or another
+GPU. The closest rejected RTX 4090 offers shown by that query exceeded the
+$0.40/hour ceiling. An earlier scan at 18:37 UTC returned 39 records, including
+24 RTX 4090 offers; none passed Stint's unchanged price and reliability policy.
+No compute was rented.
 
 Keep the acceptance limits fixed:
 
@@ -23,8 +25,10 @@ Keep the acceptance limits fixed:
 ## Acceptance sequence
 
 When a policy-qualified RTX 4090 is available, use a fresh host and record the
-exact runtime and model tuple. Compare the current source-build default with
-the pinned release bundle under the same conditions. Include the historical
+exact runtime and model tuple. Start with `--runtime ninfer`, which constrains
+the Vast search to RTX 4090 offers; never rent a 3090 for this qualification.
+Compare the current source-build default with the pinned release bundle under
+the same conditions. Include the historical
 GHCR path only if provider image loading can be revalidated without losing
 SSH-level lifecycle visibility.
 

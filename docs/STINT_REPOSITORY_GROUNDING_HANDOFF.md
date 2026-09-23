@@ -87,10 +87,13 @@ Deep Work, teardown, cost, exact tuple, and recovery behavior. Keep release
 deployment opt-in until the complete gate passes. See the
 [grounding plan](STINT_REPOSITORY_GROUNDING_PLAN.md) for details.
 
-The fresh read-only Vast plan at `2026-09-23 20:12 UTC` queried 41 offers and
-selected an RTX 3090 at `$0.379/hour`; its closest rejected RTX 4090 offers
-were over the fixed `$0.40/hour` price ceiling. The output stated
-`mutating: false` and `computeRented: false`; no compute was rented.
+The generic read-only Vast plan at `2026-09-23 20:12 UTC` queried 41 offers
+and selected an RTX 3090 at `$0.379/hour`. That host is excluded from mission
+acceptance, which must run only on RTX 4090; the closest rejected RTX 4090
+offers were over the fixed `$0.40/hour` ceiling. The output stated
+`mutating: false` and `computeRented: false`; no compute was rented. Use
+`--runtime ninfer` for acceptance, which filters the provider search to RTX
+4090, and never fall back to a 3090.
 
 The successful current Deep Work session is `20260923-022052`, protected in
 open PRs #110–#113 and not merged. Older #81–#84 are successful 2026-09-08
