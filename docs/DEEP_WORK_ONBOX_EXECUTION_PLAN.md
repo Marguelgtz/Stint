@@ -1,16 +1,22 @@
 # Deep Work integration and on-box execution plan
 
-**Status:** Integration landed on current `main`; fresh-GPU live acceptance remains incomplete.
+**Status:** Hermes-on-box integration and the production fresh-GPU smoke passed.
+The post-smoke observer-capture correction is merged and locally verified; no
+eligible offer was available for a second GPU run at the tighter cap.
 **Canonical plan:** This file is the single living action plan for the Deep Work
 integration mission. The dashboard plan and per-run action plans are historical or
 run-scoped evidence, not competing integration plans.
 **Last reconciled:** 2026-09-23.
 
-**Landing:** PR #107 merged the cumulative integration stack in merge commit
-`2041498ed00724cef3bca3769ccaa9907e87efa2` on 2026-09-23. This lands the stack
-from starting `main` `c4322e32f2fbaabb027f4b9a555e40899d7f756b`. The merged tree
-passes `go test -count=1 ./...`; full fresh-box execution did not pass and remains
-an explicit follow-up.
+**Landing:** PR #107 merged the cumulative implementation stack in merge commit
+`2041498ed00724cef3bca3769ccaa9907e87efa2` from starting `main`
+`c4322e32f2fbaabb027f4b9a555e40899d7f756b`. PR #109 added the bounded live-smoke
+ceiling and merged as `bdd55c57b7fbdb7a2128c8ed14861cf3f527c04`. The successful
+fresh-GPU run below used that exact `main`. PR #114 corrected post-run observer
+capture and lowered the default smoke cap; it merged as
+`822e4b880a80e5ae2062f50c8ef1fac05f59365e`. `go test -count=1 ./...` passes on
+that current code head. Full run evidence is in
+[DEEP_WORK_ONBOX_LIVE_SMOKE_20260923.md](DEEP_WORK_ONBOX_LIVE_SMOKE_20260923.md).
 
 This plan was recovered from `origin/fix/deep-work-onbox-publishing` at
 `62f89ddcd0b98962f6b5f7c0d1360ac43e5ff3a6` (`docs/DEEP_WORK_ONBOX_EXECUTION_PLAN.md`)
@@ -76,6 +82,17 @@ not the target design.
   commits landed through #107. Their remote branches remain available for
   provenance. Exact-head `build-check`, `go-vet`, `unit-tests`, `race-tests`, and
   `spark-profile` passed on the cumulative head before merge.
+- PR #109 (https://github.com/Marguelgtz/Stint/pull/109) tightened the first
+  current-main live retry to one candidate, a $0.48/hour limit, and a $0.72
+  scheduled-session ceiling; it merged as `bdd55c5`. That exact `main` completed
+  the fresh-box smoke recorded in the linked live report. PR #114
+  (https://github.com/Marguelgtz/Stint/pull/114) fixes the smoke's observer
+  capture path, counts non-2xx phase responses, and lowers its default ceiling
+  to $0.48 for one hour. It merged as `822e4b8` after exact-head build, vet,
+  unit, race, and Spark profile checks passed. Its fixture and parser-only
+  preflight pass locally. A post-fix GPU retry stopped before rental because the
+  only selected offer disappeared; a new read-only query found no offer under
+  the tighter cap and network floor.
 - All historical Deep Work feature PRs remain open. Their source heads share an
   old base (`d34cb2b...`) and are not safe merge units against current `main`.
   Use their code and evidence selectively on this clean integration branch.
@@ -170,7 +187,7 @@ not the target design.
 - **Outcome / uncertainty:** Strategy above. The minimal dependency boundary between
   #80 publication and #85 maintenance is still under code inspection.
 
-### [!] Integrate Hermes-on-box runtime and phase-aware fresh-box bootstrap
+### [x] Integrate Hermes-on-box runtime and phase-aware fresh-box bootstrap
 
 - **Problem / invariant:** A fresh qualified GPU must reach `RUNNING` only after
   Hermes, model routes, scripts, repository, and declared verification tools are
@@ -264,7 +281,23 @@ not the target design.
   passes at merge commit `2041498`. The live acceptance is still blocked before
   `READY` after the last host's authenticated SSH timeout.
 
-### [~] Repair coordinator identity, policy reconstruction, and durable transitions
+  **Current disposition (2026-09-23; supersedes the earlier blocked status):**
+  PR #109 landed the smoke cap at `bdd55c5`. Fresh instance `52152693` reached
+  `READY` after the native 246-step NInfer build and SHA-verified model download.
+  The normal production launcher installed Hermes, verified xhigh and medium
+  inference routes, passed its two-lane probe, and started the on-box supervisor.
+  The operator-side tunnel/watchdog were terminated after `RUNNING`; the remote
+  coordinator completed the xhigh plan task and two medium tasks, independently
+  verified and checkpointed each, published PRs #110–#112 and handoff PR #113,
+  and reached `landed`. R2 contains the final state, mission, handoff, incidents,
+  publication, provenance, and heartbeat objects. The launcher destroyed the
+  instance; Vast returned `instances: null` and Stint reports no active compute.
+  The full account is in the linked live-smoke report. Compression was configured
+  but not exercised. PR #114 fixes the post-run observer artifact path and adds
+  route-failure counts; that follow-up is fixture/CI verified, not rerun on a
+  GPU because no candidate met its $0.48 one-hour cap and 500 Mbps floor.
+
+### [x] Repair coordinator identity, policy reconstruction, and durable transitions
 
 - **Problem / invariant:** Session/task identity, execution policy, verification,
   checkpoint, landing, and publication identities must survive restart without
@@ -302,7 +335,7 @@ not the target design.
   resume requires the durable state and repository to be mounted at the same
   configured root; the launcher does not copy lost disks or restore R2 objects.
 
-### [~] Make worker evidence and workspace handling truthful
+### [x] Make worker evidence and workspace handling truthful
 
 - **Problem / invariant:** Hermes success is not independent acceptance; prompts
   must not be captured by target-repo `git add -A`; route/compression evidence must
@@ -323,7 +356,14 @@ not the target design.
   still lacks session/task/attempt correlation, so those totals are not
   coordinator acceptance evidence.
 
-### [~] Reconcile compute cost, GitHub policy, publisher authority, and pagination
+  The live run proved the intended routes through bounded xhigh/medium requests,
+  outbound wire assertions, a concurrent-lane smoke, and completed task results.
+  Its post-run observer file was empty because the harness invoked the wrong
+  path. PR #114 fixes the path and adds failure counts; its fixture and the
+  parser-only smoke preflight pass, but the corrected capture was not rerun on a
+  GPU because the under-cap marketplace query returned no candidates.
+
+### [x] Reconcile compute cost, GitHub policy, publisher authority, and pagination
 
 - **Problem / invariant:** Every rental obeys full requested-session budget; durable
   session policy is publisher authority; generic pushes cannot update base/main or
@@ -352,9 +392,12 @@ not the target design.
   remain deferred because their generic push and bounded collection gaps are not
   repaired by this slice. PR #102 stacked on #101 and landed through #107; local
   verification passed and its GitHub `build-check`, `go-vet`, `unit-tests`,
-  `race-tests`, and `spark-profile` checks passed. No live GPU smoke has been run.
+  `race-tests`, and `spark-profile` checks passed; no live GPU smoke had been run
+  at that checkpoint. The later main-based smoke verified three checkpoint
+  publications and exact landing/handoff identities; its live evidence is linked
+  above. The broader #85 maintenance and merge authority remains deferred.
 
-### [~] Reconcile immutable NInfer revision and transfer recovery
+### [x] Reconcile immutable NInfer revision and transfer recovery
 
 - **Problem / invariant:** Runtime must pin immutable artifact identity and SHA while
   deriving transfer size dynamically and safely recovering corrupt/oversized files.
@@ -376,10 +419,11 @@ not the target design.
   command and adds a no-network execution fixture. The fixture passes dynamic size
   discovery, valid partial resume, oversized and same-size corrupt artifact
   replacement, corrupt partial clean retry after SHA mismatch, and a model path
-  containing spaces. Full `go test -count=1 ./...` passes. Actual fresh-GPU
-  transfer remains unverified.
+  containing spaces. Full `go test -count=1 ./...` passes. The fresh-GPU smoke
+  completed an actual NInfer model download and SHA verification on instance
+  `52152693`; details are in the linked live report.
 
-### [~] Gate completion on durable publication and final archive
+### [x] Gate completion on durable publication and final archive
 
 - **Problem / invariant:** Supervisor success must mean the durable session is
   terminal, required publication converged, and any configured final evidence
@@ -398,10 +442,11 @@ not the target design.
 - **Outcome / uncertainty:** Commit `8aea2bd` in PR #103 adds these gates
   and the fixture. Bash syntax and `bash scripts/test_onbox_supervisor.sh` pass;
   PR #103 exact-head `build-check`, `go-vet`, `unit-tests`, `race-tests`, and
-  `spark-profile` pass. Plan/evidence commit `ad55713` is pushed. The live R2
-  service and actual GPU teardown ordering remain unverified.
+  `spark-profile` pass. Plan/evidence commit `ad55713` is pushed. The 2026-09-23
+  run verified configured R2 final objects and GPU teardown; the external
+  durable-volume restore path remains untested.
 
-### [ ] Verify the integrated system and write final handoff
+### [x] Verify the integrated system and write final handoff
 
 - **Problem / invariant:** Unit evidence alone cannot establish production
   readiness or landing.
@@ -412,7 +457,11 @@ not the target design.
 - **Acceptance:** Exact commands, results, integration SHA, fresh-GPU command, live
   status, and any external merge blocker are recorded; verify actual `main` SHA if
   landed.
-- **Outcome / uncertainty:** Not started.
+- **Outcome / uncertainty:** The implementation and supported live flow passed.
+  The linked report preserves exact run/session/task/checkpoint/PR identities,
+  local test evidence, R2 object verification, and teardown confirmation. One
+  post-run observer-capture correction is locally verified and merged; a second
+  GPU rerun was skipped after the $0.48-capped attempt found no eligible host.
 
 ## Verification so far
 
@@ -425,27 +474,21 @@ not the target design.
 - PR #104 commit `d971d24`: `go test -count=1 ./...` — PASS, including the five-case local NInfer artifact fixture; publisher safety tests (7) and supervisor completion fixture — PASS; shell syntax and `git diff --check` — PASS. PR #104 exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `19e712a` is pushed. It was closed after landing through #107. No live GPU smoke was run at that checkpoint.
 - PR #105 commit `d497ce1` removed the stale tunnel flag; its exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed. Commit `ad422e0` added a lower-only `--max-cost-usd` and `--validate-only`, replacing the ineffective `--help` preflight. Commit `e658c09` added `--max-hourly-usd`; increasing the profile's $0.40/hour limit requires an explicit session cap and the per-candidate full-session check still guards each rental. Commit `11acb62` limits each live-smoke launch to one candidate; `53b5bcc` and `0f1b198` narrow the remaining-budget retries. `go test -count=1 ./...`, publisher fixtures (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check` pass through `0f1b198`; PR #105's exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` pass. Paid attempts one and two rented `52145135` and `52146240`, then were destroyed before model startup after 11.8 and 13.8 MB/s failed the 30 MB/s floor. Attempt three rented `52147295` at $0.625/hour, qualified at 100.3 MB/s, compiled NInfer, verified the model SHA, and reached `READY` in 13:50. Production fresh-box preflight installed Node/Hermes/Go, passed `go test ./...`, then failed closed on the missing `--default-max-tokens 262144` launch flag across all five bounded provision retries. No `RUNNING` handshake or Hermes task occurred. PR #106 adds that context-matched token limit and regressions; its local `go test -count=1 ./cmd/stint`, `go test -count=1 ./...`, publisher fixture (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check` pass. Exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` pass. The next bounded host, `52149289`, exposed SSH metadata but failed Stint's authenticated SSH probe and was destroyed before `READY`; no launcher or model transfer ran. All four hosts are torn down and isolated Stint status is clear. Estimated total provider spend is $0.52-$0.57, with small earlier storage/transfer charges potentially settling separately.
 - PR #107 landing verification: the merge commit is `2041498ed00724cef3bca3769ccaa9907e87efa2`; `go test -count=1 ./...` — PASS from a detached worktree of the exact merged `main`. PR #107 exact-head CI passed all five required checks. At landing, `main` advanced from `c4322e3` to `2041498`.
+- PR #108 reconciled the canonical plan; PR #109 tightened the live-smoke budget and merged as `bdd55c5`. On that exact `main`, the live run reached `READY`, passed the production bootstrap and phase probes, survived operator disconnect, verified and published all tasks, archived to R2, and tore down. Detailed evidence is in [DEEP_WORK_ONBOX_LIVE_SMOKE_20260923.md](DEEP_WORK_ONBOX_LIVE_SMOKE_20260923.md).
+- PR #114 merged as `822e4b880a80e5ae2062f50c8ef1fac05f59365e`. On that exact code head, `go test -count=1 ./...`, `scripts/test_deep_observe.sh`, `bash -n scripts/run-onbox-deep-smoke.sh`, `bash scripts/test_onbox_smoke_preflight.sh`, build, and `git diff --check` — PASS. Exact-head CI `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. A bounded post-fix retry selected offer `46801831`, which disappeared before rental; a fresh read-only query returned zero candidates under the $0.48/hour, one-hour, 500 Mbps constraints. No session was created and no provider mutation occurred.
 
 ## Next action
 
-The source integration landed via PR #107 at `2041498`; the exact merged tree
-passes `go test -count=1 ./...`. Fresh-box validation remains blocked before
-`READY`: the latest provider host failed the authenticated SSH probe and was
-destroyed. Preserve that result as a provider startup failure, not as evidence
-for or against the corrected NInfer launch. The next live step is to build the
-current `main` and rerun `scripts/run-onbox-deep-smoke.sh` with the secure token
-file, GitHub destination, and a fresh isolated artifact root. Keep its built-in
-1.5-hour duration, $1.20 rental cap, $0.80/hour ceiling, and single-candidate
-limit. The full run must reach `RUNNING`, survive operator disconnect, complete
-xhigh/medium work, verify and publish checkpoints, archive final R2 evidence,
-write handoff, and tear down before live readiness can be claimed. Check required
-local credentials/artifacts by presence only; do not expose their contents.
-PR #101's explicit compute-resume gate does not restore state volumes, so
-replacement-compute recovery remains unproven until a durable-volume restore is
-exercised or recorded as an external dependency.
+The implementation and normal fresh-box path have passed. PR #114's corrected
+observer capture has local fixture and exact-head CI evidence; a live rerun is
+deferred until a candidate meets the built-in $0.48/hour, one-hour, 500 Mbps
+constraints. The current read-only query returned none, so do not raise the cap
+automatically. Replacement-compute volume restoration remains external and was
+not exercised by this mission. The original operator checkout remains untouched.
 
-Use this command shape from a clean current-`main` checkout, replacing only the
-secure token-file path with its configured location:
+When a qualifying offer is available, use this command shape from current
+`main`; the smoke launcher aborts before rental when no offer qualifies. Replace
+only the secure token-file path:
 
 ```bash
 mkdir -p /tmp/stint-main-onbox-smoke
