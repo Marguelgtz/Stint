@@ -230,8 +230,23 @@ not the target design.
   task ran; smoke cleanup destroyed the instance and `stint status` now shows no
   active compute. This is a production runtime launch bug, not an environment
   or marketplace blocker. PR #106 adds the missing flag using the selected
-  context limit and regression coverage. The full fresh-box attempt against
-  that fix remains unrun; exact-head CI is pending.
+  context limit and regression coverage. Its exact-head checks pass
+  (`build-check`, `go-vet`, `race-tests`, `spark-profile`, and `unit-tests`; Spark
+  Observability is skipped). A corrected bounded attempt then rented RTX 4090
+  instance `52149289` in Romania at $0.603/hour with 1268 Mbps advertised
+  network. Vast reported running and supplied SSH metadata after 2:07, but
+  Stint's authenticated `echo stint-ssh-ready` probe timed out during its
+  four-minute SSH window. Stint rejected and destroyed the instance; isolated
+  `stint status` is clear. The rental lasted about 6m26s, or approximately
+  $0.065 at the listed rate before provider fees. No measured-throughput probe,
+  model transfer, NInfer readiness, production launcher, `RUNNING` handshake,
+  Hermes task, publication, or handoff occurred on this host. Detailed evidence
+  is in `/tmp/stint-live-corrected.vTQEzO/artifacts/launcher.log`. Across the
+  bounded paid attempts, estimated spend is about $0.52-$0.57; actual provider
+  totals may include small storage or transfer charges from earlier attempts.
+  No further rental was started after this SSH failure. The corrected launch
+  contract is covered by local tests and exact-head CI, but its fresh-box
+  behavior and the complete on-box Deep Work flow remain unverified.
 
 ### [~] Repair coordinator identity, policy reconstruction, and durable transitions
 
@@ -392,18 +407,19 @@ not the target design.
 - PR #102 implementation commit `04151f5`: `go test -count=1 ./...` — PASS; `python3 scripts/test_onbox_github_publish.py` — PASS (7 tests); Python byte-compilation — PASS; Bash syntax for launcher, smoke, supervisor, and provisioner — PASS; embedded resume-preflight Python compilation — PASS; `git diff --check` — PASS. Draft PR #102 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. No live GPU smoke was run.
 - PR #103 commit `8aea2bd`: `bash -n scripts/onbox-deep-supervisor.sh scripts/test_onbox_supervisor.sh`, `bash scripts/test_onbox_supervisor.sh`, and `git diff --check` — PASS. Draft PR #103 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `ad55713` is pushed. No live GPU smoke was run.
 - PR #104 commit `d971d24`: `go test -count=1 ./...` — PASS, including the five-case local NInfer artifact fixture; publisher safety tests (7) and supervisor completion fixture — PASS; shell syntax and `git diff --check` — PASS. Draft PR #104 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `19e712a` is pushed. No live GPU smoke was run.
-- PR #105 commit `d497ce1` removed the stale tunnel flag; its exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed. Commit `ad422e0` added a lower-only `--max-cost-usd` and `--validate-only`, replacing the ineffective `--help` preflight. Commit `e658c09` added `--max-hourly-usd`; increasing the profile's $0.40/hour limit requires an explicit session cap and the per-candidate full-session check still guards each rental. Commit `11acb62` limits each live-smoke launch to one candidate; `53b5bcc` and `0f1b198` narrow the remaining-budget retries. `go test -count=1 ./...`, publisher fixtures (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check` pass through `0f1b198`; PR #105's exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` pass. Paid attempts one and two rented `52145135` and `52146240`, then were destroyed before model startup after 11.8 and 13.8 MB/s failed the 30 MB/s floor. Attempt three rented `52147295` at $0.625/hour, qualified at 100.3 MB/s, compiled NInfer, verified the model SHA, and reached `READY` in 13:50. Production fresh-box preflight installed Node/Hermes/Go, passed `go test ./...`, then failed closed on the missing `--default-max-tokens 262144` launch flag across all five bounded provision retries. No `RUNNING` handshake, Hermes task, verification, publication, or handoff occurred. Cleanup destroyed the instance; no active compute remains. PR #106 adds the missing context-matched default token limit and regressions; its local test results and CI are pending.
+- PR #105 commit `d497ce1` removed the stale tunnel flag; its exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed. Commit `ad422e0` added a lower-only `--max-cost-usd` and `--validate-only`, replacing the ineffective `--help` preflight. Commit `e658c09` added `--max-hourly-usd`; increasing the profile's $0.40/hour limit requires an explicit session cap and the per-candidate full-session check still guards each rental. Commit `11acb62` limits each live-smoke launch to one candidate; `53b5bcc` and `0f1b198` narrow the remaining-budget retries. `go test -count=1 ./...`, publisher fixtures (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check` pass through `0f1b198`; PR #105's exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` pass. Paid attempts one and two rented `52145135` and `52146240`, then were destroyed before model startup after 11.8 and 13.8 MB/s failed the 30 MB/s floor. Attempt three rented `52147295` at $0.625/hour, qualified at 100.3 MB/s, compiled NInfer, verified the model SHA, and reached `READY` in 13:50. Production fresh-box preflight installed Node/Hermes/Go, passed `go test ./...`, then failed closed on the missing `--default-max-tokens 262144` launch flag across all five bounded provision retries. No `RUNNING` handshake or Hermes task occurred. PR #106 adds that context-matched token limit and regressions; its local `go test -count=1 ./cmd/stint`, `go test -count=1 ./...`, publisher fixture (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check` pass. Exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` pass. The next bounded host, `52149289`, exposed SSH metadata but failed Stint's authenticated SSH probe and was destroyed before `READY`; no launcher or model transfer ran. All four hosts are torn down and isolated Stint status is clear. Estimated total provider spend is $0.52-$0.57, with small earlier storage/transfer charges potentially settling separately.
 
 ## Next action
 
-Complete and verify PR #106's NInfer launch-argument fix, wait for exact-head CI,
-then decide how to exercise the fix within the remaining authorized budget.
-The prior production run already proved GPU qualification and model readiness,
-but it did not reach `RUNNING`. Record whether the corrected launcher reaches
-RUNNING, disconnect
-survival, xhigh/medium work, independent verification, publication, final R2
-archive, handoff, and teardown. Check required local credentials/artifacts by
-presence only; do not expose their contents. PR #101's explicit compute-resume
-gate does not restore state volumes, so replacement-compute recovery remains
-unproven until a durable-volume restore is exercised or recorded as an external
-dependency.
+PR #106's token-limit fix is committed and exact-head CI passes. Fresh-box
+validation remains blocked before `READY`: the latest provider host failed the
+authenticated SSH probe and was destroyed. Preserve that result as a provider
+startup failure, not as evidence for or against the corrected NInfer launch.
+Before claiming Deep Work live readiness, retry from a new bounded host and
+record whether the normal launcher reaches `RUNNING`, survives operator
+disconnect, completes xhigh/medium work, verifies and publishes checkpoints,
+archives final R2 evidence, writes handoff, and tears down. Check required local
+credentials/artifacts by presence only; do not expose their contents. PR #101's
+explicit compute-resume gate does not restore state volumes, so replacement-
+compute recovery remains unproven until a durable-volume restore is exercised or
+recorded as an external dependency.
