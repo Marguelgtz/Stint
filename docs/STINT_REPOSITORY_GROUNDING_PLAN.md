@@ -176,6 +176,20 @@ improve and locally verify release asset delivery, then run another bounded
 4090 attempt only after its expected transfer time leaves room for the full
 acceptance gate.
 
+A follow-up operator-workstation probe confirmed that the public GitHub asset
+supports byte ranges through its `release-assets.githubusercontent.com`
+redirect (`206`, total size 939,381,613 bytes). A single 2 MiB range took
+0.36s (5.8 MB/s); eight concurrent 2 MiB ranges transferred 16 MiB in 1.30s
+(12.3 MB/s aggregate). These samples use a different network path from the
+Vast node, so they do not predict its range-download rate. The code change in
+progress uses eight 16 MiB ranges, retries failed chunks, preserves completed
+chunks for Stint resume, verifies the final pinned SHA-256 before installation,
+and falls back to resumable `curl` if the server lacks range support. Local
+fixtures cover concurrent ranges, transient retries, resume after interruption,
+bad-digest rejection, and the no-range fallback. Full Go tests, race tests, vet, CLI build, Python bundle fixtures,
+and shell/Python syntax checks pass locally; exact-head CI and another live
+4090 measurement are still required.
+
 Local deterministic evidence: `go test -count=1 ./...`,
 `go test -race -count=1 ./...`, `go vet ./...`, build, four Python bundle
 tests, shell syntax, `git diff --check`, exact pinned-source binary help/`ldd`,
@@ -305,7 +319,7 @@ bundle path, and teardown evidence remain.
 - [x] Build and clean-base smoke candidate run `35894635094`, pin its uploaded archive via #128, and publish/verify immutable release via #129–#130 (`35902030339`).
 - [x] Inspect the market read-only under existing caps at `18:37 UTC`, recheck the plan at `19:06 UTC`, and refresh it at `20:12 UTC`; no qualifying RTX 4090 was established and no compute was rented.
 - [x] Complete the first fresh RTX 4090 source-build smoke with a one-off hourly exception; record READY time, throughput, chat correctness, perf, cost ceiling and teardown. Merge the visible-output fix in #138.
-- [~] Continue qualifying the immutable release bundle. The first fresh RTX 4090 attempt stopped before runtime verification: GitHub asset transfer reached only about 48% after 25 minutes, despite 52.3 MB/s network qualification and a cached model. Improve and locally verify asset delivery, then repeat the full 4090 acceptance gate; keep release-bundle opt-in and source-build default until it passes.
+- [~] Continue qualifying the immutable release bundle. The first fresh RTX 4090 attempt stopped before runtime verification: GitHub asset transfer reached only about 48% after 25 minutes, despite 52.3 MB/s network qualification and a cached model. A parallel-range downloader is implemented and passes local tests; wait for exact-head CI, then repeat the full 4090 acceptance gate. Keep release-bundle opt-in and source-build default until live acceptance passes.
 - [x] Merge #125 with the canonical docs and verbatim #73 history; then close only #48–#51 and #73 after their replacement/history records landed.
 - [x] Merge #131 and record its landing SHA / main CI; inspect its pull-request run and identify the synthetic-merge checkout gap.
 - [x] Repair CI in #132: required jobs check exact PR head SHA, then `unit-tests` runs again on GitHub's synthetic merge tree; exact-head, merge-tree, and landed-main checks passed.
@@ -331,9 +345,10 @@ the full 262,144-token context or
 a Deep Work run. A fresh release-bundle attempt on the same 4090 offer reached
 only about 48% of the immutable 895 MiB asset after 25 minutes and was stopped
 before READY; the instance was verified destroyed. The exact asset-route
-bottleneck is unknown, so release-bundle has no live acceptance evidence.
-Source-build remains the default; the next gate is to improve and locally
-verify asset delivery before repeating fresh 4090 release-bundle and Deep Work
-acceptance. The normal `$0.40/hour`
+bottleneck is unknown, so release-bundle has no live acceptance evidence. A
+parallel-range downloader now passes local range/retry/integrity fixtures;
+its real Vast route performance remains unmeasured. Source-build remains the
+default until the changed path reaches full live acceptance. The normal
+`$0.40/hour`
 target remains; bounded one-off price overrides are authorized when a 4090 is
 necessary. Never use a 3090.

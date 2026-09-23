@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -11,6 +12,9 @@ import (
 	"github.com/Marguelgtz/Stint/internal/config"
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
+
+//go:embed ninfer_release_downloader.py
+var ninferReleaseDownloaderScript string
 
 const (
 	runtimeAuto     = "auto"
@@ -422,13 +426,20 @@ rm -f /workspace/stint/model-download.pid
 fi
 
 date +%s%3N > "$root/runtime-acquisition-started-ms"
-download_dir="$(mktemp -d "$root/.ninfer-release.XXXXXX")"
-trap 'rm -rf "$download_dir"' EXIT
+runtime_root="$root/ninfer"
+downloads_root="$runtime_root/downloads"
+download_dir="$downloads_root/@TAG@"
+for path in "$runtime_root" "$downloads_root" "$download_dir"; do
+  [ ! -L "$path" ] || { echo "Refusing symlink NInfer release download path $path" >&2; exit 1; }
+done
+mkdir -p "$download_dir"
 archive="$download_dir/@ARCHIVE@"
 checksum="$archive.sha256"
 manifest="$download_dir/manifest.json"
 release_url="@RELEASE_URL@"
-curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o "$archive" "$release_url/@ARCHIVE@"
+python3 - "$release_url/@ARCHIVE@" "$archive" "@BUNDLE_SHA@" <<'DOWNLOAD_PY'
+@DOWNLOAD_SCRIPT@
+DOWNLOAD_PY
 curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o "$checksum" "$release_url/@ARCHIVE@.sha256"
 curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o "$manifest" "$release_url/manifest.json"
 actual_sha="$(sha256sum "$archive" | awk '{print $1}')"
@@ -580,8 +591,7 @@ else:
 PY
 
 date +%s%3N > "$root/runtime-acquired-ms"
-rm -f "$archive" "$checksum" "$manifest"
-runtime_root="$root/ninfer"
+rm -f "$checksum" "$manifest"
 runtime_dir="$runtime_root/releases/@TAG@"
 for binary in "$runtime_dir/apps/ninfer" "$runtime_dir/apps/ninfer-serve"; do
   test -x "$binary"
@@ -606,12 +616,14 @@ deployment_tmp="$(mktemp "$runtime_root/.stint-deployment.XXXXXX")"
 printf '%s %s %s\n' "@DEPLOYMENT@" "@TAG@" "@BUNDLE_SHA@" > "$deployment_tmp"
 mv -f "$deployment_tmp" "$runtime_root/.stint-deployment"
 date +%s%3N > "$root/runtime-verified-ms"
+rm -rf "$download_dir"
 echo "Immutable NInfer release verified and installed; Qwen model transfer continues in parallel."
 `
 	return strings.NewReplacer(
 		"@MODEL_SHA@", ninferModelSHA256,
 		"@MODEL_URL@", ninferModelURL,
 		"@ARCHIVE@", ninferRuntimeBundleName,
+		"@DOWNLOAD_SCRIPT@", ninferReleaseDownloaderScript,
 		"@RELEASE_URL@", ninferRuntimeReleaseURL,
 		"@BUNDLE_SHA@", ninferRuntimeBundleSHA256,
 		"@TAG@", ninferRuntimeReleaseTag,
