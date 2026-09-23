@@ -9,7 +9,7 @@ the concise recovery point.
 
 - Repository: `Marguelgtz/Stint`, default branch `main`.
 - Starting main: `9634bf762a2dc9021747eb786db7fd23ccab84e9`.
-- Current main before this docs update: `4ff7159c018c75372b31aca7627151e30fed669b` (after #132; exact-main CI run `35909255732` passed all five required jobs).
+- Current main before this final grounding refresh: `3586022bd6b2cc4565a4d94e519398222d85a443` (after #133; exact-main CI run `35911926414` passed all five required jobs).
 - The user's original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa` and its untracked files/local binary remain untouched. Work used isolated `/tmp` worktrees.
 - Current main preserves Hermes-on-box Deep Work, both dashboards, NInfer lane semantics, paid-session/provider safety, exact-head CI, and Spark path observation. See the ledger for historical source comparisons.
 
@@ -36,6 +36,7 @@ Grounding and runtime slices merged after the starting point:
 | #125 | `36d12ac1c3df55cb0a4f1d7ebe5ee557b26316fa` | refresh README/operator guidance, canonical grounding docs and verbatim #73 history | `35904245746` |
 | #131 | `2b5f7342093c520175b608a1a64bbce0b9443f31` | record final release/PR closeout snapshot | `35905880710` |
 | #132 | `4ff7159c018c75372b31aca7627151e30fed669b` | check exact PR heads and synthetic merge trees in CI | `35909255732` |
+| #133 | `3586022bd6b2cc4565a4d94e519398222d85a443` | port selected docs taxonomy; refresh canonical runtime/PR grounding | `35911926414` |
 
 Each listed exact landed-main run completed all five required Stint jobs. #124
 Pull-request runs `35882783534`, `35894208985`, `35898993338`, `35900956163`,
@@ -208,8 +209,8 @@ deployment opt-in and recheck later under the same limits.
 - #48–#51 were closed on 2026-09-23 after #125 merged. Their unique bundle/timing/deployment ideas are replaced by #121–#130; the candidate build, exact pin, draft-to-immutable publisher and bundle SHA are verified.
 - #73 was closed on 2026-09-23 after #125 merged. Its two unique CP1 reports are preserved verbatim under `docs/history/`; provenance points to source commit `e78ceef308d85c9cac7c71e7d172bed7c66c4182`.
 - Successful generated Deep Work evidence #81–#84 (session `20260908-194552`) and failed attempts #86–#89 (sessions `20260909-012307` and `20260909-014522`) were closed unmerged on 2026-09-23 after checkpoint/handoff SHAs and accurate lessons were recorded in the ledger.
-- Keep #85 parked as a separate high-authority maintenance experiment. PR #93's documentation taxonomy is being ported selectively against current docs, and #93 will close after the replacement lands.
-- Keep #110–#113 open, unmerged and untouched as protected generated Deep Work evidence. The six-PR snapshot after #125 is historical; after #132 the current open set is #85, #93, and #110–#113, with exact-head CI not established for the protected/parked legacy heads. The ledger records the observed refs and the legacy check-rollup caveat.
+- Keep #85 parked as a separate high-authority maintenance experiment. PR #93 was closed after selected taxonomy and current pages landed in #133; its replacement and closure comment are recorded in the ledger.
+- Keep #110–#113 open, unmerged and untouched as protected generated Deep Work evidence. GitHub's final snapshot after #93 closed contained exactly five open PRs: #85 and #110–#113. Their legacy CI rollups were on synthetic merge trees; exact-head CI is not established.
 
 ## Checkpoints
 
@@ -229,7 +230,8 @@ deployment opt-in and recheck later under the same limits.
 - [x] Merge #131 and record its landing SHA / main CI; inspect its pull-request run and identify the synthetic-merge checkout gap.
 - [x] Repair CI in #132: required jobs check exact PR head SHA, then `unit-tests` runs again on GitHub's synthetic merge tree; exact-head, merge-tree, and landed-main checks passed.
 - [x] Close old generated PRs #81–#84 (successful) and #86–#89 (failed) after preserving their session IDs, checkpoint/handoff SHAs, and outcomes.
-- [~] Port the useful #93 docs taxonomy against current content, close #93 after the replacement lands, and refresh the final open-PR snapshot.
+- [x] Port selected #93 taxonomy to current docs; archive superseded content; add current index, operations, roadmap and architecture pages in #133.
+- [x] After #133's exact-head, synthetic merge-tree and main push CI passed, comment on and close #93; verify the resulting five-PR open snapshot and record its refs/check evidence.
 
 ## Final-state rules
 
@@ -239,5 +241,7 @@ The #132 exact-head and synthetic-merge CI repair is green on PR head
 `4ff7159c018c75372b31aca7627151e30fed669b`. Fresh RTX 4090 acceptance remains
 blocked by current offer pricing/reliability under the unchanged limits, so
 leave release-bundle startup opt-in and source-build as the default. The docs
-taxonomy review is in progress; do not mark the grounding mission fully
-verified until the #93 disposition and the final five-PR snapshot are recorded.
+taxonomy review, #93 disposition, and final five-PR snapshot are recorded. The
+remaining gate is live RTX 4090 acceptance; its exact-host model-load,
+two-lane, native-context, correctness, Deep Work, teardown, and comparable
+READY-time evidence is unavailable under current offer pricing/reliability.
