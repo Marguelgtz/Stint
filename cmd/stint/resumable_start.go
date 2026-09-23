@@ -53,6 +53,21 @@ func applySessionCostCeiling(profile core.Profile, requested float64) (core.Prof
 	return profile, nil
 }
 
+// applySessionHourlyCeiling adjusts the per-run offer-price ceiling. Raising
+// the profile's default hourly limit requires an explicit session-cost ceiling;
+// every candidate still passes candidateWithinSessionBudget immediately before
+// rental, so this cannot expand the requested total spend.
+func applySessionHourlyCeiling(profile core.Profile, requested float64, explicitSessionCeiling bool) (core.Profile, error) {
+	if math.IsNaN(requested) || math.IsInf(requested, 0) || requested <= 0 {
+		return profile, fmt.Errorf("invalid --max-hourly-usd value %q: must be a finite positive amount", strconv.FormatFloat(requested, 'f', -1, 64))
+	}
+	if profile.GPU.MaxHourlyUSD > 0 && requested > profile.GPU.MaxHourlyUSD && !explicitSessionCeiling {
+		return profile, errors.New("raising the hourly profile ceiling requires an explicit --max-cost-usd session cap")
+	}
+	profile.GPU.MaxHourlyUSD = requested
+	return profile, nil
+}
+
 // runStartResumable is the paid interactive start path with explicit recovery
 // checkpoints. Provider/SSH startup failures reject the host and move to the
 // next distinct candidate. Once SSH is usable, later startup failures preserve
@@ -85,6 +100,7 @@ func runStartResumable(args []string) (retErr error) {
 	minMeasuredDownloadMBps := fs.Float64("min-measured-download-mbps", defaultMinMeasuredDownloadMBps, "minimum measured post-SSH download throughput in MB/s; 0 disables")
 	networkCandidateAttempts := fs.Int("network-candidate-attempts", defaultNetworkCandidateAttempts, "maximum distinct Vast machines to try during provider startup and measured-network qualification")
 	maxCostUSD := fs.Float64("max-cost-usd", 0, "lower the profile's maximum requested-session cost (USD)")
+	maxHourlyUSD := fs.Float64("max-hourly-usd", 0, "set the maximum hourly offer price (raising the profile limit requires --max-cost-usd)")
 	validateOnly := fs.Bool("validate-only", false, "validate start options without reading credentials or contacting a provider")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -113,11 +129,25 @@ func runStartResumable(args []string) (retErr error) {
 	if err != nil {
 		return err
 	}
+	maxCostProvided := false
+	maxHourlyProvided := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "max-cost-usd" {
-			profile, err = applySessionCostCeiling(profile, *maxCostUSD)
+			maxCostProvided = true
+		}
+		if f.Name == "max-hourly-usd" {
+			maxHourlyProvided = true
 		}
 	})
+	if maxCostProvided {
+		profile, err = applySessionCostCeiling(profile, *maxCostUSD)
+	}
+	if err != nil {
+		return err
+	}
+	if maxHourlyProvided {
+		profile, err = applySessionHourlyCeiling(profile, *maxHourlyUSD, maxCostProvided)
+	}
 	if err != nil {
 		return err
 	}

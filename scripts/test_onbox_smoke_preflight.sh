@@ -61,6 +61,8 @@ fi
 grep -Fq 'maximum cost $2' "$TMP/artifacts/launcher.log"
 grep -Fq 'FAKE_RENT_BLOCKED' "$TMP/artifacts/launcher.log"
 grep -Fxq -- '--validate-only' "$TMP/preflight-args"
+grep -Fxq -- '--max-hourly-usd' "$TMP/preflight-args"
+grep -Fxq -- '1.33' "$TMP/preflight-args"
 grep -Fxq -- '--max-cost-usd' "$TMP/preflight-args"
 grep -Fxq -- '2' "$TMP/preflight-args"
 if [ -e "$TMP/run/stint/session.json" ]; then

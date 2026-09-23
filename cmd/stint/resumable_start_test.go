@@ -67,12 +67,45 @@ func TestApplySessionCostCeilingOnlyLowersProfilePolicy(t *testing.T) {
 	}
 }
 
+func TestApplySessionHourlyCeilingNeedsSessionCapToRaiseProfileLimit(t *testing.T) {
+	profile, err := router.ResolveProfile("interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err = applySessionCostCeiling(profile, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applySessionHourlyCeiling(profile, 1.33, false); err == nil {
+		t.Fatal("raising the profile's hourly ceiling without an explicit session cap was accepted")
+	}
+
+	got, err := applySessionHourlyCeiling(profile, 1.33, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GPU.MaxHourlyUSD != 1.33 {
+		t.Fatalf("per-run hourly ceiling = $%.2f, want $1.33", got.GPU.MaxHourlyUSD)
+	}
+	if !candidateWithinSessionBudget(got, core.Offer{HourlyUSD: 1.33}, 1.5) {
+		t.Fatal("$1.33/hour candidate should fit the $2.00 session ceiling for 1.5 hours")
+	}
+	if candidateWithinSessionBudget(got, core.Offer{HourlyUSD: 1.34}, 1.5) {
+		t.Fatal("candidate above the full-session ceiling was accepted")
+	}
+	for _, invalid := range []float64{0, -1, math.NaN(), math.Inf(1)} {
+		if _, err := applySessionHourlyCeiling(profile, invalid, true); err == nil {
+			t.Fatalf("invalid hourly ceiling %v was accepted", invalid)
+		}
+	}
+}
+
 func TestRunStartResumableValidateOnlyParsesSmokeArgumentsWithoutConfig(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "no-home"))
 	err := runStartResumable([]string{
 		"interactive", "--hours", "1.5", "--runtime", "ninfer", "--ninfer-config", "native", "--clients", "2",
 		"--min-measured-download-mbps", "30", "--min-network-mbps", "300",
-		"--network-candidate-attempts", "5", "--max-cost-usd", "2", "--yes", "--validate-only",
+		"--network-candidate-attempts", "5", "--max-hourly-usd", "1.33", "--max-cost-usd", "2", "--yes", "--validate-only",
 	})
 	if err != nil {
 		t.Fatalf("validate-only rejected the live smoke arguments: %v", err)
@@ -90,6 +123,11 @@ func TestRunStartResumableValidateOnlyRejectsBadCostBeforeConfig(t *testing.T) {
 			name: "cannot raise profile ceiling",
 			args: []string{"interactive", "--max-cost-usd", "3", "--validate-only"},
 			want: "exceeds the interactive profile ceiling",
+		},
+		{
+			name: "hourly raise requires explicit session cap",
+			args: []string{"interactive", "--max-hourly-usd", "1.33", "--validate-only"},
+			want: "requires an explicit --max-cost-usd session cap",
 		},
 		{
 			name: "rejects unknown option",
