@@ -30,15 +30,33 @@ const (
 // StartupEvent is an append-only observation of a saved lifecycle boundary.
 // Session State remains authoritative if this log cannot be written.
 type StartupEvent struct {
-	RecordedAt          time.Time `json:"recordedAt"`
-	RentalElapsedMillis *int64    `json:"rentalElapsedMillis,omitempty"`
-	InstanceID          int64     `json:"instanceId"`
-	OfferID             string    `json:"offerId,omitempty"`
-	GPUModel            string    `json:"gpuModel,omitempty"`
-	Runtime             string    `json:"runtime,omitempty"`
-	Status              string    `json:"status"`
-	Phase               string    `json:"phase"`
-	Checkpoint          string    `json:"checkpoint,omitempty"`
+	RecordedAt                   time.Time `json:"recordedAt"`
+	RentalElapsedMillis          *int64    `json:"rentalElapsedMillis,omitempty"`
+	InstanceID                   int64     `json:"instanceId"`
+	OfferID                      string    `json:"offerId,omitempty"`
+	GPUModel                     string    `json:"gpuModel,omitempty"`
+	Runtime                      string    `json:"runtime,omitempty"`
+	RuntimeDeployment            string    `json:"runtimeDeployment,omitempty"`
+	RuntimeSourceCommit          string    `json:"runtimeSourceCommit,omitempty"`
+	ModelArtifactRevision        string    `json:"modelArtifactRevision,omitempty"`
+	ModelArtifactSHA256          string    `json:"modelArtifactSha256,omitempty"`
+	ModelArtifactSizeBytes       int64     `json:"modelArtifactSizeBytes,omitempty"`
+	ModelArtifactFormat          string    `json:"modelArtifactFormat,omitempty"`
+	RuntimeBundleTag             string    `json:"runtimeBundleTag,omitempty"`
+	RuntimeBundleSHA256          string    `json:"runtimeBundleSha256,omitempty"`
+	RuntimeAcquisitionStartedAt  time.Time `json:"runtimeAcquisitionStartedAt,omitempty"`
+	RuntimeAcquiredAt            time.Time `json:"runtimeAcquiredAt,omitempty"`
+	RuntimeVerifiedAt            time.Time `json:"runtimeVerifiedAt,omitempty"`
+	RuntimeAcquisitionMillis     int64     `json:"runtimeAcquisitionMillis,omitempty"`
+	RuntimeVerificationMillis    int64     `json:"runtimeVerificationMillis,omitempty"`
+	ModelAcquisitionStartedAt    time.Time `json:"modelAcquisitionStartedAt,omitempty"`
+	ModelAcquisitionMillis       int64     `json:"modelAcquisitionMillis,omitempty"`
+	ModelAcquiredAt              time.Time `json:"modelAcquiredAt,omitempty"`
+	ReadyAt                      time.Time `json:"readyAt,omitempty"`
+	ReadyElapsedFromRentalMillis int64     `json:"readyElapsedFromRentalMillis,omitempty"`
+	Status                       string    `json:"status"`
+	Phase                        string    `json:"phase"`
+	Checkpoint                   string    `json:"checkpoint,omitempty"`
 }
 
 func StartupEventsPath(paths config.Paths) string {
@@ -101,14 +119,32 @@ func appendStartupEvent(paths config.Paths, state State) error {
 		return nil
 	}
 	event := StartupEvent{
-		RecordedAt: state.UpdatedAt,
-		InstanceID: state.InstanceID,
-		OfferID:    state.OfferID,
-		GPUModel:   state.GPUModel,
-		Runtime:    state.Runtime,
-		Status:     state.Status,
-		Phase:      phase,
-		Checkpoint: state.Checkpoint,
+		RecordedAt:                   state.UpdatedAt,
+		InstanceID:                   state.InstanceID,
+		OfferID:                      state.OfferID,
+		GPUModel:                     state.GPUModel,
+		Runtime:                      state.Runtime,
+		RuntimeDeployment:            state.RuntimeDeployment,
+		RuntimeSourceCommit:          state.RuntimeSourceCommit,
+		ModelArtifactRevision:        state.ModelArtifactRevision,
+		ModelArtifactSHA256:          state.ModelArtifactSHA256,
+		ModelArtifactSizeBytes:       state.ModelArtifactSizeBytes,
+		ModelArtifactFormat:          state.ModelArtifactFormat,
+		RuntimeBundleTag:             state.RuntimeBundleTag,
+		RuntimeBundleSHA256:          state.RuntimeBundleSHA256,
+		RuntimeAcquisitionStartedAt:  state.RuntimeAcquisitionStartedAt,
+		RuntimeAcquiredAt:            state.RuntimeAcquiredAt,
+		RuntimeVerifiedAt:            state.RuntimeVerifiedAt,
+		RuntimeAcquisitionMillis:     state.RuntimeAcquisitionMillis,
+		RuntimeVerificationMillis:    state.RuntimeVerificationMillis,
+		ModelAcquisitionStartedAt:    state.ModelAcquisitionStartedAt,
+		ModelAcquisitionMillis:       state.ModelAcquisitionMillis,
+		ModelAcquiredAt:              state.ModelAcquiredAt,
+		ReadyAt:                      state.ReadyAt,
+		ReadyElapsedFromRentalMillis: state.ReadyElapsedFromRentalMillis,
+		Status:                       state.Status,
+		Phase:                        phase,
+		Checkpoint:                   state.Checkpoint,
 	}
 	if !state.RentalStartedAt.IsZero() && !state.UpdatedAt.Before(state.RentalStartedAt) {
 		elapsed := state.UpdatedAt.Sub(state.RentalStartedAt).Milliseconds()

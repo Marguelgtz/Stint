@@ -13,12 +13,21 @@ func TestStartupEventsRecordPhasesAndRentalElapsedTime(t *testing.T) {
 	paths := startupTestPaths(t)
 	rentalStartedAt := time.Now().UTC().Add(-2 * time.Minute)
 	state := State{
-		InstanceID:      42,
-		OfferID:         "offer-123",
-		GPUModel:        "RTX_4090",
-		Runtime:         "ninfer",
-		StartedAt:       rentalStartedAt,
-		RentalStartedAt: rentalStartedAt,
+		InstanceID:                42,
+		OfferID:                   "offer-123",
+		GPUModel:                  "RTX_4090",
+		Runtime:                   "ninfer",
+		RuntimeDeployment:         "release-bundle",
+		RuntimeSourceCommit:       "81b68a20a9a0d9ab47d7e5838887c6d636ab76e0",
+		ModelArtifactRevision:     "18dfc887423fa5aabf3cb56fac41490e462b3fab",
+		ModelArtifactSHA256:       "eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e",
+		RuntimeBundleTag:          "ninfer-runtime-81b68a20-sm89",
+		RuntimeBundleSHA256:       "f58ee66d05e5d1932b030a05cfd9a7e1e8570579a47b78476cf845c3abcde6e0",
+		RuntimeAcquisitionMillis:  12000,
+		RuntimeVerificationMillis: 3000,
+		ModelAcquisitionMillis:    45000,
+		StartedAt:                 rentalStartedAt,
+		RentalStartedAt:           rentalStartedAt,
 	}
 
 	transitions := []struct {
@@ -60,6 +69,12 @@ func TestStartupEventsRecordPhasesAndRentalElapsedTime(t *testing.T) {
 		}
 		if events[i].InstanceID != 42 || events[i].OfferID != "offer-123" || events[i].Runtime != "ninfer" {
 			t.Fatalf("event %d lost session identity: %+v", i, events[i])
+		}
+		if events[i].RuntimeDeployment != "release-bundle" || events[i].RuntimeSourceCommit != state.RuntimeSourceCommit || events[i].RuntimeBundleTag != state.RuntimeBundleTag || events[i].RuntimeBundleSHA256 != state.RuntimeBundleSHA256 || events[i].ModelArtifactRevision != state.ModelArtifactRevision || events[i].ModelArtifactSHA256 != state.ModelArtifactSHA256 {
+			t.Fatalf("event %d lost runtime deployment provenance: %+v", i, events[i])
+		}
+		if events[i].RuntimeAcquisitionMillis != 12000 || events[i].RuntimeVerificationMillis != 3000 || events[i].ModelAcquisitionMillis != 45000 {
+			t.Fatalf("event %d lost startup timing: %+v", i, events[i])
 		}
 		if events[i].RentalElapsedMillis == nil || *events[i].RentalElapsedMillis <= 0 {
 			t.Fatalf("event %d has no rental elapsed time: %+v", i, events[i])

@@ -98,8 +98,23 @@ func printSessionSnapshotHuman(snapshot sessionSnapshot, refreshed bool) {
 	fmt.Printf("Active compute     instance %d (%s)\n", snapshot.Session.InstanceID, snapshot.Session.Status)
 	fmt.Printf("GPU                %s\n", snapshot.Session.GPUModel)
 	fmt.Printf("Runtime            %s\n", snapshot.Session.Runtime)
+	if snapshot.Session.RuntimeDeployment != "" {
+		fmt.Printf("Deployment         %s\n", snapshot.Session.RuntimeDeployment)
+	}
 	if snapshot.Session.Runtime == runtimeNInfer {
 		fmt.Printf("NInfer config      %s\n", ninferConfigForContext(snapshot.Session.ContextTokens).Name)
+		if snapshot.Session.RuntimeSourceCommit != "" {
+			fmt.Printf("NInfer source      %.12s\n", snapshot.Session.RuntimeSourceCommit)
+		}
+		if snapshot.Session.RuntimeBundleTag != "" {
+			fmt.Printf("Runtime bundle     %s (sha256 %.12s)\n", snapshot.Session.RuntimeBundleTag, snapshot.Session.RuntimeBundleSHA256)
+		}
+		if snapshot.Session.RuntimeAcquisitionMillis > 0 || snapshot.Session.RuntimeVerificationMillis > 0 {
+			fmt.Printf("Runtime prepare    %s; verify %s\n", formatSessionDuration(time.Duration(snapshot.Session.RuntimeAcquisitionMillis)*time.Millisecond), formatSessionDuration(time.Duration(snapshot.Session.RuntimeVerificationMillis)*time.Millisecond))
+		}
+		if snapshot.Session.ModelAcquisitionMillis > 0 {
+			fmt.Printf("Model acquisition  %s\n", formatSessionDuration(time.Duration(snapshot.Session.ModelAcquisitionMillis)*time.Millisecond))
+		}
 	}
 	fmt.Printf("Model              %s\n", snapshot.Session.Model)
 	fmt.Printf("Context            %d tokens\n", snapshot.Session.ContextTokens)
@@ -107,6 +122,9 @@ func printSessionSnapshotHuman(snapshot sessionSnapshot, refreshed bool) {
 	if !snapshot.Time.StartedAt.IsZero() {
 		fmt.Printf("Started            %s\n", snapshot.Time.StartedAt.Local().Format(time.RFC1123))
 		fmt.Printf("Elapsed            %s\n", formatSessionDuration(snapshot.Time.Elapsed))
+	}
+	if snapshot.Session.ReadyElapsedFromRentalMillis > 0 {
+		fmt.Printf("Rental to READY   %s\n", formatSessionDuration(time.Duration(snapshot.Session.ReadyElapsedFromRentalMillis)*time.Millisecond))
 	}
 	if snapshot.Time.Expired {
 		fmt.Println("Remaining          expired")

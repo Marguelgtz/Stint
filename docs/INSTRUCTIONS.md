@@ -103,12 +103,18 @@ Current runtime behavior:
 | Runtime/config | Context | Notes |
 | --- | ---: | --- |
 | `--runtime auto` | runtime dependent | RTX 4090 selects NInfer; other qualifying GPUs use llama.cpp. NInfer bootstrap may fall back to llama.cpp unless the requested lane configuration requires NInfer. |
+| `--runtime ninfer --ninfer-deployment source-build` | configured below | Default deployment and explicit compilation recovery path. |
+| `--runtime ninfer --ninfer-deployment release-bundle` | configured below | Opt-in immutable GitHub Release bundle; SHA/manifest/runtime checks fail closed, without automatic compilation fallback. |
 | `--runtime ninfer --ninfer-config coding` | 126,976 | INT8 KV, one or two NInfer lanes. |
 | `--runtime ninfer --ninfer-config precision` | 172,032 | INT8 KV, one or two NInfer lanes. |
 | `--runtime ninfer --ninfer-config native` | 262,144 | Native context, E8 4-bit KV, one or two NInfer lanes. |
 | `--runtime llama.cpp --context <tokens>` | 1,024 to 131,072 | Explicit llama.cpp context. |
 
 `--clients 2` is NInfer-only. The lanes share the configured context/KV pool dynamically; they are not permanently assigned to individual IDE conversations.
+
+If an opt-in bundle cannot be acquired or verified on an active session, recover
+explicitly with `./bin/stint resume --ninfer-deployment source-build`. Session
+status JSON records the deployment method and pinned runtime/model provenance.
 
 When READY, the client endpoint is:
 

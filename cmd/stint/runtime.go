@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
@@ -16,16 +19,52 @@ const (
 
 	interactiveRuntimeContext = 126976
 
-	ninferSourceRepository = "https://github.com/sergiuszm/ninfer-4090.git"
-	ninferSourceCommit     = "81b68a20a9a0d9ab47d7e5838887c6d636ab76e0"
-	ninferCUDAFloor        = "12.8"
-	ninferGPUArchitecture  = "89"
-	ninferArtifactFormat   = 2
-	ninferModelRevision    = "18dfc887423fa5aabf3cb56fac41490e462b3fab"
-	ninferModelURL         = "https://huggingface.co/neroued/Qwen3.8-27B-NInfer/resolve/" + ninferModelRevision + "/qwen3_8_27b.ninfer"
-	ninferModelSHA256      = "eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e"
-	ninferModelSizeBytes   = int64(18210531328)
+	ninferSourceRepository        = "https://github.com/sergiuszm/ninfer-4090.git"
+	ninferSourceCommit            = "81b68a20a9a0d9ab47d7e5838887c6d636ab76e0"
+	ninferCUDAFloor               = "12.8"
+	ninferGPUArchitecture         = "89"
+	ninferArtifactFormat          = 2
+	ninferModelRevision           = "18dfc887423fa5aabf3cb56fac41490e462b3fab"
+	ninferModelURL                = "https://huggingface.co/neroued/Qwen3.8-27B-NInfer/resolve/" + ninferModelRevision + "/qwen3_8_27b.ninfer"
+	ninferModelSHA256             = "eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e"
+	ninferModelSizeBytes          = int64(18210531328)
+	ninferDeploymentSourceBuild   = "source-build"
+	ninferDeploymentReleaseBundle = "release-bundle"
+	ninferRuntimeReleaseTag       = "ninfer-runtime-81b68a20-sm89"
+	ninferRuntimeBundleName       = "stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz"
+	ninferRuntimeBundleSHA256     = "f58ee66d05e5d1932b030a05cfd9a7e1e8570579a47b78476cf845c3abcde6e0"
+	ninferRuntimeReleaseURL       = "https://github.com/Marguelgtz/Stint/releases/download/" + ninferRuntimeReleaseTag
 )
+
+func normalizeNInferDeployment(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", ninferDeploymentSourceBuild:
+		return ninferDeploymentSourceBuild, nil
+	case ninferDeploymentReleaseBundle:
+		return ninferDeploymentReleaseBundle, nil
+	default:
+		return "", fmt.Errorf("unknown NInfer deployment %q; choose source-build or release-bundle", value)
+	}
+}
+
+func ninferDeploymentForState(state sessionstate.State) string {
+	if state.RuntimeDeployment == ninferDeploymentReleaseBundle {
+		return ninferDeploymentReleaseBundle
+	}
+	// Existing NInfer sessions predate deployment metadata and used source builds.
+	return ninferDeploymentSourceBuild
+}
+
+func runtimeDeploymentForStatus(state sessionstate.State) string {
+	if runtimeForState(state) == runtimeNInfer {
+		return ninferDeploymentForState(state)
+	}
+	return state.RuntimeDeployment
+}
+
+func allowNInferLlamaFallback(state sessionstate.State) bool {
+	return ninferDeploymentForState(state) != ninferDeploymentReleaseBundle && allowLlamaFallbackForState(state)
+}
 
 func normalizeRuntime(value string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
@@ -79,25 +118,51 @@ func contextForState(state sessionstate.State) int {
 	return interactiveContext
 }
 
-func bootstrapSelectedRuntime(ctx context.Context, paths config.Paths, state sessionstate.State) (string, error) {
-	switch runtimeForState(state) {
+func bootstrapSelectedRuntime(ctx context.Context, paths config.Paths, state *sessionstate.State) (string, error) {
+	switch runtimeForState(*state) {
 	case runtimeNInfer:
-		if err := bootstrapNInfer(ctx, paths, state); err == nil {
+		deployment := ninferDeploymentForState(*state)
+		state.RuntimeDeployment = deployment
+		state.RuntimeSourceCommit = ninferSourceCommit
+		state.ModelArtifactRevision = ninferModelRevision
+		state.ModelArtifactSHA256 = ninferModelSHA256
+		state.ModelArtifactSizeBytes = ninferModelSizeBytes
+		state.ModelArtifactFormat = fmt.Sprintf("NInfer v%d", ninferArtifactFormat)
+		state.RuntimeAcquisitionStartedAt = time.Now().UTC()
+		if deployment == ninferDeploymentReleaseBundle {
+			state.RuntimeBundleTag = ninferRuntimeReleaseTag
+			state.RuntimeBundleSHA256 = ninferRuntimeBundleSHA256
+		} else {
+			state.RuntimeBundleTag = ""
+			state.RuntimeBundleSHA256 = ""
+		}
+		if err := sessionstate.Save(paths, *state); err != nil {
+			return "", fmt.Errorf("persist NInfer runtime deployment provenance: %w", err)
+		}
+		if err := bootstrapNInfer(ctx, paths, *state); err == nil {
 			return runtimeNInfer, nil
-		} else if !allowLlamaFallbackForState(state) {
-			if state.RuntimeRequest == runtimeAuto && clientsForState(state) > defaultNInferClients {
-				return "", fmt.Errorf("ninfer bootstrap failed and --clients %d requires NInfer; refusing llama.cpp fallback: %w", clientsForState(state), err)
+		} else if !allowNInferLlamaFallback(*state) {
+			if state.RuntimeRequest == runtimeAuto && clientsForState(*state) > defaultNInferClients {
+				return "", fmt.Errorf("ninfer bootstrap failed and --clients %d requires NInfer; refusing llama.cpp fallback: %w", clientsForState(*state), err)
 			}
 			return "", err
 		} else {
 			fmt.Printf("NInfer bootstrap unavailable on this host (%v). Falling back to llama.cpp.\n", err)
-			if fallbackErr := bootstrapRemoteRuntime(ctx, paths, state); fallbackErr != nil {
+			if fallbackErr := bootstrapRemoteRuntime(ctx, paths, *state); fallbackErr != nil {
 				return "", fmt.Errorf("ninfer bootstrap failed (%v); llama.cpp fallback also failed: %w", err, fallbackErr)
 			}
+			state.RuntimeDeployment = "llama.cpp-fallback"
+			state.RuntimeSourceCommit = ""
+			state.ModelArtifactRevision = ""
+			state.ModelArtifactSHA256 = ""
+			state.ModelArtifactSizeBytes = 0
+			state.ModelArtifactFormat = ""
+			state.RuntimeBundleTag = ""
+			state.RuntimeBundleSHA256 = ""
 			return runtimeLlamaCpp, nil
 		}
 	default:
-		if err := bootstrapRemoteRuntime(ctx, paths, state); err != nil {
+		if err := bootstrapRemoteRuntime(ctx, paths, *state); err != nil {
 			return "", err
 		}
 		return runtimeLlamaCpp, nil
@@ -105,13 +170,102 @@ func bootstrapSelectedRuntime(ctx context.Context, paths config.Paths, state ses
 }
 
 func bootstrapNInfer(ctx context.Context, paths config.Paths, state sessionstate.State) error {
-	fmt.Printf("Preparing NInfer for RTX 4090 at pinned commit %.12s...\n", ninferSourceCommit)
-	fmt.Println("Stint overlaps the Qwen model transfer with the native NInfer build so cold-start time is bounded by the slower stage instead of their sum.")
-	if err := runSSHStreaming(ctx, paths, state, ninferBootstrapCommand()); err != nil {
+	deployment := ninferDeploymentForState(state)
+	command := ninferBootstrapCommand()
+	if deployment == ninferDeploymentReleaseBundle {
+		fmt.Printf("Preparing NInfer from immutable release %s...\n", ninferRuntimeReleaseTag)
+		command = ninferReleaseBootstrapCommand()
+	} else {
+		fmt.Printf("Building NInfer from pinned commit %.12s...\n", ninferSourceCommit)
+		fmt.Println("Stint overlaps the Qwen model transfer with the source build and records both sides of the startup critical path.")
+	}
+	if err := runSSHStreaming(ctx, paths, state, command); err != nil {
 		return fmt.Errorf("bootstrap remote ninfer runtime: %w", err)
 	}
 	fmt.Println("NInfer runtime ready.")
 	return nil
+}
+
+func captureRuntimeBootstrapTiming(ctx context.Context, paths config.Paths, state *sessionstate.State) {
+	started := state.RuntimeAcquisitionStartedAt
+	if started.IsZero() {
+		started = time.Now().UTC()
+	}
+	state.RuntimeAcquiredAt = time.Now().UTC()
+	state.RuntimeVerifiedAt = state.RuntimeAcquiredAt
+	state.RuntimeAcquisitionMillis = state.RuntimeAcquiredAt.Sub(started).Milliseconds()
+	state.RuntimeVerificationMillis = 0
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := runSSH(probeCtx, paths, *state, `for name in runtime-acquisition-started-ms runtime-acquired-ms runtime-verified-ms; do printf '%s=' "$name"; cat "/workspace/stint/$name" 2>/dev/null || true; done`)
+	if err != nil {
+		return
+	}
+	markers := map[string]time.Time{}
+	for _, line := range strings.Split(out, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || value == "" {
+			continue
+		}
+		millis, parseErr := strconv.ParseInt(value, 10, 64)
+		if parseErr == nil && millis > 0 {
+			markers[key] = time.UnixMilli(millis).UTC()
+		}
+	}
+	if value, ok := markers["runtime-acquisition-started-ms"]; ok {
+		state.RuntimeAcquisitionStartedAt = value
+	}
+	if value, ok := markers["runtime-acquired-ms"]; ok {
+		state.RuntimeAcquiredAt = value
+	}
+	if value, ok := markers["runtime-verified-ms"]; ok {
+		state.RuntimeVerifiedAt = value
+	}
+	state.RuntimeAcquisitionMillis = state.RuntimeAcquiredAt.Sub(state.RuntimeAcquisitionStartedAt).Milliseconds()
+	if state.RuntimeAcquisitionMillis < 0 {
+		state.RuntimeAcquisitionMillis = 0
+	}
+	state.RuntimeVerificationMillis = state.RuntimeVerifiedAt.Sub(state.RuntimeAcquiredAt).Milliseconds()
+	if state.RuntimeVerificationMillis < 0 {
+		state.RuntimeVerificationMillis = 0
+	}
+}
+
+func captureModelAcquisitionTiming(ctx context.Context, paths config.Paths, state *sessionstate.State) {
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := runSSH(probeCtx, paths, *state, `for name in model-acquisition-started-ms model-acquired-ms; do printf '%s=' "$name"; cat "/workspace/stint/$name" 2>/dev/null || true; done`)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(out, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || value == "" {
+			continue
+		}
+		millis, parseErr := strconv.ParseInt(value, 10, 64)
+		if parseErr != nil || millis <= 0 {
+			continue
+		}
+		switch key {
+		case "model-acquisition-started-ms":
+			state.ModelAcquisitionStartedAt = time.UnixMilli(millis).UTC()
+		case "model-acquired-ms":
+			state.ModelAcquiredAt = time.UnixMilli(millis).UTC()
+		}
+	}
+	if !state.ModelAcquisitionStartedAt.IsZero() && !state.ModelAcquiredAt.IsZero() && !state.ModelAcquiredAt.Before(state.ModelAcquisitionStartedAt) {
+		state.ModelAcquisitionMillis = state.ModelAcquiredAt.Sub(state.ModelAcquisitionStartedAt).Milliseconds()
+	}
+}
+
+func markSessionReadyAt(state *sessionstate.State, readyAt time.Time) {
+	if state.ReadyAt.IsZero() {
+		state.ReadyAt = readyAt.UTC()
+	}
+	if !state.RentalStartedAt.IsZero() && !state.ReadyAt.Before(state.RentalStartedAt) {
+		state.ReadyElapsedFromRentalMillis = state.ReadyAt.Sub(state.RentalStartedAt).Milliseconds()
+	}
 }
 
 func ninferBootstrapCommand() string {
@@ -126,10 +280,12 @@ model="$model_dir/qwen3_8_27b.ninfer"
 model_pid="$root/model-download.pid"
 model_log="$root/model-download.log"
 model_size_file="$root/model-total-bytes"
+model_started_file="$root/model-acquisition-started-ms"
+model_acquired_file="$root/model-acquired-ms"
 model_sha="%s"
 model_url="%s"
-started_prefetch_pid=""
 mkdir -p "$root" "$model_dir"
+date +%%s%%3N > "$root/runtime-acquisition-started-ms"
 
 if [ -f "$model" ] && echo "$model_sha  $model" | sha256sum -c - >/dev/null 2>&1; then
   echo "Qwen3.8-27B model artifact already cached."
@@ -142,14 +298,17 @@ elif command -v curl >/dev/null 2>&1; then
 set -eu
 model="/workspace/stint/models/qwen3_8_27b.ninfer"
 model_pid="/workspace/stint/model-download.pid"
+model_started_file="/workspace/stint/model-acquisition-started-ms"
+model_acquired_file="/workspace/stint/model-acquired-ms"
 model_sha="%s"
 model_url="%s"
+date +%%s%%3N > "$model_started_file"
 curl -L -C - --fail --retry 10 --retry-all-errors --retry-delay 2 --connect-timeout 20 --output "$model" "$model_url"
 echo "$model_sha  $model" | sha256sum -c -
+date +%%s%%3N > "$model_acquired_file"
 rm -f "$model_pid"
 ' > "$model_log" 2>&1 < /dev/null &
-  started_prefetch_pid=$!
-  printf '%%s\n' "$started_prefetch_pid" > "$model_pid"
+  printf '%%s\n' "$!" > "$model_pid"
 else
   echo "No downloader is available before bootstrap; model transfer will start after curl is installed."
 fi
@@ -204,50 +363,281 @@ else
     -DBUILD_TESTING=OFF \
     -DNINFER_BUILD_BENCHMARKS=OFF
   cmake --build "$build" --parallel "$(nproc)" --target ninfer ninfer-serve
-  "$bin" --help >/dev/null
 fi
 
-prefetch_pid="$(cat "$model_pid" 2>/dev/null || true)"
-if [ -n "$prefetch_pid" ] && kill -0 "$prefetch_pid" 2>/dev/null; then
-  echo "NInfer build is ready; waiting for the parallel Qwen model transfer..."
-  last_reported=""
-  while kill -0 "$prefetch_pid" 2>/dev/null; do
-    bytes="$(stat -c %%s "$model" 2>/dev/null || echo 0)"
-    mib=$((bytes / 1048576))
-    total="$(cat "$model_size_file" 2>/dev/null || true)"
-    case "$total" in
-      ''|*[!0-9]*) total=0 ;;
-    esac
-    if [ "$total" -gt 0 ]; then
-      pct=$((bytes * 100 / total))
-      [ "$pct" -gt 100 ] && pct=100
-      report="${pct}%% (${mib} MiB / $((total / 1048576)) MiB)"
-    else
-      report="${mib} MiB downloaded"
-    fi
-    if [ "$report" != "$last_reported" ]; then
-      echo "  model: $report"
-      last_reported="$report"
-    fi
-    sleep 5
-  done
+mkdir -p "$src"
+if [ -e "$src/bin" ] && [ ! -L "$src/bin" ]; then
+  echo "Refusing to replace non-symlink NInfer runtime path $src/bin" >&2
+  exit 1
 fi
-rm -f "$model_pid"
+rm -f "$src/bin.next"
+ln -s "$build/apps" "$src/bin.next"
+mv -Tf "$src/bin.next" "$src/bin"
+date +%%s%%3N > "$root/runtime-acquired-ms"
+for binary in "$src/bin/ninfer" "$src/bin/ninfer-serve"; do
+  test -x "$binary"
+  "$binary" --help >/dev/null
+  ldd_output="$(ldd "$binary")"
+  if echo "$ldd_output" | grep -q "not found"; then
+    echo "$ldd_output" >&2
+    exit 1
+  fi
+done
+date +%%s%%3N > "$root/runtime-verified-ms"
+deployment_tmp="$(mktemp "$src/.stint-deployment.XXXXXX")"
+printf '%%s %%s\n' source-build %s > "$deployment_tmp"
+mv -f "$deployment_tmp" "$src/.stint-deployment"
+echo "NInfer runtime verified; model acquisition does not delay runtime readiness."
+`, ninferModelSHA256, ninferModelURL, ninferModelSHA256, ninferModelURL, ninferSourceCommit, ninferSourceCommit, ninferSourceRepository, ninferSourceCommit, ninferSourceCommit, ninferSourceCommit)
+}
 
-if [ -f "$model" ] && echo "$model_sha  $model" | sha256sum -c - >/dev/null 2>&1; then
-  echo "Qwen3.8-27B model artifact ready."
-elif [ -s "$model_log" ]; then
-  echo "Parallel model prefetch did not finish cleanly; model launch will resume the partial transfer."
-  tail -n 5 "$model_log" || true
+func ninferReleaseBootstrapCommand() string {
+	command := `set -eu
+root=/workspace/stint
+model_dir="$root/models"
+model="$model_dir/qwen3_8_27b.ninfer"
+model_pid="$root/model-download.pid"
+model_log="$root/model-download.log"
+mkdir -p "$model_dir"
+
+if [ -f "$model" ] && echo "@MODEL_SHA@  $model" | sha256sum -c - >/dev/null 2>&1; then
+  echo "Qwen3.8-27B model artifact already cached."
+elif [ -r "$model_pid" ] && prefetch_pid="$(cat "$model_pid" 2>/dev/null || true)" && [ -n "$prefetch_pid" ] && kill -0 "$prefetch_pid" 2>/dev/null; then
+  echo "Qwen3.8-27B model prefetch already running; continuing release acquisition in parallel."
 else
-  echo "Model prefetch was unavailable; model launch will download the artifact."
+  rm -f "$model_pid"
+  echo "Starting Qwen3.8-27B model prefetch in parallel with NInfer release acquisition..."
+  nohup sh -c '
+set -eu
+model="/workspace/stint/models/qwen3_8_27b.ninfer"
+model_sha="@MODEL_SHA@"
+model_url="@MODEL_URL@"
+date +%s%3N > /workspace/stint/model-acquisition-started-ms
+curl -L -C - --fail --retry 10 --retry-all-errors --retry-delay 2 --connect-timeout 20 --output "$model" "$model_url"
+echo "$model_sha  $model" | sha256sum -c -
+date +%s%3N > /workspace/stint/model-acquired-ms
+rm -f /workspace/stint/model-download.pid
+' > "$model_log" 2>&1 < /dev/null &
+  printf '%s\n' "$!" > "$model_pid"
 fi
-`, ninferModelSHA256, ninferModelURL, ninferModelSHA256, ninferModelURL, ninferSourceCommit, ninferSourceCommit, ninferSourceRepository, ninferSourceCommit, ninferSourceCommit)
+
+date +%s%3N > "$root/runtime-acquisition-started-ms"
+download_dir="$(mktemp -d "$root/.ninfer-release.XXXXXX")"
+trap 'rm -rf "$download_dir"' EXIT
+archive="$download_dir/@ARCHIVE@"
+checksum="$archive.sha256"
+manifest="$download_dir/manifest.json"
+release_url="@RELEASE_URL@"
+curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o "$archive" "$release_url/@ARCHIVE@"
+curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o "$checksum" "$release_url/@ARCHIVE@.sha256"
+curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -o "$manifest" "$release_url/manifest.json"
+actual_sha="$(sha256sum "$archive" | awk '{print $1}')"
+test "$actual_sha" = "@BUNDLE_SHA@" || { echo "NInfer release archive SHA-256 mismatch" >&2; exit 1; }
+printf '%s  %s\n' "$actual_sha" "$archive" | sha256sum -c -
+
+python3 - "$archive" "$checksum" "$manifest" "$root/ninfer/releases" \
+  "@TAG@" "@BUNDLE_SHA@" "@SOURCE_REPOSITORY@" "@SOURCE_COMMIT@" \
+  "@MODEL_REVISION@" "@MODEL_SHA@" "@MODEL_SIZE@" "@MODEL_FORMAT@" \
+  "@CUDA_FLOOR@" "@GPU_ARCH@" "@BASE_TAG@" "@BASE_DIGEST@" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import sys
+import tarfile
+import tempfile
+
+archive_path, checksum_path, manifest_path, releases_path = map(Path, sys.argv[1:5])
+(tag, archive_sha, source_repository, source_commit, artifact_revision,
+ artifact_sha, artifact_size, artifact_format, cuda_floor, gpu_arch,
+ base_tag, base_digest) = sys.argv[5:]
+artifact_size = int(artifact_size)
+archive_name = archive_path.name
+
+def sha256_stream(stream):
+    digest = hashlib.sha256()
+    size = 0
+    for block in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(block)
+        size += len(block)
+    return digest.hexdigest(), size
+
+with archive_path.open("rb") as stream:
+    digest, _ = sha256_stream(stream)
+if digest != archive_sha:
+    raise SystemExit("NInfer runtime archive does not match Stint's pinned SHA-256")
+sidecar = checksum_path.read_text(encoding="ascii").strip().split()
+if sidecar != [archive_sha, archive_name]:
+    raise SystemExit("NInfer runtime checksum sidecar is invalid")
+
+external_manifest = manifest_path.read_bytes()
+with tarfile.open(archive_path, "r:gz") as archive:
+    members = archive.getmembers()
+    expected_names = ["ninfer", "ninfer-serve", "manifest.json"]
+    if len(members) != len(expected_names) or [item.name for item in members] != expected_names:
+        raise SystemExit("NInfer runtime archive members are not the exact expected files")
+    for member in members:
+        if not member.isfile() or member.type != tarfile.REGTYPE:
+            raise SystemExit("NInfer runtime archive contains a non-regular file")
+        if member.name not in expected_names or member.name.startswith("/") or ".." in Path(member.name).parts:
+            raise SystemExit("NInfer runtime archive contains an unsafe member path")
+    archived_manifest_stream = archive.extractfile("manifest.json")
+    if archived_manifest_stream is None:
+        raise SystemExit("NInfer runtime archive manifest is unreadable")
+    archived_manifest = archived_manifest_stream.read()
+    if archived_manifest != external_manifest:
+        raise SystemExit("external NInfer manifest differs from the archived manifest")
+    manifest = json.loads(archived_manifest)
+    fixed = {
+        "bundleFormatVersion": 1,
+        "runtime": "ninfer",
+        "sourceRepository": source_repository,
+        "sourceCommit": source_commit,
+        "platform": "linux/amd64",
+        "gpuArchitecture": gpu_arch,
+        "cudaFloor": cuda_floor,
+        "artifact": {
+            "revision": artifact_revision,
+            "sha256": artifact_sha,
+            "sizeBytes": artifact_size,
+            "format": artifact_format,
+        },
+        "baseImage": {"tag": base_tag, "digest": base_digest},
+        "entrypoint": "ninfer-serve",
+        "buildIdentifier": f"ninfer-{source_commit}-cuda128-sm89-v1",
+    }
+    if any(manifest.get(key) != value for key, value in fixed.items()):
+        raise SystemExit("NInfer runtime manifest does not match the pinned compatibility tuple")
+    if set(manifest) != set(fixed) | {"binaries"}:
+        raise SystemExit("NInfer runtime manifest contains missing or unexpected fields")
+    binaries = manifest.get("binaries")
+    if not isinstance(binaries, dict) or set(binaries) != {"ninfer", "ninfer-serve"}:
+        raise SystemExit("NInfer runtime manifest does not enumerate both runtime binaries")
+
+    binary_records = {}
+    for name in ("ninfer", "ninfer-serve"):
+        member = archive.getmember(name)
+        if member.mode & 0o777 != 0o755 or member.mode & 0o7000:
+            raise SystemExit(f"NInfer runtime binary {name} has unsafe executable permissions")
+        stream = archive.extractfile(member)
+        if stream is None:
+            raise SystemExit(f"NInfer runtime binary {name} is unreadable")
+        binary_digest, binary_size = sha256_stream(stream)
+        binary_info = binaries[name]
+        if binary_info != {"path": name, "sha256": binary_digest, "sizeBytes": binary_size}:
+            raise SystemExit(f"NInfer runtime binary {name} differs from its manifest record")
+        binary_records[name] = binary_info
+    manifest_member = archive.getmember("manifest.json")
+    if manifest_member.mode & 0o777 != 0o644:
+        raise SystemExit("NInfer runtime manifest has unexpected permissions")
+
+runtime_root = releases_path.parent
+if runtime_root.is_symlink():
+    raise SystemExit("NInfer runtime root must not be a symlink")
+runtime_root.mkdir(parents=True, exist_ok=True)
+if releases_path.is_symlink():
+    raise SystemExit("NInfer runtime release directory must not be a symlink")
+releases_path.mkdir(parents=True, exist_ok=True)
+destination = releases_path / tag
+if destination.exists():
+    if destination.is_symlink() or not destination.is_dir():
+        raise SystemExit("existing NInfer release install is not a regular directory")
+    installed_manifest = destination / "manifest.json"
+    installed_apps = destination / "apps"
+    if installed_manifest.is_symlink() or not installed_manifest.is_file() or installed_apps.is_symlink() or not installed_apps.is_dir():
+        raise SystemExit("existing NInfer release install has an unsafe manifest or app directory")
+    if installed_manifest.read_bytes() != external_manifest:
+        raise SystemExit("an existing NInfer release install has a different manifest")
+    for name in ("ninfer", "ninfer-serve"):
+        installed_path = installed_apps / name
+        if installed_path.is_symlink() or not installed_path.is_file():
+            raise SystemExit(f"existing NInfer release install is missing a regular {name}")
+        with installed_path.open("rb") as stream:
+            installed_sha, _ = sha256_stream(stream)
+        if installed_sha != binary_records[name]["sha256"]:
+            raise SystemExit(f"existing NInfer release install has a corrupt {name}")
+else:
+    staging = Path(tempfile.mkdtemp(prefix=f".{tag}.", dir=releases_path))
+    try:
+        apps = staging / "apps"
+        apps.mkdir(mode=0o755)
+        with tarfile.open(archive_path, "r:gz") as install_archive:
+            for name in ("ninfer", "ninfer-serve"):
+                source = install_archive.extractfile(name)
+                if source is None:
+                    raise SystemExit(f"NInfer runtime binary {name} could not be reopened")
+                target = apps / name
+                with target.open("xb") as stream:
+                    shutil.copyfileobj(source, stream, 1024 * 1024)
+                target.chmod(0o755)
+        (staging / "manifest.json").write_bytes(external_manifest)
+        (staging / "manifest.json").chmod(0o644)
+        os.rename(staging, destination)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+PY
+
+date +%s%3N > "$root/runtime-acquired-ms"
+rm -f "$archive" "$checksum" "$manifest"
+runtime_root="$root/ninfer"
+runtime_dir="$runtime_root/releases/@TAG@"
+for binary in "$runtime_dir/apps/ninfer" "$runtime_dir/apps/ninfer-serve"; do
+  test -x "$binary"
+  "$binary" --help >/dev/null
+  ldd_output="$(ldd "$binary")"
+  if echo "$ldd_output" | grep -q "not found"; then
+    echo "$ldd_output" >&2
+    exit 1
+  fi
+done
+if [ -e "$runtime_root/bin" ] && [ ! -L "$runtime_root/bin" ]; then
+  echo "Refusing to replace non-symlink NInfer runtime path $runtime_root/bin" >&2
+  exit 1
+fi
+rm -f "$runtime_root/bin.next"
+ln -s "releases/@TAG@/apps" "$runtime_root/bin.next"
+mv -Tf "$runtime_root/bin.next" "$runtime_root/bin"
+commit_tmp="$(mktemp "$runtime_root/.stint-commit.XXXXXX")"
+printf '%s\n' "@SOURCE_COMMIT@" > "$commit_tmp"
+mv -f "$commit_tmp" "$runtime_root/.stint-commit"
+deployment_tmp="$(mktemp "$runtime_root/.stint-deployment.XXXXXX")"
+printf '%s %s %s\n' "@DEPLOYMENT@" "@TAG@" "@BUNDLE_SHA@" > "$deployment_tmp"
+mv -f "$deployment_tmp" "$runtime_root/.stint-deployment"
+date +%s%3N > "$root/runtime-verified-ms"
+echo "Immutable NInfer release verified and installed; Qwen model transfer continues in parallel."
+`
+	return strings.NewReplacer(
+		"@MODEL_SHA@", ninferModelSHA256,
+		"@MODEL_URL@", ninferModelURL,
+		"@ARCHIVE@", ninferRuntimeBundleName,
+		"@RELEASE_URL@", ninferRuntimeReleaseURL,
+		"@BUNDLE_SHA@", ninferRuntimeBundleSHA256,
+		"@TAG@", ninferRuntimeReleaseTag,
+		"@DEPLOYMENT@", ninferDeploymentReleaseBundle,
+		"@SOURCE_REPOSITORY@", ninferSourceRepository,
+		"@SOURCE_COMMIT@", ninferSourceCommit,
+		"@MODEL_REVISION@", ninferModelRevision,
+		"@MODEL_SIZE@", strconv.FormatInt(ninferModelSizeBytes, 10),
+		"@MODEL_FORMAT@", fmt.Sprintf("NInfer v%d", ninferArtifactFormat),
+		"@CUDA_FLOOR@", ninferCUDAFloor,
+		"@GPU_ARCH@", ninferGPUArchitecture,
+		"@BASE_TAG@", "vastai/base-image:cuda-12.8.1-cudnn-devel-ubuntu24.04-py310",
+		"@BASE_DIGEST@", "sha256:bf6bb047dbc1105c89a5ac41b9a32205a2f2e022cb24d632d055c5b14a86f7ec",
+	).Replace(command)
 }
 
 func selectedRuntimeReadyCommand(state sessionstate.State) string {
 	if runtimeForState(state) == runtimeNInfer {
-		return "if [ -x /workspace/stint/ninfer/build/apps/ninfer-serve ]; then echo ready; else echo missing; fi"
+		deployment := ninferDeploymentForState(state)
+		marker := deployment
+		if deployment == ninferDeploymentReleaseBundle {
+			marker += " " + ninferRuntimeReleaseTag + " " + ninferRuntimeBundleSHA256
+		} else {
+			marker += " " + ninferSourceCommit
+		}
+		return fmt.Sprintf(`root=/workspace/stint/ninfer; actual="$(cat "$root/.stint-deployment" 2>/dev/null || true)"; if [ -x "$root/bin/ninfer-serve" ] && [ "$actual" = %s ]; then echo ready; elif [ %s = source-build ] && [ -z "$actual" ] && { [ -x "$root/build/apps/ninfer-serve" ] || [ -x "$root/bin/ninfer-serve" ]; } && pgrep -x ninfer-serve >/dev/null 2>&1; then echo ready; else echo missing; fi`, shellQuote(marker), shellQuote(deployment))
 	}
 	return "if [ -x /workspace/stint/llama.cpp/build/bin/llama-server ]; then echo ready; else echo missing; fi"
 }
@@ -415,7 +805,18 @@ model=@MODEL@
 model_size_file=@SIZE_FILE@
 model_url=@MODEL_URL@
 model_sha=@MODEL_SHA@
+model_pid_file=@MARKER_DIR@/model-download.pid
+model_started_file=@MARKER_DIR@/model-acquisition-started-ms
+model_acquired_file=@MARKER_DIR@/model-acquired-ms
+downloaded=0
 mkdir -p "$(dirname "$model")"
+
+prefetch_pid="$(cat "$model_pid_file" 2>/dev/null || true)"
+if [ -n "$prefetch_pid" ] && kill -0 "$prefetch_pid" 2>/dev/null; then
+  echo "Waiting for the verified parallel Qwen3.8-27B transfer to finish..."
+  while kill -0 "$prefetch_pid" 2>/dev/null; do sleep 5; done
+fi
+rm -f "$model_pid_file"
 
 discover_model_size() {
   size="$(curl -fsSLI --retry 3 --retry-delay 1 -o /dev/null -w "%header{content-length}" "$model_url" 2>/dev/null || true)"
@@ -446,6 +847,8 @@ fi
 
 if [ ! -f "$model" ] || ! echo "$model_sha  $model" | sha256sum -c - >/dev/null 2>&1; then
   echo "Downloading Qwen3.8-27B NInfer artifact..."
+  if [ ! -s "$model_started_file" ]; then date +%s%3N > "$model_started_file"; fi
+  downloaded=1
   curl -L -C - --fail --retry 10 --retry-all-errors --retry-delay 2 --connect-timeout 20 --output "$model" "$model_url"
   if ! echo "$model_sha  $model" | sha256sum -c - >/dev/null 2>&1; then
     echo "Resumed NInfer artifact failed SHA-256; discarding it and retrying from byte zero."
@@ -454,12 +857,14 @@ if [ ! -f "$model" ] || ! echo "$model_sha  $model" | sha256sum -c - >/dev/null 
   fi
 fi
 echo "$model_sha  $model" | sha256sum -c -
+if [ "$downloaded" -eq 1 ] || [ ! -s "$model_acquired_file" ]; then date +%s%3N > "$model_acquired_file"; fi
 `
 	return strings.NewReplacer(
 		"@MODEL@", shellQuote(modelPath),
 		"@SIZE_FILE@", shellQuote(sizePath),
 		"@MODEL_URL@", shellQuote(modelURL),
 		"@MODEL_SHA@", shellQuote(modelSHA),
+		"@MARKER_DIR@", shellQuote(filepath.Dir(sizePath)),
 	).Replace(command)
 }
 
@@ -472,7 +877,7 @@ func ninferModelLaunchCommandWithClients(contextTokens, clients int) string {
 		ninferModelSHA256,
 	)
 	modelCommand := fmt.Sprintf(`%s
-exec /workspace/stint/ninfer/build/apps/ninfer-serve "$model" \
+exec /workspace/stint/ninfer/bin/ninfer-serve "$model" \
   --host 127.0.0.1 \
   --port %d \
   --model-id %s \
@@ -492,7 +897,7 @@ exec /workspace/stint/ninfer/build/apps/ninfer-serve "$model" \
 mkdir -p /workspace/stint/models
 pid_file=/workspace/stint/llama.pid
 log_file=/workspace/stint/llama.log
-bin=/workspace/stint/ninfer/build/apps/ninfer-serve
+bin=/workspace/stint/ninfer/bin/ninfer-serve
 model=/workspace/stint/models/qwen3_8_27b.ninfer
 
 if command -v pgrep >/dev/null 2>&1; then

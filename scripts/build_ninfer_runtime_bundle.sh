@@ -7,7 +7,21 @@ source_commit="81b68a20a9a0d9ab47d7e5838887c6d636ab76e0"
 image_ref="vastai/base-image@sha256:bf6bb047dbc1105c89a5ac41b9a32205a2f2e022cb24d632d055c5b14a86f7ec"
 output_dir="${1:-$repo_root/dist/ninfer-runtime}"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/stint-ninfer-build.XXXXXX")"
-trap 'rm -rf "$work_dir"' EXIT
+cleanup() {
+	local status=$?
+	trap - EXIT
+	# Docker writes root-owned files into the bind mount. Remove the build tree
+	# from inside the pinned image before the unprivileged runner removes its
+	# temporary directory; cleanup must not hide the build's original status.
+	if docker image inspect "$image_ref" >/dev/null 2>&1; then
+		docker run --rm --pull=never \
+			--mount "type=bind,src=$work_dir,dst=/work" \
+			--entrypoint /bin/rm "$image_ref" -rf /work/build /work/out || true
+	fi
+	rm -rf "$work_dir" || true
+	exit "$status"
+}
+trap cleanup EXIT
 mkdir -p "$output_dir" "$work_dir/out"
 
 if find "$output_dir" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
@@ -40,6 +54,10 @@ set -x
 src=/work/source
 build=/work/build
 git config --global --add safe.directory /work/source
+apt-get update
+apt-get install -y --no-install-recommends \
+  git ca-certificates curl cmake ninja-build pkg-config gcc-13 g++-13 \
+  libavcodec-dev libavformat-dev libavutil-dev libcurl4-openssl-dev libswscale-dev
 test "$(git -C "$src" rev-parse HEAD)" = "'"$source_commit"'"
 CC=/usr/bin/gcc-13 \
 CXX=/usr/bin/g++-13 \
@@ -64,6 +82,29 @@ python3 "$repo_root/scripts/ninfer_runtime_bundle.py" package \
   --ninfer "$work_dir/out/ninfer" \
   --ninfer-serve "$work_dir/out/ninfer-serve" \
   --output-dir "$output_dir"
+
+python3 - "$repo_root/cmd/stint/runtime.go" "$output_dir" <<'PY'
+import hashlib
+from pathlib import Path
+import re
+import sys
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r'ninferRuntimeBundleSHA256\s*=\s*"([0-9a-f]{64})"', source)
+if not match:
+    raise SystemExit("Stint must pin the exact immutable runtime bundle SHA-256")
+expected = match.group(1)
+archives = list(Path(sys.argv[2]).glob("*.tar.gz"))
+if len(archives) != 1:
+    raise SystemExit("expected exactly one NInfer runtime archive")
+digest_object = hashlib.sha256()
+with archives[0].open("rb") as stream:
+    for block in iter(lambda: stream.read(1024 * 1024), b""):
+        digest_object.update(block)
+digest = digest_object.hexdigest()
+if digest != expected:
+    raise SystemExit(f"runtime bundle SHA-256 {digest} differs from Stint pin {expected}")
+PY
 
 for archive in "$output_dir"/*.tar.gz; do
   [ -e "$archive" ] || { echo "runtime archive was not created" >&2; exit 1; }

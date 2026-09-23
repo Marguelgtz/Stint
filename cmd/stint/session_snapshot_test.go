@@ -10,21 +10,31 @@ import (
 func TestBuildSessionSnapshot(t *testing.T) {
 	started := time.Date(2026, 8, 31, 6, 0, 0, 0, time.UTC)
 	state := sessionstate.State{
-		InstanceID:    1,
-		Profile:       "interactive",
-		GPUModel:      "RTX_4090",
-		Runtime:       runtimeNInfer,
-		ContextTokens: 172032,
-		HourlyUSD:     0.40,
-		StartedAt:     started,
-		Deadline:      started.Add(2 * time.Hour),
-		Status:        sessionstate.StatusReady,
-		TunnelPID:     111,
-		WatchdogPID:   222,
+		InstanceID:                   1,
+		Profile:                      "interactive",
+		GPUModel:                     "RTX_4090",
+		Runtime:                      runtimeNInfer,
+		RuntimeDeployment:            ninferDeploymentReleaseBundle,
+		RuntimeSourceCommit:          ninferSourceCommit,
+		RuntimeBundleTag:             ninferRuntimeReleaseTag,
+		RuntimeBundleSHA256:          ninferRuntimeBundleSHA256,
+		RuntimeAcquisitionMillis:     9000,
+		RuntimeVerificationMillis:    1200,
+		ReadyElapsedFromRentalMillis: 70000,
+		ContextTokens:                172032,
+		HourlyUSD:                    0.40,
+		StartedAt:                    started,
+		Deadline:                     started.Add(2 * time.Hour),
+		Status:                       sessionstate.StatusReady,
+		TunnelPID:                    111,
+		WatchdogPID:                  222,
 	}
 	snapshot := buildSessionSnapshot(state, started.Add(45*time.Minute))
 	if snapshot.Session.InstanceID != 1 || snapshot.Session.Runtime != runtimeNInfer || snapshot.Session.ContextTokens != 172032 {
 		t.Fatalf("unexpected session identity: %+v", snapshot.Session)
+	}
+	if snapshot.Session.RuntimeDeployment != ninferDeploymentReleaseBundle || snapshot.Session.RuntimeSourceCommit != ninferSourceCommit || snapshot.Session.RuntimeBundleTag != ninferRuntimeReleaseTag || snapshot.Session.RuntimeBundleSHA256 != ninferRuntimeBundleSHA256 || snapshot.Session.RuntimeAcquisitionMillis != 9000 || snapshot.Session.RuntimeVerificationMillis != 1200 || snapshot.Session.ReadyElapsedFromRentalMillis != 70000 {
+		t.Fatalf("runtime deployment provenance missing from status snapshot: %+v", snapshot.Session)
 	}
 	if snapshot.Time.Elapsed != 45*time.Minute {
 		t.Fatalf("elapsed = %s, want 45m", snapshot.Time.Elapsed)
