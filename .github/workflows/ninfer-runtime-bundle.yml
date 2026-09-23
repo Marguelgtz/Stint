@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-and-smoke:
@@ -55,3 +55,52 @@ jobs:
           path: ${{ runner.temp }}/ninfer-runtime/*
           if-no-files-found: error
           retention-days: 30
+
+      - name: Stage verified candidate as a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/ninfer-runtime/stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz"
+          checksum="$archive.sha256"
+          manifest="$RUNNER_TEMP/ninfer-runtime/manifest.json"
+          digest="$(sha256sum "$archive" | awk '{print $1}')"
+          cat > "$RUNNER_TEMP/ninfer-runtime-release-notes.md" <<EOF
+          Stint's verified Linux x86-64 NInfer server bundle for RTX 4090 / SM89.
+
+          The attached manifest records the exact NInfer source commit, Qwen NInfer v2 artifact revision and SHA-256, CUDA floor, and immutable Vast base-image digest. The `.sha256` sidecar covers the archive. This bundle passed build and clean-base CLI/dependency smoke checks on the recorded base image. GPU model-loading and performance qualification are tracked separately; publishing does not promote the release path to the default startup strategy.
+
+          Candidate build workflow run: $GITHUB_RUN_ID
+          Candidate Stint commit: $GITHUB_SHA
+          Candidate bundle SHA-256: $digest
+          EOF
+          gh release create ninfer-runtime-81b68a20-sm89 \
+            "$archive" "$checksum" "$manifest" \
+            --draft --title 'Stint NInfer runtime 81b68a20 SM89' \
+            --notes-file "$RUNNER_TEMP/ninfer-runtime-release-notes.md" \
+            --target "$GITHUB_SHA"
+
+      - name: Verify staged draft release provenance and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/ninfer-runtime/stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz"
+          digest="$(sha256sum "$archive" | awk '{print $1}')"
+          draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/ninfer-runtime-81b68a20-sm89")"
+          test "$(jq -r .draft <<<"$draft")" = true
+          test "$(jq -r .target_commitish <<<"$draft")" = "$GITHUB_SHA"
+          jq -e --arg run "Candidate build workflow run: $GITHUB_RUN_ID" \
+            --arg sha "Candidate Stint commit: $GITHUB_SHA" \
+            --arg digest "Candidate bundle SHA-256: $digest" \
+            '.body | contains($run) and contains($sha) and contains($digest)' \
+            <<<"$draft" >/dev/null
+          test "$(jq '.assets | length' <<<"$draft")" -eq 3
+          for name in \
+            stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz \
+            stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz.sha256 \
+            manifest.json; do
+            jq -e --arg name "$name" '.assets[] | select(.name == $name)' <<<"$draft" >/dev/null
+          done
