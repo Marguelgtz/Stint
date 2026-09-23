@@ -1,3 +1,5 @@
+> Archived early architecture snapshot. It predates current Hermes-on-box Deep Work and NInfer release handling; use [current architecture](../reference/architecture.md).
+
 # Architecture
 
 ## Control plane

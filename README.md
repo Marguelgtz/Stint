@@ -30,6 +30,7 @@ Cline / Hermes / another OpenAI-compatible client
 
 ## Start here
 
+- [Documentation index](docs/README.md) for current guides, operations, architecture, roadmap, and history.
 - [Operator instructions](docs/INSTRUCTIONS.md) for setup, start/status/down, recovery, dashboard use, runtime options, and current safety caveats.
 - [CLI reference](docs/CLI.md) for the longer command reference.
 - [Dashboard guide](docs/DASHBOARD.md) for the terminal cockpit and its state-ownership rules.

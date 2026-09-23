@@ -1,3 +1,5 @@
+> Archived planning draft from before Hermes-on-box Deep Work and runtime-bundle convergence. Its Cline-centric phases and old acceptance gates are not current tasks; use [current Next Stint](../operations/next-stint.md).
+
 # Next Stint: first real Cline-ready compute
 
 ## Outcome
