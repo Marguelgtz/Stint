@@ -5,13 +5,16 @@ historical PR semantics are grounded, and the immutable runtime bundle remains
 opt-in. One fresh RTX 4090 source-build run reached READY and supplied a live
 startup/perf baseline. A second fresh 4090 run stopped during release-asset
 download at about 48%; release-bundle and Deep Work qualification remain open.
+The follow-up parallel-range downloader passes local fixtures but still needs
+exact-head CI and a live 4090 transfer/acceptance run.
 
 ## Authoritative repository and verification
 
-- Product `main` before this evidence-documentation PR:
-  `bc368274ab5746a03eaa8c497b83023ddab3f6fe` (after #139).
-- PR #139 exact-head run `35924946874` and landed-main run `35925100519`
-  passed all five required CI jobs.
+- Product `main` before this downloader change:
+  `cc09c9ad3b340db6ca7afbdcfda7267e47027311` (after #140).
+- PR #140 exact-head run `35928576565` and landed-main run `35928870944`
+  passed all five required CI jobs. PR #140 records the incomplete RTX 4090
+  release-bundle transfer; it did not claim runtime acceptance.
 - Exact landed-main push run `35916137793` passed all five required jobs.
 - PR #131 merged as `2b5f7342093c520175b608a1a64bbce0b9443f31`. Its PR run
   `35905726077` appeared green but physically tested synthetic merge tree
@@ -127,8 +130,14 @@ The release archive was not completed or SHA-verified. This run did not reach
 runtime verification, model load, READY, inference, perf, Deep Work,
 publication, or final archive. The exact cause of the GitHub-route slowdown
 is unknown; general network qualification does not measure the release asset
-path. Keep `release-bundle` opt-in and `source-build` default. Improve and
-locally verify release asset delivery before another bounded 4090 attempt.
+path. An operator-workstation probe confirmed GitHub's redirected asset
+supports HTTP ranges; eight concurrent 2 MiB range requests reached 12.3 MB/s
+aggregate locally, versus 5.8 MB/s for one 2 MiB request. A parallel range
+downloader with retry, resume cache, final SHA check, and a resumable-curl
+fallback for servers without range support now passes local fixtures. The Vast
+route result is not yet measured.
+Keep `release-bundle` opt-in and `source-build` default until a bounded 4090
+run passes the complete gate.
 
 Keep release deployment opt-in until a fresh RTX 4090 run covers the immutable
 bundle, short two-lane requests, full native-context stability, correctness,
@@ -151,11 +160,11 @@ branches were not modified to rerun them.
 
 ## Next work
 
-1. Improve release asset delivery and verify it locally, including retry and
-   integrity behavior on a throttled/range-capable fixture.
-2. After the transfer path can leave time for acceptance, run the immutable
-   release bundle on one fresh RTX 4090 and complete the remaining runtime and
-   Deep Work gates within explicit price and candidate limits.
+1. Get exact-head CI green for the parallel-range downloader before merging.
+2. Run the immutable release bundle on one fresh RTX 4090 and complete the
+   remaining runtime and Deep Work gates within explicit price and candidate
+   limits; stop early if the measured transfer again leaves no acceptance
+   window.
 3. Compare release-bundle startup with the source-build baseline before choosing
    a production default. Keep source-build as default until qualification passes.
 4. Refresh the open-PR ledger after acceptance; keep #85 parked and #110–#113
