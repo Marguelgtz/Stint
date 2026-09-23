@@ -78,7 +78,7 @@ chmod 600 "$CONFIG_ROOT/stint/credentials.json"
 
 START_ARGS=(--hours 1.5 --runtime ninfer --ninfer-config native --clients 2
   --min-measured-download-mbps 30 --min-network-mbps 300
-  --network-candidate-attempts 5 --max-hourly-usd 1.33 --max-cost-usd 2 --yes)
+  --network-candidate-attempts 1 --max-hourly-usd 1.33 --max-cost-usd 2 --yes)
 "$STINT_BIN" start interactive "${START_ARGS[@]}" --validate-only >/dev/null 2>&1 || \
 	die "smoke rental arguments failed current Stint CLI validation"
 

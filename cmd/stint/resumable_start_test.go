@@ -105,7 +105,7 @@ func TestRunStartResumableValidateOnlyParsesSmokeArgumentsWithoutConfig(t *testi
 	err := runStartResumable([]string{
 		"interactive", "--hours", "1.5", "--runtime", "ninfer", "--ninfer-config", "native", "--clients", "2",
 		"--min-measured-download-mbps", "30", "--min-network-mbps", "300",
-		"--network-candidate-attempts", "5", "--max-hourly-usd", "1.33", "--max-cost-usd", "2", "--yes", "--validate-only",
+		"--network-candidate-attempts", "1", "--max-hourly-usd", "1.33", "--max-cost-usd", "2", "--yes", "--validate-only",
 	})
 	if err != nil {
 		t.Fatalf("validate-only rejected the live smoke arguments: %v", err)

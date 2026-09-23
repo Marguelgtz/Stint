@@ -193,7 +193,9 @@ not the target design.
   limit requires the explicit `$2` session cap, and every candidate remains
   subject to the existing full-session check immediately before rental. This
   bounds estimated exposure to at most $2 for the requested duration. No fresh
-  box has yet been created.
+  box has yet been created. The smoke now limits each authorized launcher run to
+  one rental candidate so failed startup fallback attempts cannot stack multiple
+  individually capped rentals; verification of that last bound is pending.
 
 ### [~] Repair coordinator identity, policy reconstruction, and durable transitions
 
@@ -354,12 +356,12 @@ not the target design.
 - PR #102 implementation commit `04151f5`: `go test -count=1 ./...` — PASS; `python3 scripts/test_onbox_github_publish.py` — PASS (7 tests); Python byte-compilation — PASS; Bash syntax for launcher, smoke, supervisor, and provisioner — PASS; embedded resume-preflight Python compilation — PASS; `git diff --check` — PASS. Draft PR #102 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. No live GPU smoke was run.
 - PR #103 commit `8aea2bd`: `bash -n scripts/onbox-deep-supervisor.sh scripts/test_onbox_supervisor.sh`, `bash scripts/test_onbox_supervisor.sh`, and `git diff --check` — PASS. Draft PR #103 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `ad55713` is pushed. No live GPU smoke was run.
 - PR #104 commit `d971d24`: `go test -count=1 ./...` — PASS, including the five-case local NInfer artifact fixture; publisher safety tests (7) and supervisor completion fixture — PASS; shell syntax and `git diff --check` — PASS. Draft PR #104 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `19e712a` is pushed. No live GPU smoke was run.
-- PR #105 commit `d497ce1` removed the stale tunnel flag; its exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed. Commit `ad422e0` added a lower-only `--max-cost-usd` and `--validate-only`, replacing the ineffective `--help` preflight. Commit `e658c09` added `--max-hourly-usd`; increasing the profile's $0.40/hour limit requires an explicit session cap and the per-candidate full-session check still guards each rental. `go test -count=1 ./...`, publisher fixtures (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check` pass. PR #105 exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` pass on `e658c09`. A no-rental live attempt reached Vast search but no NInfer-compatible 4090 passed the original hourly profile cap; read-only plan evidence showed qualifying 3090s and displayed 4090 examples from $0.496-$0.614/hour. No provider rental was issued and no session was recorded. The updated $1.33/hour/$2 session-cap path passes local validation but the fresh-GPU run has not yet started.
+- PR #105 commit `d497ce1` removed the stale tunnel flag; its exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed. Commit `ad422e0` added a lower-only `--max-cost-usd` and `--validate-only`, replacing the ineffective `--help` preflight. Commit `e658c09` added `--max-hourly-usd`; increasing the profile's $0.40/hour limit requires an explicit session cap and the per-candidate full-session check still guards each rental. `go test -count=1 ./...`, publisher fixtures (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check` pass. PR #105 exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` pass on `e658c09`. A no-rental live attempt reached Vast search but no NInfer-compatible 4090 passed the original hourly profile cap; read-only plan evidence showed qualifying 3090s and displayed 4090 examples from $0.496-$0.614/hour. No provider rental was issued and no session was recorded. The updated $1.33/hour/$2 session-cap path passes local validation but the fresh-GPU run has not yet started. A follow-up limits the smoke to one candidate per launch so bounded per-session cost cannot multiply across startup retries; its checks are pending.
 
 ## Next action
 
-Record this plan update as a follow-up commit and wait for its exact-head CI.
-Build the binary from that checked head, then retry the authorized $2-capped
+Wait for the latest PR #105 exact-head CI, then build the binary from that
+checked head and retry the authorized $2-capped
 fresh-GPU smoke through
 `scripts/run-onbox-deep-smoke.sh`. Record whether it reaches RUNNING, disconnect
 survival, xhigh/medium work, independent verification, publication, final R2
