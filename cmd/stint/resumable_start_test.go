@@ -1,6 +1,8 @@
 package main
 
 import (
+	"math"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +34,75 @@ func TestFallbackCandidateExceedingSessionCostIsRejected(t *testing.T) {
 	}
 	if candidateWithinSessionBudget(profile, fallback, requestedHours) {
 		t.Fatal("fallback satisfying hourly policy but exceeding the full-session budget was accepted")
+	}
+}
+
+func TestApplySessionCostCeilingOnlyLowersProfilePolicy(t *testing.T) {
+	profile, err := router.ResolveProfile("interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Session.MaxCostUSD < 2 {
+		t.Fatalf("test setup: interactive profile ceiling $%.2f is below smoke ceiling $2.00", profile.Session.MaxCostUSD)
+	}
+
+	got, err := applySessionCostCeiling(profile, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Session.MaxCostUSD != 2 {
+		t.Fatalf("per-run ceiling = $%.2f, want $2.00", got.Session.MaxCostUSD)
+	}
+	if candidateWithinSessionBudget(got, core.Offer{HourlyUSD: 1.34}, 1.5) {
+		t.Fatal("candidate projected above the per-run ceiling was accepted")
+	}
+
+	if _, err := applySessionCostCeiling(profile, profile.Session.MaxCostUSD+0.01); err == nil {
+		t.Fatal("raising the profile cost ceiling from the command line was accepted")
+	}
+	for _, invalid := range []float64{0, -1, math.NaN(), math.Inf(1)} {
+		if _, err := applySessionCostCeiling(profile, invalid); err == nil {
+			t.Fatalf("invalid per-run ceiling %v was accepted", invalid)
+		}
+	}
+}
+
+func TestRunStartResumableValidateOnlyParsesSmokeArgumentsWithoutConfig(t *testing.T) {
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "no-home"))
+	err := runStartResumable([]string{
+		"interactive", "--hours", "1.5", "--runtime", "ninfer", "--ninfer-config", "native", "--clients", "2",
+		"--min-measured-download-mbps", "30", "--min-network-mbps", "300",
+		"--network-candidate-attempts", "5", "--max-cost-usd", "2", "--yes", "--validate-only",
+	})
+	if err != nil {
+		t.Fatalf("validate-only rejected the live smoke arguments: %v", err)
+	}
+}
+
+func TestRunStartResumableValidateOnlyRejectsBadCostBeforeConfig(t *testing.T) {
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "no-home"))
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "cannot raise profile ceiling",
+			args: []string{"interactive", "--max-cost-usd", "3", "--validate-only"},
+			want: "exceeds the interactive profile ceiling",
+		},
+		{
+			name: "rejects unknown option",
+			args: []string{"interactive", "--not-a-start-option", "--validate-only"},
+			want: "flag provided but not defined",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runStartResumable(tc.args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("runStartResumable(%v) error = %v, want containing %q", tc.args, err, tc.want)
+			}
+		})
 	}
 }
 

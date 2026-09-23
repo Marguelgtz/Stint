@@ -136,6 +136,10 @@ Rents a Vast instance for the selected offer, qualifies the host by sampling the
 | `--min-network-mbps <float>` | `500` | Minimum Vast advertised download bandwidth in Mbps; `0` disables the prefilter |
 | `--min-measured-download-mbps <float>` | `40` | Minimum measured post-SSH model-transfer throughput in MB/s; `0` disables |
 | `--network-candidate-attempts <int>` | `3` | Maximum distinct Vast machines to try during provider startup and network qualification |
+| `--max-cost-usd <float>` | profile ceiling | Lower the requested-session cost ceiling; cannot raise the profile's $2.50 limit |
+| `--validate-only` | `false` | Parse and validate start options, then exit before reading credentials or contacting Vast |
+
+For example, `stint start interactive --hours 1.5 --max-cost-usd 2 --validate-only` validates a start capped at $2 without accessing local credentials or changing provider state. When `--max-cost-usd` is used for a real start, the requested-session budget check applies to every rental candidate, including fallbacks.
 
 Operational notes:
 

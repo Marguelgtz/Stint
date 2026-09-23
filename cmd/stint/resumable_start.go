@@ -39,6 +39,20 @@ func estimatedCandidateSessionCost(candidate core.Offer, hours float64) float64 
 	return math.Round(candidate.HourlyUSD*hours*100) / 100
 }
 
+// applySessionCostCeiling lets a caller tighten an existing profile limit for
+// one start invocation. A command-line value must never expand configured
+// spending policy.
+func applySessionCostCeiling(profile core.Profile, requested float64) (core.Profile, error) {
+	if math.IsNaN(requested) || math.IsInf(requested, 0) || requested <= 0 {
+		return profile, fmt.Errorf("invalid --max-cost-usd value %q: must be a finite positive amount", strconv.FormatFloat(requested, 'f', -1, 64))
+	}
+	if profile.Session.MaxCostUSD > 0 && requested > profile.Session.MaxCostUSD {
+		return profile, fmt.Errorf("--max-cost-usd $%.2f exceeds the interactive profile ceiling of $%.2f", requested, profile.Session.MaxCostUSD)
+	}
+	profile.Session.MaxCostUSD = requested
+	return profile, nil
+}
+
 // runStartResumable is the paid interactive start path with explicit recovery
 // checkpoints. Provider/SSH startup failures reject the host and move to the
 // next distinct candidate. Once SSH is usable, later startup failures preserve
@@ -70,6 +84,8 @@ func runStartResumable(args []string) (retErr error) {
 	minNetworkMbps := fs.Float64("min-network-mbps", defaultMinAdvertisedNetworkMbps, "minimum Vast advertised download bandwidth in Mbps; 0 disables")
 	minMeasuredDownloadMBps := fs.Float64("min-measured-download-mbps", defaultMinMeasuredDownloadMBps, "minimum measured post-SSH download throughput in MB/s; 0 disables")
 	networkCandidateAttempts := fs.Int("network-candidate-attempts", defaultNetworkCandidateAttempts, "maximum distinct Vast machines to try during provider startup and measured-network qualification")
+	maxCostUSD := fs.Float64("max-cost-usd", 0, "lower the profile's maximum requested-session cost (USD)")
+	validateOnly := fs.Bool("validate-only", false, "validate start options without reading credentials or contacting a provider")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -96,6 +112,26 @@ func runStartResumable(args []string) (retErr error) {
 	requestedNInferConfig, err := resolveNInferConfig(*ninferConfigValue)
 	if err != nil {
 		return err
+	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "max-cost-usd" {
+			profile, err = applySessionCostCeiling(profile, *maxCostUSD)
+		}
+	})
+	if err != nil {
+		return err
+	}
+	if *validateOnly {
+		if strings.TrimSpace(*contextValue) != "" {
+			if runtimeRequest == runtimeNInfer {
+				return errors.New("--context is supported only with llama.cpp; use --ninfer-config for NInfer context profiles")
+			}
+			if _, err := resolveLlamaContext(*contextValue); err != nil {
+				return err
+			}
+		}
+		fmt.Println("start options are valid; no local credentials or provider were accessed")
+		return nil
 	}
 
 	paths, err := config.DefaultPaths()
