@@ -36,26 +36,28 @@ const (
 )
 
 type State struct {
-	InstanceID     int64     `json:"instanceId"`
-	OfferID        string    `json:"offerId"`
-	Profile        string    `json:"profile"`
-	GPUModel       string    `json:"gpuModel"`
-	RuntimeRequest string    `json:"runtimeRequest,omitempty"`
-	Runtime        string    `json:"runtime,omitempty"`
-	ContextTokens  int       `json:"contextTokens,omitempty"`
-	Clients        int       `json:"clients,omitempty"`
-	HourlyUSD      float64   `json:"hourlyUsd"`
-	Hours          float64   `json:"hours"`
-	StartedAt      time.Time `json:"startedAt"`
-	Deadline       time.Time `json:"deadline"`
-	SSHHost        string    `json:"sshHost,omitempty"`
-	SSHPort        int       `json:"sshPort,omitempty"`
-	TunnelPID      int       `json:"tunnelPid,omitempty"`
-	WatchdogPID    int       `json:"watchdogPid,omitempty"`
-	Status         string    `json:"status"`
-	Checkpoint     string    `json:"checkpoint,omitempty"`
-	LastError      string    `json:"lastError,omitempty"`
-	UpdatedAt      time.Time `json:"updatedAt,omitempty"`
+	InstanceID      int64     `json:"instanceId"`
+	OfferID         string    `json:"offerId"`
+	Profile         string    `json:"profile"`
+	GPUModel        string    `json:"gpuModel"`
+	RuntimeRequest  string    `json:"runtimeRequest,omitempty"`
+	Runtime         string    `json:"runtime,omitempty"`
+	ContextTokens   int       `json:"contextTokens,omitempty"`
+	Clients         int       `json:"clients,omitempty"`
+	HourlyUSD       float64   `json:"hourlyUsd"`
+	Hours           float64   `json:"hours"`
+	StartedAt       time.Time `json:"startedAt"`
+	RentalStartedAt time.Time `json:"rentalStartedAt,omitempty"`
+	Deadline        time.Time `json:"deadline"`
+	SSHHost         string    `json:"sshHost,omitempty"`
+	SSHPort         int       `json:"sshPort,omitempty"`
+	TunnelPID       int       `json:"tunnelPid,omitempty"`
+	WatchdogPID     int       `json:"watchdogPid,omitempty"`
+	Status          string    `json:"status"`
+	StartupPhase    string    `json:"startupPhase,omitempty"`
+	Checkpoint      string    `json:"checkpoint,omitempty"`
+	LastError       string    `json:"lastError,omitempty"`
+	UpdatedAt       time.Time `json:"updatedAt,omitempty"`
 }
 
 func Path(paths config.Paths) string {
@@ -110,7 +112,14 @@ func Save(paths config.Paths, state State) error {
 	if err := os.Rename(tmpName, Path(paths)); err != nil {
 		return fmt.Errorf("install session state: %w", err)
 	}
-	return os.Chmod(Path(paths), 0o600)
+	if err := os.Chmod(Path(paths), 0o600); err != nil {
+		return fmt.Errorf("secure session state: %w", err)
+	}
+
+	// Startup observations are best-effort and append only after the
+	// authoritative session snapshot has been installed securely.
+	_ = appendStartupEvent(paths, state)
+	return nil
 }
 
 func Clear(paths config.Paths) error {
