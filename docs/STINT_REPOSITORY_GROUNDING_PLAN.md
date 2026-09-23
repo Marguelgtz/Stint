@@ -179,6 +179,12 @@ compute was rented. Acceptance must use the explicit `--runtime ninfer` path,
 which constrains the provider query to RTX 4090 only; never rent or test on a
 3090.
 
+A further read-only generic interactive plan after #136 queried 37 offers,
+reported eight generic qualifiers, and selected an RTX 3090 at `$0.379/hour`.
+Its closest rejected RTX 4090 was `$0.476/hour`, over the unchanged ceiling.
+The generic selection is excluded from acceptance. No compute was rented;
+continue to use only the exact RTX 4090 `--runtime ninfer` smoke path.
+
 The clean-base bundle extraction, CLI, and dynamic-library smoke is not a
 runtime-readiness comparison. No Stint source-build, immutable-release-bundle,
 and historical GHCR image A/B has measured provider loading, SSH-to-READY, or
@@ -234,8 +240,8 @@ deployment opt-in and recheck later under the same limits.
 - [x] Merge hash-pin correction #126 after its PR CI; exact landed-main run `35887717054` passed all required jobs.
 - [x] Replace repeated-build hash assumptions with candidate build and pin-gated promotion (#127); legacy PR merge-tree and landed-main CI passed.
 - [x] Build and clean-base smoke candidate run `35894635094`, pin its uploaded archive via #128, and publish/verify immutable release via #129–#130 (`35902030339`).
-- [x] Inspect the market read-only under existing caps at `18:37 UTC`, recheck the plan at `19:06 UTC`, and refresh it at `20:12 UTC`; no qualifying RTX 4090 was established and no compute was rented.
-- [!] Fresh RTX 4090 runtime and Deep Work acceptance: the 20:12 UTC generic plan's RTX 3090 selection is excluded; the closest rejected RTX 4090 offers exceeded the fixed $0.40/hour ceiling. Run acceptance only through the RTX 4090-filtered `--runtime ninfer` path; never fall back to a 3090 or raise limits.
+- [x] Inspect the market read-only under existing caps at `18:37 UTC`, recheck at `19:06 UTC` and `20:12 UTC`, then repeat after #136 merged; the latest 37-offer generic scan had no qualifying RTX 4090, and its closest displayed RTX 4090 was rejected at $0.476/hour. No compute was rented.
+- [!] Fresh RTX 4090 runtime and Deep Work acceptance: the latest generic plan selected an RTX 3090, which is excluded; its closest rejected RTX 4090 was $0.476/hour, above the fixed $0.40/hour ceiling. Run acceptance only through the RTX 4090-filtered `--runtime ninfer` path; never fall back to a 3090 or raise limits.
 - [x] Merge #125 with the canonical docs and verbatim #73 history; then close only #48–#51 and #73 after their replacement/history records landed.
 - [x] Merge #131 and record its landing SHA / main CI; inspect its pull-request run and identify the synthetic-merge checkout gap.
 - [x] Repair CI in #132: required jobs check exact PR head SHA, then `unit-tests` runs again on GitHub's synthetic merge tree; exact-head, merge-tree, and landed-main checks passed.

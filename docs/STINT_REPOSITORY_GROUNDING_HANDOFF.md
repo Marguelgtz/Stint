@@ -100,6 +100,12 @@ offers were over the fixed `$0.40/hour` ceiling. The output stated
 `--runtime ninfer` for acceptance, which filters the provider search to RTX
 4090, and never fall back to a 3090.
 
+A further read-only generic scan after PR #136 queried 37 offers and selected
+an RTX 3090 at `$0.379/hour`; the closest rejected RTX 4090 was `$0.476/hour`,
+over the fixed ceiling. This is not acceptance evidence. No instance was
+rented and no GPU spend occurred. Keep Deep Work/runtime acceptance on the
+`--runtime ninfer` RTX 4090-only path.
+
 The successful current Deep Work session is `20260923-022052`, protected in
 open PRs #110–#113 and not merged. Older #81–#84 are successful 2026-09-08
 evidence; #86–#89 are failed 2026-09-09 attempts. All eight are closed
