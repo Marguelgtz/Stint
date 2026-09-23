@@ -1,3 +1,5 @@
+> Historical project-stage record. Use [current operator instructions](../INSTRUCTIONS.md) and the [grounding plan](../STINT_REPOSITORY_GROUNDING_PLAN.md) for current behavior and acceptance state.
+
 # Phase 1 — Local foundation and Vast authentication
 
 ## Outcome

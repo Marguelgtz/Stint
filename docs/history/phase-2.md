@@ -1,3 +1,5 @@
+> Historical planner record. It describes an early policy and contains retired discovery assumptions; use [current operator instructions](../INSTRUCTIONS.md), [Next Stint](../operations/next-stint.md), and the [grounding plan](../STINT_REPOSITORY_GROUNDING_PLAN.md) for current behavior and fixed limits.
+
 # Phase 2 — Live RTX 4090 planner
 
 ## Outcome

@@ -269,4 +269,4 @@ Additional references:
 - [`CLI.md`](CLI.md) for the long-form command reference
 - [`DASHBOARD.md`](DASHBOARD.md) for dashboard behavior and state ownership
 - [`TELEMETRY.md`](TELEMETRY.md) for the status/telemetry JSON contract
-- [`architecture.md`](architecture.md) for the older architecture snapshot; use the top-level README for the current repository boundary
+- [`reference/architecture.md`](reference/architecture.md) for the current architecture summary

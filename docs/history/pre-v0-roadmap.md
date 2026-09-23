@@ -1,3 +1,5 @@
+> Archived early roadmap. Its unchecked items predate the live lifecycle, Deep Work, and runtime work now on `main`; use the [current roadmap](../planning/roadmap.md) and [grounding plan](../STINT_REPOSITORY_GROUNDING_PLAN.md).
+
 # Pre-V0 roadmap
 
 ## 0. Go foundation
