@@ -111,7 +111,7 @@ The dashboard continues rendering while the benchmark runs. Successful results u
 
 No dashboard timer automatically generates tokens.
 
-The Performance view also shows a **LIVE TRAFFIC** section: agents, resident prompt depth, decode/prefill rates, queue, cache reuse, speculative acceptance, and per-lane detail polled from the engine's `/metrics` and `/slots` endpoints. Live traffic is *observed*, never benchmarked; the benchmarked sample still comes only from an explicit `b` action, and the two sections never share values.
+The Performance view also shows a **LIVE TRAFFIC** section: requests processing, resident prompt depth against the configured context, decode/prefill rates, queue, cache reuse, speculative acceptance, and per-lane status/cache detail polled from the engine's `/metrics` and `/slots` endpoints. NInfer's prefill rate is labeled as uncached prompt work; its cache reuse share uses cache hits plus uncached prompt tokens. Lane-transition events are observed in memory for the current dashboard session. They do not identify callers; decode and prefill remain engine-wide. Live traffic is *observed*, never benchmarked; the benchmarked sample still comes only from an explicit `b` action, and the two sections never share values. Failed refreshes retain the last good inference sample for the same instance and show its age. The Home notice flags a locally stale deadline when the tunnel/session state suggests it could be misleading; verify the provider state before acting on it.
 
 ### Down
 

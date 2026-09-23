@@ -94,14 +94,15 @@ type performanceSnapshot struct {
 }
 
 type sessionSnapshot struct {
-	CollectedAt time.Time           `json:"collectedAt"`
-	Session     sessionInfo         `json:"session"`
-	Time        sessionTimeSnapshot `json:"time"`
-	Cost        sessionCostSnapshot `json:"cost"`
-	Health      sessionHealth       `json:"health"`
-	GPU         gpuTelemetry        `json:"gpu"`
-	Inference   inferenceTelemetry  `json:"inference"`
-	Performance performanceSnapshot `json:"performance"`
+	CollectedAt time.Time              `json:"collectedAt"`
+	Session     sessionInfo            `json:"session"`
+	Time        sessionTimeSnapshot    `json:"time"`
+	Cost        sessionCostSnapshot    `json:"cost"`
+	Health      sessionHealth          `json:"health"`
+	Freshness   stateFreshnessSnapshot `json:"-"`
+	GPU         gpuTelemetry           `json:"gpu"`
+	Inference   inferenceTelemetry     `json:"inference"`
+	Performance performanceSnapshot    `json:"performance"`
 }
 
 func buildSessionSnapshot(state sessionstate.State, now time.Time) sessionSnapshot {

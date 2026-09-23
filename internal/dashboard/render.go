@@ -50,10 +50,21 @@ type Modal struct {
 type Inference struct {
 	Available, Refreshed bool
 	Agents, Depth        int
+	ContextCapacity      int
 	Decode, Prefill      string
+	PrefillLabel         string
 	Queue, CacheReuse    string
 	Speculative          string
 	Lanes, Error         string
+	LaneRows             []Lane
+	Stale                bool
+	SampleAge            string
+}
+
+type Lane struct {
+	ID, Depth           int
+	Status, Cache       string
+	Decode, DecodeScope string
 }
 
 type Model struct {
@@ -66,6 +77,7 @@ type Model struct {
 	Inference          Inference
 	Perf               Perf
 	Logs               []string
+	LaneEvents         []string
 	Notice, Error      string
 	Modal              *Modal
 }
@@ -264,15 +276,15 @@ func performanceView(m Model, p palette) string {
 		}
 		b.WriteString(p.muted("Unavailable · " + reason))
 	} else {
-		agents := "engine idle"
+		agents := "0 (engine idle)"
 		if m.Inference.Agents > 0 {
 			agents = fmt.Sprintf("%d active", m.Inference.Agents)
 		}
 		rows := [][2]string{
-			{"Agents", agents},
+			{"Requests processing", agents},
 			{"Live prompt depth", fmt.Sprintf("%d tokens", m.Inference.Depth)},
 			{"Decode", or(m.Inference.Decode, "—")},
-			{"Prefill", or(m.Inference.Prefill, "—")},
+			{or(m.Inference.PrefillLabel, "Prefill"), or(m.Inference.Prefill, "—")},
 			{"Queue", or(m.Inference.Queue, "empty")},
 			{"Cache reuse", or(m.Inference.CacheReuse, "—")},
 			{"Speculative", or(m.Inference.Speculative, "—")},
@@ -280,6 +292,45 @@ func performanceView(m Model, p palette) string {
 		}
 		for _, x := range rows {
 			fmt.Fprintf(&b, "%-18s %s\n", x[0], x[1])
+		}
+		if m.Inference.ContextCapacity > 0 {
+			percent := 100 * float64(m.Inference.Depth) / float64(m.Inference.ContextCapacity)
+			fmt.Fprintf(&b, "\nCONTEXT  %s / %s tokens · %.0f%% resident\n", compactCount(m.Inference.Depth), compactCount(m.Inference.ContextCapacity), percent)
+			b.WriteString(progressBar(clamp(m.Width-8, 12, 36), percent/100) + "\n")
+		}
+		for _, lane := range m.Inference.LaneRows {
+			line := fmt.Sprintf("lane %d · %s · depth %s", lane.ID, lane.Status, compactCount(lane.Depth))
+			if lane.Cache != "" {
+				line += " · cache " + lane.Cache
+			}
+			if lane.Decode != "" {
+				if lane.DecodeScope == "shared" {
+					line += " · decode shared (engine " + lane.Decode + ")"
+				} else {
+					line += " · decode engine " + lane.Decode
+				}
+			}
+			fmt.Fprintf(&b, "%-18s %s\n", "", compact(line, m.Width-20))
+		}
+		visibleEvents := min(len(m.LaneEvents), 4)
+		eventHeading := "LANE EVENTS"
+		if len(m.LaneEvents) > visibleEvents {
+			eventHeading += fmt.Sprintf(" · %d recorded", len(m.LaneEvents))
+		}
+		b.WriteString("\n" + p.bold(eventHeading) + "  " + p.muted("observed runtime transitions; caller identity is unavailable") + "\n")
+		if len(m.LaneEvents) == 0 {
+			b.WriteString(p.muted("No lane transitions observed in this dashboard session.\n"))
+		} else {
+			for _, event := range m.LaneEvents[:visibleEvents] {
+				b.WriteString(p.muted(compact(event, m.Width)) + "\n")
+			}
+		}
+		if m.Inference.Stale {
+			line := "last good sample " + or(m.Inference.SampleAge, "age unknown") + " old"
+			if m.Inference.Error != "" {
+				line += " · refresh failed: " + m.Inference.Error
+			}
+			b.WriteString(p.warn(compact(line, m.Width)) + "\n")
 		}
 	}
 	b.WriteString("\n" + p.muted("Live traffic is observed, never benchmarked; press b for an explicit 1 × 128 sample."))
@@ -301,15 +352,7 @@ func homeLiveLine(m Model, p palette) string {
 		return p.muted(line)
 	}
 	parts := make([]string, 0, 5)
-	if m.Inference.Agents > 0 {
-		plural := "agent"
-		if m.Inference.Agents != 1 {
-			plural = "agents"
-		}
-		parts = append(parts, fmt.Sprintf("%d %s active", m.Inference.Agents, plural))
-	} else {
-		parts = append(parts, "engine idle")
-	}
+	parts = append(parts, processingLabel(m.Inference.Agents))
 	if m.Inference.Depth > 0 {
 		parts = append(parts, fmt.Sprintf("depth %d tok", m.Inference.Depth))
 	}
@@ -322,7 +365,28 @@ func homeLiveLine(m Model, p palette) string {
 	if m.Inference.CacheReuse != "" {
 		parts = append(parts, "cache "+m.Inference.CacheReuse)
 	}
+	if m.Inference.Stale {
+		parts = append(parts, "last good "+or(m.Inference.SampleAge, "age unknown")+" old")
+	}
 	return p.accent(strings.Join(parts, " · "))
+}
+
+func processingLabel(count int) string {
+	if count <= 0 {
+		return "engine idle"
+	}
+	noun := "request processing"
+	if count != 1 {
+		noun = "requests processing"
+	}
+	return fmt.Sprintf("%d %s", count, noun)
+}
+
+func compactCount(value int) string {
+	if value >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(value)/1000)
+	}
+	return fmt.Sprint(value)
 }
 
 func configView(m Model, p palette) string {

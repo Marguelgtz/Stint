@@ -51,7 +51,7 @@ func ninferMetricsFixture(epoch int) string {
 	b.WriteString(fmt.Sprintf("llamacpp:prompt_tokens_total %d\n", 2048+epoch*4096))
 	b.WriteString("llamacpp:prompt_tokens_cached_total 0\n")
 	b.WriteString(fmt.Sprintf("llamacpp:tokens_predicted_total %d\n", 716+epoch*1432))
-	b.WriteString(fmt.Sprintf("llamacpp:requests_processing %d\n", 2))
+	b.WriteString(fmt.Sprintf("llamacpp:requests_processing %d\n", 1))
 	b.WriteString(fmt.Sprintf("llamacpp:requests_deferred %d\n", 1))
 	b.WriteString(fmt.Sprintf("ninfer:prefix_cache_hit_tokens_total %d\n", 1536+epoch*3072))
 	b.WriteString(fmt.Sprintf("ninfer:draft_tokens_total %d\n", 1000+epoch*500))
@@ -70,7 +70,7 @@ const llamaSlotsFixture = `[
 ]`
 
 // ninferSlotsFixture mirrors NInfer /slots: lane objects add retained and
-// session_digest so the dashboard can attribute a lane to the owning agent.
+// session_digest. Neither field provides a stable caller identity.
 const ninferSlotsFixture = `[
   {"id": 0, "n_ctx": 126976, "is_processing": true, "retained": true,
    "session_digest": "a1b2c3", "n_prompt_tokens": 45000, "n_prompt_tokens_cache": 41000,
@@ -172,15 +172,15 @@ func TestParseSlotLanesNInfer(t *testing.T) {
 	if len(lanes) != 3 {
 		t.Fatalf("lanes = %+v, want 3", lanes)
 	}
-	agent, resident, free := lanes[0], lanes[1], lanes[2]
-	if !agent.Processing || !agent.Retained || agent.Session != "a1b2c3" || agent.NPrompt != 45000 {
-		t.Fatalf("agent lane = %+v", agent)
+	processing, retained, idle := lanes[0], lanes[1], lanes[2]
+	if !processing.Processing || !processing.Retained || processing.Session != "a1b2c3" || processing.NPrompt != 45000 {
+		t.Fatalf("processing lane = %+v", processing)
 	}
-	if resident.Processing || !resident.Retained || resident.Session != "d4e5f6" {
-		t.Fatalf("resident lane = %+v", resident)
+	if retained.Processing || !retained.Retained || retained.Session != "d4e5f6" {
+		t.Fatalf("retained lane = %+v", retained)
 	}
-	if free.Processing || free.Retained {
-		t.Fatalf("free lane = %+v", free)
+	if idle.Processing || idle.Retained {
+		t.Fatalf("idle lane = %+v", idle)
 	}
 }
 
@@ -241,10 +241,10 @@ func TestProbeInferenceNInferBothEndpoints(t *testing.T) {
 	if !result.Available {
 		t.Fatalf("probe = %+v, want available", result)
 	}
-	// Lane 0 is processing and lane 1 is retained (resident, not processing);
-	// lane 2 is fully idle and counts for no agent.
-	if result.Processing != 2 || result.Agents != 2 {
-		t.Fatalf("processing/agents = %d/%d, want 2/2", result.Processing, result.Agents)
+	// Lane 0 is processing; lanes 1 and 2 are resident/idle. Retained context
+	// never increments the active processing count.
+	if result.Processing != 1 || result.Agents != 1 {
+		t.Fatalf("processing/agents = %d/%d, want 1/1", result.Processing, result.Agents)
 	}
 	if result.Deferred != 1 {
 		t.Fatalf("deferred = %d, want 1", result.Deferred)
@@ -252,8 +252,11 @@ func TestProbeInferenceNInferBothEndpoints(t *testing.T) {
 	if result.ResidentDepth != 45000 {
 		t.Fatalf("resident depth = %d, want 45000", result.ResidentDepth)
 	}
-	if result.CacheReuseRatio == nil || *result.CacheReuseRatio < 0.74 || *result.CacheReuseRatio > 0.76 {
-		t.Fatalf("ninfer cache reuse = %v, want about 0.75", result.CacheReuseRatio)
+	if result.CacheReuseRatio == nil || *result.CacheReuseRatio < 0.42 || *result.CacheReuseRatio > 0.44 {
+		t.Fatalf("ninfer cache reuse = %v, want about 0.43 of cached plus uncached prompt tokens", result.CacheReuseRatio)
+	}
+	if result.PrefillTokensKind != "uncached" {
+		t.Fatalf("NInfer prefill meaning = %q, want uncached", result.PrefillTokensKind)
 	}
 	if result.SpecAcceptRatio == nil || *result.SpecAcceptRatio < 0.69 || *result.SpecAcceptRatio > 0.71 {
 		t.Fatalf("ninfer spec accept = %v, want about 0.70", result.SpecAcceptRatio)
@@ -263,6 +266,37 @@ func TestProbeInferenceNInferBothEndpoints(t *testing.T) {
 	}
 	if result.PrefillTokensSec == nil || *result.PrefillTokensSec <= 0 {
 		t.Fatalf("prefill rate = %v, want a positive rate", result.PrefillTokensSec)
+	}
+}
+
+func TestInferenceCacheReuseUsesRuntimeSpecificDenominator(t *testing.T) {
+	llama := inferenceCacheReuseRatio(map[string]float64{metricPromptCachedTotal: 80, metricPromptTokensTotal: 100})
+	if llama == nil || *llama != 0.8 {
+		t.Fatalf("llama cache ratio = %v, want cached/total 0.8", llama)
+	}
+	ninfer := inferenceCacheReuseRatio(map[string]float64{metricPromptCachedTotal: 0, metricPromptTokensTotal: 80, metricNInferPrefixCacheHit: 20})
+	if ninfer == nil || *ninfer != 0.2 {
+		t.Fatalf("NInfer cache ratio = %v, want cached/(cached+uncached) 0.2", ninfer)
+	}
+}
+
+func TestInferFromEpochCountsOnlyProcessingAndSumsLaneContext(t *testing.T) {
+	result := inferenceTelemetry{}
+	epoch := inferenceEpoch{
+		MetricsStatus: http.StatusOK,
+		Counters:      map[string]float64{metricRequestsProcessing: 1},
+		Lanes: []inferenceLane{
+			{ID: 0, Processing: true, NPrompt: 148000, NCached: 140000},
+			{ID: 1, Retained: true, NPrompt: 7000, NCached: 6500},
+			{ID: 2},
+		},
+	}
+	inferFromEpoch(&result, epoch)
+	if result.Agents != 1 || result.Processing != 1 {
+		t.Fatalf("active count = agents %d / processing %d, want 1/1", result.Agents, result.Processing)
+	}
+	if result.ResidentDepth != 155000 {
+		t.Fatalf("resident context = %d, want sum 155000", result.ResidentDepth)
 	}
 }
 

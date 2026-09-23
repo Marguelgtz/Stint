@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -88,6 +89,16 @@ type dashboardController struct {
 	deadlineDirection deadlineDirection
 	deadlineDelta     time.Duration
 	customDuration    string
+	lastGoodInference inferenceTelemetry
+	lastGoodInstance  int64
+	laneStates        map[int]observedLane
+	laneEvents        []string
+}
+
+type observedLane struct {
+	Status string
+	Depth  int
+	Cache  string
 }
 
 func runDashboard(args []string) error {
@@ -547,6 +558,13 @@ func (c *dashboardController) applyBenchmark(result dashboardBenchmarkResult) {
 	c.model.Perf.Benchmarking = false
 	if result.Err != nil {
 		c.model.Error = compactTelemetryError(result.Err)
+		c.refreshing = false
+		c.model.Health.Refreshing = false
+		if c.lastGoodInference.Available && c.snapshot.Session.InstanceID == c.lastGoodInstance {
+			c.snapshot.Inference = c.lastGoodInference
+			c.snapshot.Inference.Meta.Error = compactTelemetryError(result.Err)
+			c.projectSnapshot()
+		}
 		return
 	}
 	state, err := sessionstate.Load(c.paths)
@@ -609,6 +627,10 @@ func (c *dashboardController) applyRefresh(result dashboardLoadResult) {
 	}
 	if result.NoSession {
 		c.snapshot = sessionSnapshot{}
+		c.lastGoodInference = inferenceTelemetry{}
+		c.lastGoodInstance = 0
+		c.laneStates = nil
+		c.laneEvents = nil
 		c.model.NoSession = true
 		c.model.Session = dash.Session{}
 		c.model.Health = dash.Health{}
@@ -618,8 +640,105 @@ func (c *dashboardController) applyRefresh(result dashboardLoadResult) {
 		c.model.Notice = "The recorded session has ended."
 		return
 	}
-	c.snapshot = result.Snapshot
+	snapshot := result.Snapshot
+	instanceID := snapshot.Session.InstanceID
+	if c.lastGoodInstance != instanceID {
+		c.lastGoodInference = inferenceTelemetry{}
+		c.lastGoodInstance = instanceID
+		c.laneStates = nil
+		c.laneEvents = nil
+	}
+	if snapshot.Inference.Available {
+		c.lastGoodInference = snapshot.Inference
+		if c.lastGoodInference.Meta.SampledAt.IsZero() {
+			c.lastGoodInference.Meta.SampledAt = snapshot.CollectedAt
+		}
+		c.observeLaneEvents(snapshot.Inference.Lanes, snapshot.CollectedAt)
+	} else if c.lastGoodInference.Available && c.lastGoodInstance == instanceID {
+		lastGood := c.lastGoodInference
+		lastGood.Refreshed = true
+		lastGood.Meta.Error = snapshot.Inference.UnavailableReason
+		if lastGood.Meta.Error == "" {
+			lastGood.Meta.Error = snapshot.Inference.Meta.Error
+		}
+		snapshot.Inference = lastGood
+	}
+	c.snapshot = snapshot
 	c.projectSnapshot()
+}
+
+func (c *dashboardController) observeLaneEvents(lanes []inferenceLane, sampledAt time.Time) {
+	if c.laneStates == nil {
+		c.laneStates = make(map[int]observedLane)
+	}
+	current := make(map[int]observedLane, len(lanes))
+	stamp := sampledAt.Local().Format("15:04:05")
+	for _, lane := range lanes {
+		state := observedLane{Status: laneObservedStatus(lane), Depth: max(0, lane.NPrompt), Cache: laneCachePercent(lane)}
+		current[lane.ID] = state
+		previous, exists := c.laneStates[lane.ID]
+		if !exists {
+			c.addLaneEvent(fmt.Sprintf("%s lane %d first observed %s · %s tokens%s", stamp, lane.ID, state.Status, compactTokenCount(state.Depth), laneEventCache(state.Cache)))
+			continue
+		}
+		if previous.Status != state.Status {
+			c.addLaneEvent(fmt.Sprintf("%s lane %d %s → %s · %s tokens%s", stamp, lane.ID, previous.Status, state.Status, compactTokenCount(state.Depth), laneEventCache(state.Cache)))
+		}
+	}
+	previousIDs := make([]int, 0, len(c.laneStates))
+	for laneID := range c.laneStates {
+		previousIDs = append(previousIDs, laneID)
+	}
+	sort.Ints(previousIDs)
+	for _, laneID := range previousIDs {
+		previous := c.laneStates[laneID]
+		if _, ok := current[laneID]; !ok {
+			c.addLaneEvent(fmt.Sprintf("%s lane %d no longer reported · last %s at %s tokens%s", stamp, laneID, previous.Status, compactTokenCount(previous.Depth), laneEventCache(previous.Cache)))
+		}
+	}
+	c.laneStates = current
+}
+
+func compactTokenCount(value int) string {
+	if value >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(value)/1000)
+	}
+	return fmt.Sprint(value)
+}
+
+func laneCachePercent(lane inferenceLane) string {
+	if lane.NPrompt <= 0 {
+		return ""
+	}
+	cached := max(0, min(lane.NCached, lane.NPrompt))
+	return fmt.Sprintf("%.0f%%", 100*float64(cached)/float64(lane.NPrompt))
+}
+
+func laneEventCache(value string) string {
+	if value == "" {
+		return ""
+	}
+	return " · cache " + value
+}
+
+func (c *dashboardController) addLaneEvent(event string) {
+	c.laneEvents = append([]string{event}, c.laneEvents...)
+	if len(c.laneEvents) > 200 {
+		c.laneEvents = c.laneEvents[:200]
+	}
+}
+
+func laneObservedStatus(lane inferenceLane) string {
+	switch {
+	case lane.Processing:
+		return "processing"
+	case lane.Retained:
+		return "idle retained"
+	case lane.NPrompt > 0:
+		return "idle resident"
+	default:
+		return "idle"
+	}
 }
 
 func (c *dashboardController) tick(now time.Time) {
@@ -663,10 +782,16 @@ func (c *dashboardController) projectSnapshot() {
 	perf := dashboardPerf(s.Performance)
 	perf.Benchmarking = c.benchmarking
 	c.model.Perf = perf
-	c.model.Inference = dashboardInference(s.Inference)
+	c.model.Inference = dashboardInference(s.Inference, s.Session.ContextTokens, time.Now().UTC())
 	c.model.Logs = c.logs
+	c.model.LaneEvents = append([]string(nil), c.laneEvents...)
+	if s.Freshness.Warning == "" && strings.HasPrefix(c.model.Notice, "Session deadline may be stale") {
+		c.model.Notice = ""
+	}
 	if notice := dashboardRecoveryNotice(s); notice != "" && c.model.Modal == nil {
 		c.model.Notice = notice
+	} else if s.Freshness.Warning != "" && c.model.Modal == nil {
+		c.model.Notice = "Session deadline may be stale · verify provider state before relying on it"
 	}
 }
 
@@ -739,7 +864,7 @@ func dashboardPerf(value performanceSnapshot) dash.Perf {
 	return result
 }
 
-func dashboardInference(value inferenceTelemetry) dash.Inference {
+func dashboardInference(value inferenceTelemetry, contextCapacity int, now time.Time) dash.Inference {
 	result := dash.Inference{Refreshed: value.Refreshed, Available: value.Available, Error: value.UnavailableReason}
 	if value.Meta.Error != "" {
 		result.Error = value.Meta.Error
@@ -749,11 +874,23 @@ func dashboardInference(value inferenceTelemetry) dash.Inference {
 	}
 	result.Agents = value.Agents
 	result.Depth = value.ResidentDepth
+	result.ContextCapacity = contextCapacity
+	result.Stale = value.Meta.Error != ""
+	if !value.Meta.SampledAt.IsZero() {
+		age := now.Sub(value.Meta.SampledAt)
+		if age < 0 {
+			age = 0
+		}
+		result.SampleAge = formatSessionDuration(age)
+	}
 	if value.DecodeTokensSec != nil {
 		result.Decode = fmt.Sprintf("%.1f tok/s", *value.DecodeTokensSec)
 	}
 	if value.PrefillTokensSec != nil {
 		result.Prefill = fmt.Sprintf("%.1f tok/s", *value.PrefillTokensSec)
+	}
+	if value.PrefillTokensKind == "uncached" {
+		result.PrefillLabel = "Prefill (uncached)"
 	}
 	if value.Deferred > 0 {
 		result.Queue = fmt.Sprintf("%d queued", value.Deferred)
@@ -765,6 +902,25 @@ func dashboardInference(value inferenceTelemetry) dash.Inference {
 		result.Speculative = fmt.Sprintf("%.0f%% accepted", *value.SpecAcceptRatio*100)
 	}
 	result.Lanes = inferenceLaneSummary(value.Lanes)
+	activeLanes := 0
+	for _, lane := range value.Lanes {
+		if lane.Processing {
+			activeLanes++
+		}
+	}
+	for _, lane := range value.Lanes {
+		row := dash.Lane{ID: lane.ID, Depth: max(0, lane.NPrompt), Status: laneObservedStatus(lane)}
+		row.Cache = laneCachePercent(lane)
+		if lane.Processing && value.DecodeTokensSec != nil {
+			row.Decode = fmt.Sprintf("%.1f tok/s", *value.DecodeTokensSec)
+			if activeLanes > 1 {
+				row.DecodeScope = "shared"
+			} else {
+				row.DecodeScope = "engine"
+			}
+		}
+		result.LaneRows = append(result.LaneRows, row)
+	}
 	return result
 }
 
