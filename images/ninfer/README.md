@@ -4,7 +4,8 @@ The selected candidate is `sergiuszm/ninfer-4090` source
 `81b68a20a9a0d9ab47d7e5838887c6d636ab76e0`, built for Linux x86-64, CUDA
 12.8+, and SM89. It serves the pinned NInfer v2 Qwen artifact at revision
 `18dfc887423fa5aabf3cb56fac41490e462b3fab` with SHA-256
-`eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e`.
+`eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e`
+(18,210,531,328 bytes / 16.96 GiB, NInfer container v2).
 
 Run `scripts/build_ninfer_runtime_bundle.sh` on a disposable Linux runner with
 Docker, at least 35 GiB free space, and network access. It builds the exact

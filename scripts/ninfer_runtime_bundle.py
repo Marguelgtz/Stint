@@ -18,6 +18,7 @@ SOURCE_REPOSITORY = "https://github.com/sergiuszm/ninfer-4090.git"
 SOURCE_COMMIT = "81b68a20a9a0d9ab47d7e5838887c6d636ab76e0"
 ARTIFACT_REVISION = "18dfc887423fa5aabf3cb56fac41490e462b3fab"
 ARTIFACT_SHA256 = "eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e"
+ARTIFACT_SIZE_BYTES = 18210531328
 CUDA_FLOOR = "12.8"
 GPU_ARCHITECTURE = "89"
 BASE_IMAGE_TAG = "vastai/base-image:cuda-12.8.1-cudnn-devel-ubuntu24.04-py310"
@@ -53,6 +54,7 @@ def expected_manifest(binaries: dict[str, tuple[str, int]]) -> dict[str, object]
         "artifact": {
             "revision": ARTIFACT_REVISION,
             "sha256": ARTIFACT_SHA256,
+            "sizeBytes": ARTIFACT_SIZE_BYTES,
             "format": "NInfer v2",
         },
         "baseImage": {"tag": BASE_IMAGE_TAG, "digest": BASE_IMAGE_DIGEST},

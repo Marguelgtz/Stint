@@ -36,7 +36,10 @@ class RuntimeBundleTests(unittest.TestCase):
         for name, binary in self.binaries.items():
             self.assertEqual((extracted / name).read_bytes(), binary.read_bytes())
             self.assertTrue((extracted / name).stat().st_mode & 0o111)
-        self.assertEqual(bundle.verify(archive, manifest, checksum)["sourceCommit"], bundle.SOURCE_COMMIT)
+        verified = bundle.verify(archive, manifest, checksum)
+        self.assertEqual(verified["sourceCommit"], bundle.SOURCE_COMMIT)
+        self.assertEqual(verified["artifact"]["sizeBytes"], 18210531328)
+        self.assertEqual(verified["artifact"]["format"], "NInfer v2")
 
     def test_rejects_traversal_and_link_entries_even_with_consistent_sidecar(self):
         archive_path, _, manifest_path = self.package()
