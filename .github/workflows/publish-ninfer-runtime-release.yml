@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       build_run_id:
-        description: Successful Build NInfer Runtime Bundle workflow run on main
+        description: Successful SM89 release-candidate build workflow run on main
         required: true
         type: string
 
@@ -18,15 +18,17 @@ concurrency:
 
 jobs:
   publish:
-    name: Verify exact build artifact and publish once
+    name: Verify pinned candidate and publish once
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Verify source workflow run
+        id: source
         env:
           GH_TOKEN: ${{ github.token }}
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
@@ -38,8 +40,22 @@ jobs:
           test "$(jq -r .path <<<"$run_json")" = .github/workflows/ninfer-runtime-bundle.yml
           test "$(jq -r .event <<<"$run_json")" = workflow_dispatch
           test "$(jq -r .head_branch <<<"$run_json")" = main
-          test "$(jq -r .head_sha <<<"$run_json")" = "$GITHUB_SHA"
           test "$(jq -r .conclusion <<<"$run_json")" = success
+          build_sha="$(jq -r .head_sha <<<"$run_json")"
+          git merge-base --is-ancestor "$build_sha" "$GITHUB_SHA"
+          changed_files="$(git diff --name-only "$build_sha" "$GITHUB_SHA")"
+          if [ -n "$changed_files" ]; then
+            while IFS= read -r path; do
+              case "$path" in
+                cmd/stint/runtime.go|cmd/stint/runtime_test.go|internal/session/startup_events_test.go) ;;
+                *) echo "unexpected changes after candidate build: $path" >&2; exit 1 ;;
+              esac
+            done <<< "$changed_files"
+          fi
+          bundle_sha="$(sed -nE 's/^[[:space:]]*ninferRuntimeBundleSHA256[[:space:]]*=[[:space:]]*"([0-9a-f]{64})".*/\1/p' cmd/stint/runtime.go)"
+          test "${#bundle_sha}" -eq 64 || { echo "Stint must pin the exact immutable runtime bundle SHA-256" >&2; exit 1; }
+          echo "build_sha=$build_sha" >> "$GITHUB_OUTPUT"
+          echo "bundle_sha=$bundle_sha" >> "$GITHUB_OUTPUT"
           test "$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled)" = true
           if gh api "repos/$GITHUB_REPOSITORY/releases/tags/ninfer-runtime-81b68a20-sm89" >/dev/null 2>&1; then
             echo "release tag already exists; immutable releases are never overwritten" >&2
@@ -50,13 +66,17 @@ jobs:
             exit 1
           fi
 
-      - name: Download assets from the exact successful build run
+      - name: Download assets from the successful candidate build run
         env:
           GH_TOKEN: ${{ github.token }}
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
         run: gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" --name ninfer-runtime-bundle-81b68a20-sm89 --dir dist/ninfer-runtime
 
-      - name: Verify archive, sidecar, manifest, and pinned tuple
+      - name: Verify archive, Stint SHA pin, sidecar, and compatibility tuple
+        env:
+          EXPECTED_BUNDLE_SHA256: ${{ steps.source.outputs.bundle_sha }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          BUILD_SHA: ${{ steps.source.outputs.build_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -71,12 +91,15 @@ jobs:
           python3 scripts/ninfer_runtime_bundle.py verify \
             --archive dist/ninfer-runtime/"${expected[0]}" \
             --checksum dist/ninfer-runtime/"${expected[1]}" \
-            --manifest dist/ninfer-runtime/"${expected[2]}"
+            --manifest dist/ninfer-runtime/"${expected[2]}" \
+            --expected-sha256 "$EXPECTED_BUNDLE_SHA256"
           cat > "$RUNNER_TEMP/release-notes.md" <<'EOF'
           Stint's verified Linux x86-64 NInfer server bundle for RTX 4090 / SM89.
 
           The attached manifest records the exact NInfer source commit, Qwen NInfer v2 artifact revision and SHA-256, CUDA floor, and immutable Vast base-image digest. The `.sha256` sidecar covers the archive. This bundle passed build and clean-base CLI/dependency smoke checks on the recorded base image. GPU model-loading and performance qualification are tracked separately; publishing does not promote the release path to the default startup strategy.
           EOF
+          printf '\nCandidate build workflow run: %s\nCandidate Stint commit: %s\n' \
+            "$BUILD_RUN_ID" "$BUILD_SHA" >> "$RUNNER_TEMP/release-notes.md"
 
       - name: Create draft release and attach all assets
         env:

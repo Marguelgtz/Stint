@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build-and-smoke:
-    name: Build pinned SM89 bundle and smoke on clean Vast image
+    name: Build SM89 release candidate and smoke on clean Vast image
     # The exact Vast base image occupies more than 23 GiB unpacked. The job is
     # intentionally routed to a trusted, disposable runner with adequate disk.
     runs-on: [self-hosted, linux, x64, stint-ninfer-runtime-build]
@@ -32,6 +32,21 @@ jobs:
 
       - name: Build, package, and clean-image smoke
         run: bash scripts/build_ninfer_runtime_bundle.sh "$RUNNER_TEMP/ninfer-runtime"
+
+      - name: Record candidate archive digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          archives=("$RUNNER_TEMP"/ninfer-runtime/*.tar.gz)
+          test "${#archives[@]}" -eq 1
+          digest="$(sha256sum "${archives[0]}" | awk '{print $1}')"
+          {
+            echo "## NInfer runtime release candidate"
+            echo
+            echo "- Stint build SHA: \`$GITHUB_SHA\`"
+            echo "- Bundle SHA-256: \`$digest\`"
+            echo "- Source run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload immutable-release candidate assets
         uses: actions/upload-artifact@v4
