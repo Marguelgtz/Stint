@@ -57,7 +57,10 @@ not the target design.
   `ad422e0` adds a lower-only session cap and a true parser-only preflight, and
   `e658c09` adds the session-capped hourly offer ceiling required by current
   NInfer-compatible marketplace pricing. Commit `11acb62` limits startup to one
-  rental candidate per authorized launch.
+  rental candidate per authorized launch. Commit `53b5bcc` raises the advertised
+  network floor and reserves $1.50 of the remaining smoke budget for the second
+  single-candidate launch; the current follow-up tightens the final retry's cap
+  using measured transfer-time and bandwidth-cost evidence.
 - All historical Deep Work feature PRs remain open. Their source heads share an
   old base (`d34cb2b...`) and are not safe merge units against current `main`.
   Use their code and evidence selectively on this clean integration branch.
@@ -194,7 +197,7 @@ not the target design.
   existing full-session check remains immediately before every rental.
   Commit `11acb62` limits each authorized launcher run to one rental candidate
   so automatic startup retries cannot stack individually capped rentals. On
-  2026-09-23 the first bounded live attempt rented RTX 4090 instance `52145135`
+  2026-09-23 the first paid bounded live attempt rented RTX 4090 instance `52145135`
   at $0.425/hour (projected rental $0.64 for 1.5 hours) after SSH became ready
   in 3:02. The real NInfer model-transfer probe measured 11.8 MB/s, below the
   30 MB/s minimum, so Stint rejected and destroyed the instance before model
@@ -203,11 +206,18 @@ not the target design.
   read-only plan returned 43 marketplace offers and 5 base-profile qualifiers;
   displayed 4090 examples included $0.552/hour at 820-898 Mbps with about
   $0.0133/GB inbound bandwidth cost, while the failed host was $0.425/hour at
-  457 Mbps. To avoid that host and preserve headroom within the authorized $2
-  budget for transfer charges and the first attempt, the next single-candidate
-  smoke uses a 500 Mbps advertised-network minimum, $1/hour rate ceiling, and
-  $1.50 scheduled-session cap. These settings pass local checks; CI and that
-  retry remain pending.
+  457 Mbps. The second paid attempt rented instance `52146240` at $0.545/hour with
+  846 Mbps advertised network, reached SSH in 1:27, and measured 13.8 MB/s.
+  Although below the original 30 MB/s floor, its transfer projection was 21:44
+  and projected READY was 24:19 from rental. Stint still rejected and destroyed
+  the host before model startup; estimated active-rental spend was about $0.02.
+  Thus neither instance ran NInfer or Deep Work; no session remains. In line
+  with the original $2 total authorization, the next (and final) one-candidate
+  attempt uses a 500 Mbps advertised-network minimum, a lower 10 MB/s measured
+  floor supported by the observed 24-minute readiness projection, a $0.80/hour
+  ceiling, and a $1.20 scheduled-session cap, preserving budget for model
+  transfer and the two rejected starts. The single-candidate limit remains.
+  Local checks pass; CI and that final retry remain pending.
 
 ### [~] Repair coordinator identity, policy reconstruction, and durable transitions
 
@@ -368,12 +378,12 @@ not the target design.
 - PR #102 implementation commit `04151f5`: `go test -count=1 ./...` — PASS; `python3 scripts/test_onbox_github_publish.py` — PASS (7 tests); Python byte-compilation — PASS; Bash syntax for launcher, smoke, supervisor, and provisioner — PASS; embedded resume-preflight Python compilation — PASS; `git diff --check` — PASS. Draft PR #102 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. No live GPU smoke was run.
 - PR #103 commit `8aea2bd`: `bash -n scripts/onbox-deep-supervisor.sh scripts/test_onbox_supervisor.sh`, `bash scripts/test_onbox_supervisor.sh`, and `git diff --check` — PASS. Draft PR #103 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `ad55713` is pushed. No live GPU smoke was run.
 - PR #104 commit `d971d24`: `go test -count=1 ./...` — PASS, including the five-case local NInfer artifact fixture; publisher safety tests (7) and supervisor completion fixture — PASS; shell syntax and `git diff --check` — PASS. Draft PR #104 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `19e712a` is pushed. No live GPU smoke was run.
-- PR #105 commit `d497ce1` removed the stale tunnel flag; its exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed. Commit `ad422e0` added a lower-only `--max-cost-usd` and `--validate-only`, replacing the ineffective `--help` preflight. Commit `e658c09` added `--max-hourly-usd`; increasing the profile's $0.40/hour limit requires an explicit session cap and the per-candidate full-session check still guards each rental. Commit `11acb62` limits each live-smoke launch to one candidate. `go test -count=1 ./...`, publisher fixtures (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check` passed. GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed on `e658c09` and `11acb62`. Live attempt one created no instance because the $0.40/hour ceiling excluded the NInfer-compatible 4090 offers. Attempt two rented instance `52145135`, but its measured 11.8 MB/s fell below the 30 MB/s requirement; Stint destroyed it before model startup. The pre-teardown estimate was $0.02, no active session remains, and the GPU did not run Deep Work. The next one-candidate retry tightens the per-run cap to $1.50, rate to $1/hour, and advertised network minimum to 500 Mbps to avoid the failed 457 Mbps offer and retain headroom within the user's $2 authorized budget. Its local parser/shell fixtures pass; exact-head CI is pending.
+- PR #105 commit `d497ce1` removed the stale tunnel flag; its exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed. Commit `ad422e0` added a lower-only `--max-cost-usd` and `--validate-only`, replacing the ineffective `--help` preflight. Commit `e658c09` added `--max-hourly-usd`; increasing the profile's $0.40/hour limit requires an explicit session cap and the per-candidate full-session check still guards each rental. Commit `11acb62` limits each live-smoke launch to one candidate. Commits through `53b5bcc` pass `go test -count=1 ./...`, publisher fixtures (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check`. GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed on `e658c09` and `11acb62`. The initial search found no candidates under the original $0.40/hour ceiling. Paid attempt one rented `52145135` and was destroyed after 11.8 MB/s fell below the 30 MB/s floor; paid attempt two rented `52146240` and was destroyed after 13.8 MB/s fell below that floor despite an estimated READY time of 24:19. Both ended before NInfer model startup; active-rental estimates were about $0.02 each, and no active session remains. The final one-candidate attempt changes the measured floor to 10 MB/s, keeps the advertised minimum at 500 Mbps, and tightens scheduled rental cap/rate to $1.20/$0.80 per hour to preserve headroom under the user's $2 total authorization. Its local tests pass; CI is pending.
 
 ## Next action
 
-Wait for PR #105 exact-head CI on the tighter remaining-budget settings, then
-build the binary from that checked head and retry the authorized fresh-GPU smoke through
+Wait for PR #105 exact-head CI on the final bounded settings, then build the
+binary from that checked head and run the final authorized fresh-GPU attempt through
 `scripts/run-onbox-deep-smoke.sh`. Record whether it reaches RUNNING, disconnect
 survival, xhigh/medium work, independent verification, publication, final R2
 archive, handoff, and teardown. Check required local credentials/artifacts by
