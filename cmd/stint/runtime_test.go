@@ -221,7 +221,7 @@ func TestNInferDeploymentSelectionIsOptInAndPinned(t *testing.T) {
 	if !allowNInferLlamaFallback(sessionstate.State{Runtime: runtimeNInfer, RuntimeDeployment: ninferDeploymentSourceBuild, RuntimeRequest: runtimeAuto, Clients: 1}) {
 		t.Fatal("source-build compatibility should preserve the existing auto fallback")
 	}
-	if ninferRuntimeBundleSHA256 != "f58ee66d05e5d1932b030a05cfd9a7e1e8570579a47b78476cf845c3abcde6e0" || ninferRuntimeReleaseTag == "" || ninferRuntimeBundleName == "" {
+	if ninferRuntimeBundleSHA256 != "6725e60c8e3edb2982ad828898210868dd98ea1d4fe4d35f97bfa1e625414416" || ninferRuntimeReleaseTag == "" || ninferRuntimeBundleName == "" {
 		t.Fatal("immutable NInfer release must have a fixed tag, archive name, and SHA-256")
 	}
 

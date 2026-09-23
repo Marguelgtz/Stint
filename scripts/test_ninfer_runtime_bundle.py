@@ -89,6 +89,13 @@ class RuntimeBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "external manifest"):
             bundle.verify(archive, manifest, checksum)
 
+    def test_optional_release_pin_must_match_archive_bytes(self):
+        archive, checksum, manifest = self.package()
+        actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+        bundle.verify(archive, manifest, checksum, expected_archive_sha256=actual)
+        with self.assertRaisesRegex(ValueError, "Stint's pinned runtime bundle"):
+            bundle.verify(archive, manifest, checksum, expected_archive_sha256="0" * 64)
+
 
 if __name__ == "__main__":
     unittest.main()

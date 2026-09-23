@@ -83,29 +83,8 @@ python3 "$repo_root/scripts/ninfer_runtime_bundle.py" package \
   --ninfer-serve "$work_dir/out/ninfer-serve" \
   --output-dir "$output_dir"
 
-python3 - "$repo_root/cmd/stint/runtime.go" "$output_dir" <<'PY'
-import hashlib
-from pathlib import Path
-import re
-import sys
-
-source = Path(sys.argv[1]).read_text(encoding="utf-8")
-match = re.search(r'ninferRuntimeBundleSHA256\s*=\s*"([0-9a-f]{64})"', source)
-if not match:
-    raise SystemExit("Stint must pin the exact immutable runtime bundle SHA-256")
-expected = match.group(1)
-archives = list(Path(sys.argv[2]).glob("*.tar.gz"))
-if len(archives) != 1:
-    raise SystemExit("expected exactly one NInfer runtime archive")
-digest_object = hashlib.sha256()
-with archives[0].open("rb") as stream:
-    for block in iter(lambda: stream.read(1024 * 1024), b""):
-        digest_object.update(block)
-digest = digest_object.hexdigest()
-if digest != expected:
-    raise SystemExit(f"runtime bundle SHA-256 {digest} differs from Stint pin {expected}")
-PY
-
+# This workflow creates a candidate. The publisher compares its bytes against
+# the exact bundle SHA merged into Stint before it creates the immutable release.
 for archive in "$output_dir"/*.tar.gz; do
   [ -e "$archive" ] || { echo "runtime archive was not created" >&2; exit 1; }
   checksum="$archive.sha256"

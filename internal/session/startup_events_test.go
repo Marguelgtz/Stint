@@ -22,7 +22,7 @@ func TestStartupEventsRecordPhasesAndRentalElapsedTime(t *testing.T) {
 		ModelArtifactRevision:     "18dfc887423fa5aabf3cb56fac41490e462b3fab",
 		ModelArtifactSHA256:       "eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e",
 		RuntimeBundleTag:          "ninfer-runtime-81b68a20-sm89",
-		RuntimeBundleSHA256:       "f58ee66d05e5d1932b030a05cfd9a7e1e8570579a47b78476cf845c3abcde6e0",
+		RuntimeBundleSHA256:       "6725e60c8e3edb2982ad828898210868dd98ea1d4fe4d35f97bfa1e625414416",
 		RuntimeAcquisitionMillis:  12000,
 		RuntimeVerificationMillis: 3000,
 		ModelAcquisitionMillis:    45000,
