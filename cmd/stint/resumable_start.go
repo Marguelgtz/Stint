@@ -93,6 +93,7 @@ func runStartResumable(args []string) (retErr error) {
 	yes := fs.Bool("yes", false, "confirm the selected rental without prompting")
 	location := fs.String("location", "", "prefer an offer whose location contains this text")
 	runtimeValue := fs.String("runtime", runtimeAuto, "inference runtime: auto, ninfer, or llama.cpp")
+	ninferDeploymentValue := fs.String("ninfer-deployment", ninferDeploymentSourceBuild, "NInfer deployment: source-build or release-bundle (release-bundle is opt-in)")
 	contextValue := fs.String("context", "", "llama.cpp context tokens (1024-131072; default 16384)")
 	ninferConfigValue := fs.String("ninfer-config", ninferConfigCoding, "NInfer config: coding, precision, or native")
 	clients := fs.Int("clients", defaultNInferClients, "NInfer client lanes (1 or 2; shared dynamic KV pool)")
@@ -121,6 +122,13 @@ func runStartResumable(args []string) (retErr error) {
 	runtimeRequest, err := normalizeRuntime(*runtimeValue)
 	if err != nil {
 		return err
+	}
+	ninferDeployment, err := normalizeNInferDeployment(*ninferDeploymentValue)
+	if err != nil {
+		return err
+	}
+	if runtimeRequest == runtimeLlamaCpp && ninferDeployment == ninferDeploymentReleaseBundle {
+		return errors.New("--ninfer-deployment release-bundle requires --runtime auto or ninfer")
 	}
 	if runtimeRequest == runtimeLlamaCpp && *clients > defaultNInferClients {
 		return validateClientsForRuntime(runtimeLlamaCpp, *clients)
@@ -216,6 +224,19 @@ func runStartResumable(args []string) (retErr error) {
 	if len(offers) == 0 {
 		return fmt.Errorf("no qualifying interactive offers meet the minimum advertised network %.0f Mbps; lower --min-network-mbps or retry the marketplace", *minNetworkMbps)
 	}
+	if ninferDeployment == ninferDeploymentReleaseBundle {
+		ninferOffers := offers[:0]
+		for _, offer := range offers {
+			candidateRuntime, candidateErr := selectInteractiveRuntime(runtimeRequest, offer.GPUModel)
+			if candidateErr == nil && candidateRuntime == runtimeNInfer {
+				ninferOffers = append(ninferOffers, offer)
+			}
+		}
+		offers = ninferOffers
+		if len(offers) == 0 {
+			return errors.New("--ninfer-deployment release-bundle requires a qualifying RTX 4090 candidate")
+		}
+	}
 	candidates := selectNetworkCandidates(profile, offers, *networkCandidateAttempts)
 	if len(candidates) == 0 {
 		return errors.New("no qualifying interactive offers remain after policy ranking")
@@ -265,6 +286,7 @@ func runStartResumable(args []string) (retErr error) {
 	}
 	fmt.Println()
 	if selectedRuntime == runtimeNInfer {
+		fmt.Printf("NInfer deploy  %s\n", ninferDeployment)
 		fmt.Printf("NInfer config  %s (%s)\n", requestedNInferConfig.Name, requestedNInferConfig.Description)
 		fmt.Printf("Clients        %d concurrent lane(s), shared KV\n", *clients)
 	}
@@ -345,6 +367,9 @@ func runStartResumable(args []string) (retErr error) {
 		if err := validateClientsForRuntime(candidateRuntime, *clients); err != nil {
 			return err
 		}
+		if ninferDeployment == ninferDeploymentReleaseBundle && candidateRuntime != runtimeNInfer {
+			return fmt.Errorf("--ninfer-deployment release-bundle requires an RTX 4090 NInfer candidate; got %q", candidate.GPUModel)
+		}
 		candidateContext := contextForRuntime(candidateRuntime)
 		if strings.TrimSpace(*contextValue) != "" {
 			if candidateRuntime != runtimeLlamaCpp {
@@ -369,6 +394,9 @@ func runStartResumable(args []string) (retErr error) {
 			RuntimeRequest: runtimeRequest, Runtime: selectedRuntime, ContextTokens: selectedContext, Clients: *clients,
 			HourlyUSD: selected.HourlyUSD, Hours: hours, StartedAt: startedAt, Deadline: deadline,
 			Status: sessionstate.StatusRenting,
+		}
+		if selectedRuntime == runtimeNInfer {
+			state.RuntimeDeployment = ninferDeployment
 		}
 
 		// This check sits immediately before every provider rental mutation so
@@ -532,7 +560,7 @@ func runStartResumable(args []string) (retErr error) {
 	if err := sessionstate.Save(paths, state); err != nil {
 		return err
 	}
-	actualRuntime, err := bootstrapSelectedRuntime(rootCtx, paths, state)
+	actualRuntime, err := bootstrapSelectedRuntime(rootCtx, paths, &state)
 	if err != nil {
 		return err
 	}
@@ -548,6 +576,8 @@ func runStartResumable(args []string) (retErr error) {
 	if err := sessionstate.Save(paths, state); err != nil {
 		return err
 	}
+	captureRuntimeBootstrapTiming(rootCtx, paths, &state)
+	_ = sessionstate.Save(paths, state)
 
 	state.Status = sessionstate.StatusModelStarting
 	if err := sessionstate.Save(paths, state); err != nil {
@@ -578,12 +608,15 @@ func runStartResumable(args []string) (retErr error) {
 		return err
 	}
 	modelServingAt := time.Now().UTC()
+	markSessionReadyAt(&state, modelServingAt)
 	state.Status = sessionstate.StatusReady
 	state.Checkpoint = sessionstate.CheckpointReady
 	state.LastError = ""
 	if err := sessionstate.Save(paths, state); err != nil {
 		return err
 	}
+	captureModelAcquisitionTiming(rootCtx, paths, &state)
+	_ = sessionstate.Save(paths, state)
 	ready = true
 	printReadySession(state)
 	fmt.Printf("Startup         %s (stint start -> model serving)\n", formatStartupDuration(startupStartedAt, modelServingAt))

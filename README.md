@@ -148,7 +148,27 @@ post-SSH recoverable failure -> RECOVERABLE -> stint resume -> READY
 
 ### NInfer
 
-NInfer is currently qualified for RTX 4090 hosts with CUDA 12.8+.
+NInfer is qualified for RTX 4090 hosts with CUDA 12.8+ and SM89. The source
+pin is `sergiuszm/ninfer-4090` commit
+`81b68a20a9a0d9ab47d7e5838887c6d636ab76e0`; the model is NInfer v2 artifact
+revision `18dfc887423fa5aabf3cb56fac41490e462b3fab`, SHA-256
+`eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e`.
+
+`--ninfer-deployment source-build` remains the default and recovery path. The
+opt-in `--ninfer-deployment release-bundle` path downloads Stint's immutable,
+SHA-pinned GitHub Release bundle, checks the manifest and both binaries, then
+atomically switches the runtime. It fails closed on any acquisition or
+verification error; it does not silently compile after a bad or missing
+release. Use `stint resume --ninfer-deployment source-build` to explicitly
+recover a paid session after a bundle failure. Status snapshots record the
+deployment method, runtime and model pins, acquisition/verification durations,
+and rental-to-READY time. The release tag is created from the exact merged
+`main` build; until that immutable release exists, the opt-in path intentionally
+cannot start.
+
+The bundle remains opt-in until its exact-`main` pinned-base build passes and a
+fresh RTX 4090 model-load, two-lane, native-context and Deep Work acceptance
+run is recorded.
 
 | Config | Context | KV | Typical use |
 | --- | ---: | --- | --- |
@@ -258,9 +278,9 @@ PRs #81-#89 are mostly GPU-generated checkpoint/handoff artifacts from Deep Work
 - [#74](https://github.com/Marguelgtz/Stint/pull/74) fixes the NInfer artifact-revision/size failure by pinning an immutable model revision and deriving the transfer size dynamically.
 - [#76](https://github.com/Marguelgtz/Stint/pull/76) is the broader current-stack P0 lifecycle-safety integration: lock-owner metadata, safer `down` preemption, authoritative instance lookup, active-session Doctor diagnostics, and instance-scoped evidence. Its own description notes that older safety work should not be merged wholesale around it.
 
-### Startup experiment
+### Startup experiment history
 
-PRs [#48](https://github.com/Marguelgtz/Stint/pull/48) through [#51](https://github.com/Marguelgtz/Stint/pull/51) explore a relocatable NInfer runtime bundle and a faster Vast base-image startup path. That is experimental and not the default path on `main`.
+PRs [#48](https://github.com/Marguelgtz/Stint/pull/48) through [#51](https://github.com/Marguelgtz/Stint/pull/51) explored a relocatable NInfer runtime bundle and a faster Vast base-image startup path. The current implementation rebuilds that architecture against the selected source/artifact tuple and keeps source-build as the explicit default and recovery path.
 
 ### Documentation reorganization
 
@@ -273,7 +293,7 @@ A number of older open branches such as #11, #36, #56, #58, and portions of the 
 These matter when operating the repository today:
 
 1. **Deep Work is not shipped on `main`.** Do not expect `stint deep ...` from a normal main build.
-2. **The NInfer model artifact is still mutable on `main`.** The current source points at a Hugging Face `/resolve/main/` artifact and uses a fixed expected byte count. An upstream replacement can produce progress/checksum failures; #74 is the fix line.
+2. **The immutable runtime bundle still needs live RTX 4090 qualification.** The bundle has not yet established model-loading, response quality, dual-lane, native-context or Deep Work parity on a rented host, so it remains opt-in.
 3. **CLI `stint down` is currently immediate.** It does not ask for a typed confirmation and does not verify that Vast has stopped reporting the instance before local state is cleared. Stronger behavior is still in the open safety stack.
 4. **Vast is the only live compute provider.** Provider abstraction ideas exist, but current paid operation is Vast-specific.
 5. **The project is evolving faster than some older docs.** Check whether a behavior is on `main` or only in a PR before relying on it.

@@ -20,6 +20,7 @@ import (
 func runResume(args []string) (retErr error) {
 	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	ninferDeploymentValue := fs.String("ninfer-deployment", "", "override the saved NInfer deployment; source-build is the release-bundle recovery path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -52,6 +53,13 @@ func runResume(args []string) (retErr error) {
 		}
 		fmt.Println("Session was already stopped; archived and cleared local session state.")
 		return nil
+	}
+	if changed, err := applyResumeNInferDeploymentOverride(&state, *ninferDeploymentValue); err != nil {
+		return err
+	} else if changed {
+		if err := sessionstate.Save(paths, state); err != nil {
+			return fmt.Errorf("persist requested NInfer deployment recovery: %w", err)
+		}
 	}
 
 	credentials, err := config.LoadCredentials(paths)
@@ -200,6 +208,9 @@ func runResume(args []string) (retErr error) {
 		state.Checkpoint = sessionstate.CheckpointSSHReady
 	}
 	state.LastError = ""
+	if runtimeForState(state) == runtimeNInfer && state.RuntimeDeployment == "" {
+		state.RuntimeDeployment = ninferDeploymentSourceBuild
+	}
 	if err := sessionstate.Save(paths, state); err != nil {
 		return err
 	}
@@ -213,7 +224,7 @@ func runResume(args []string) (retErr error) {
 		if err := sessionstate.Save(paths, state); err != nil {
 			return err
 		}
-		actualRuntime, err := bootstrapSelectedRuntime(rootCtx, paths, state)
+		actualRuntime, err := bootstrapSelectedRuntime(rootCtx, paths, &state)
 		if err != nil {
 			return err
 		}
@@ -230,6 +241,8 @@ func runResume(args []string) (retErr error) {
 	if err := sessionstate.Save(paths, state); err != nil {
 		return err
 	}
+	captureRuntimeBootstrapTiming(rootCtx, paths, &state)
+	_ = sessionstate.Save(paths, state)
 
 	pid, err := startTunnel(paths, state)
 	if err != nil {
@@ -242,12 +255,15 @@ func runResume(args []string) (retErr error) {
 	}
 
 	if localModelReady(rootCtx, 2*time.Second) {
+		markSessionReadyAt(&state, time.Now().UTC())
 		state.Status = sessionstate.StatusReady
 		state.Checkpoint = sessionstate.CheckpointReady
 		state.LastError = ""
 		if err := sessionstate.Save(paths, state); err != nil {
 			return err
 		}
+		captureModelAcquisitionTiming(rootCtx, paths, &state)
+		_ = sessionstate.Save(paths, state)
 		ready = true
 		printReadySession(state)
 		return nil
@@ -283,6 +299,7 @@ func runResume(args []string) (retErr error) {
 	if err := waitForModel(rootCtx, paths, state, 20*time.Minute); err != nil {
 		return err
 	}
+	markSessionReadyAt(&state, time.Now().UTC())
 
 	state.Status = sessionstate.StatusReady
 	state.Checkpoint = sessionstate.CheckpointReady
@@ -290,9 +307,41 @@ func runResume(args []string) (retErr error) {
 	if err := sessionstate.Save(paths, state); err != nil {
 		return err
 	}
+	captureModelAcquisitionTiming(rootCtx, paths, &state)
+	_ = sessionstate.Save(paths, state)
 	ready = true
 	printReadySession(state)
 	return nil
+}
+
+func applyResumeNInferDeploymentOverride(state *sessionstate.State, value string) (bool, error) {
+	if strings.TrimSpace(value) == "" {
+		return false, nil
+	}
+	deployment, err := normalizeNInferDeployment(value)
+	if err != nil {
+		return false, err
+	}
+	if runtimeForState(*state) != runtimeNInfer {
+		return false, errors.New("--ninfer-deployment can override only an NInfer session")
+	}
+	if ninferDeploymentForState(*state) == deployment && state.RuntimeDeployment == deployment {
+		return false, nil
+	}
+	state.RuntimeDeployment = deployment
+	state.RuntimeSourceCommit = ""
+	state.RuntimeBundleTag = ""
+	state.RuntimeBundleSHA256 = ""
+	state.RuntimeAcquisitionStartedAt = time.Time{}
+	state.RuntimeAcquiredAt = time.Time{}
+	state.RuntimeVerifiedAt = time.Time{}
+	state.RuntimeAcquisitionMillis = 0
+	state.RuntimeVerificationMillis = 0
+	if deployment == ninferDeploymentReleaseBundle {
+		state.RuntimeBundleTag = ninferRuntimeReleaseTag
+		state.RuntimeBundleSHA256 = ninferRuntimeBundleSHA256
+	}
+	return true, nil
 }
 
 func ensureSSHKeyForResume(paths config.Paths) (string, bool, error) {

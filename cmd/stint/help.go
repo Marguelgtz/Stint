@@ -159,6 +159,7 @@ var (
 			{name: "--yes", defaultVal: "false", purpose: "confirm the selected rental without prompting"},
 			{name: "--location", argument: "<text>", defaultVal: "", purpose: "prefer an offer whose location contains this text"},
 			{name: "--runtime", argument: "<name>", defaultVal: "auto", purpose: "inference runtime: auto, ninfer, or llama.cpp"},
+			{name: "--ninfer-deployment", argument: "<name>", defaultVal: "source-build", purpose: "NInfer deployment: source-build or opt-in release-bundle"},
 			{name: "--context", argument: "<int>", defaultVal: "16384", purpose: "llama.cpp context tokens (1024-131072)"},
 			{name: "--ninfer-config", argument: "<name>", defaultVal: "coding", purpose: "NInfer config: coding, precision, or native"},
 			{name: "--clients", argument: "<int>", defaultVal: "1", purpose: "NInfer client lanes: 1 or 2; lanes share the configured KV/context pool dynamically"},
@@ -172,6 +173,7 @@ var (
 		examples: []string{
 			"stint start interactive --hours 2",
 			"stint start interactive --yes --runtime ninfer --ninfer-config coding",
+			"stint start interactive --runtime ninfer --ninfer-deployment release-bundle",
 			"stint start interactive --runtime ninfer --ninfer-config native --clients 2",
 			"stint start interactive --location germany --min-measured-download-mbps 50",
 			"stint start interactive --runtime llama.cpp --context 32768",
@@ -179,7 +181,8 @@ var (
 		},
 		notes: []string{
 			"Requires `stint auth vast`, a free local port 8409, and the Stint SSH key (`stint setup ssh`).",
-			"NInfer is qualified for RTX 4090 hosts with CUDA >= 12.8 only; with --runtime auto, a 4090 uses NInfer and any other qualifying GPU falls back to llama.cpp (auto also falls back if the NInfer bootstrap is unavailable).",
+			"NInfer is qualified for RTX 4090 hosts with CUDA >= 12.8 only; with --runtime auto, a 4090 uses the default source-build path and other qualifying GPUs use llama.cpp. Source-build may fall back to llama.cpp if unavailable; release-bundle never falls back.",
+			"NInfer uses the source-build deployment by default. `--ninfer-deployment release-bundle` opts into Stint's immutable, SHA-pinned GitHub Release runtime and fails closed if acquisition or verification fails; it never silently compiles after a bundle failure.",
 			"--clients 2 is NInfer-only. It maps to two generation lanes over one shared dynamic KV pool; Stint does not split the configured context in half. Auto mode will not silently fall back to llama.cpp when two clients were requested.",
 			"--max-cost-usd can only lower the interactive profile's $2.50 requested-session ceiling; candidate rentals are checked against the resulting limit.",
 			"--max-hourly-usd can raise the profile's $0.40 hourly limit only when an explicit --max-cost-usd session cap is also supplied; every candidate must still fit that total cap.",
@@ -194,10 +197,12 @@ var (
 		section:  "compute",
 		summary:  "reattach to a saved session after an interruption",
 		detail:   "Continues a recorded session after an interruption: re-establishes the SSH tunnel (releasing stale ports first), verifies or restarts the remote runtime, waits for the model, and reports READY. If the session deadline has already passed, resume destroys the compute and clears the local state.",
-		usage:    "stint resume",
-		examples: []string{"stint resume"},
+		usage:    "stint resume [flags]",
+		flags:    []cliFlag{{name: "--ninfer-deployment", argument: "<name>", defaultVal: "saved", purpose: "override an NInfer deployment; use source-build to recover from a failed bundle"}},
+		examples: []string{"stint resume", "stint resume --ninfer-deployment source-build"},
 		notes: []string{
 			"Supports interactive sessions only.",
+			"A release-bundle session retries the saved immutable bundle path. If that release cannot be acquired or verified, explicitly choose `--ninfer-deployment source-build` to use the pinned compilation recovery path.",
 			"If resume fails again, the paid instance stays resumable and the deadline watchdog keeps running.",
 		},
 	}

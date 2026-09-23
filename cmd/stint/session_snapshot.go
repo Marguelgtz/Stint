@@ -14,16 +14,28 @@ type sampleMeta struct {
 }
 
 type sessionInfo struct {
-	InstanceID    int64  `json:"instanceId"`
-	Status        string `json:"status"`
-	GPUModel      string `json:"gpuModel,omitempty"`
-	Runtime       string `json:"runtime,omitempty"`
-	Model         string `json:"model,omitempty"`
-	ContextTokens int    `json:"contextTokens,omitempty"`
-	Clients       int    `json:"clients,omitempty"`
-	Profile       string `json:"profile,omitempty"`
-	Checkpoint    string `json:"checkpoint,omitempty"`
-	LastError     string `json:"lastError,omitempty"`
+	InstanceID                   int64  `json:"instanceId"`
+	Status                       string `json:"status"`
+	GPUModel                     string `json:"gpuModel,omitempty"`
+	Runtime                      string `json:"runtime,omitempty"`
+	RuntimeDeployment            string `json:"runtimeDeployment,omitempty"`
+	RuntimeSourceCommit          string `json:"runtimeSourceCommit,omitempty"`
+	ModelArtifactRevision        string `json:"modelArtifactRevision,omitempty"`
+	ModelArtifactSHA256          string `json:"modelArtifactSha256,omitempty"`
+	ModelArtifactSizeBytes       int64  `json:"modelArtifactSizeBytes,omitempty"`
+	ModelArtifactFormat          string `json:"modelArtifactFormat,omitempty"`
+	RuntimeBundleTag             string `json:"runtimeBundleTag,omitempty"`
+	RuntimeBundleSHA256          string `json:"runtimeBundleSha256,omitempty"`
+	RuntimeAcquisitionMillis     int64  `json:"runtimeAcquisitionMillis,omitempty"`
+	RuntimeVerificationMillis    int64  `json:"runtimeVerificationMillis,omitempty"`
+	ModelAcquisitionMillis       int64  `json:"modelAcquisitionMillis,omitempty"`
+	ReadyElapsedFromRentalMillis int64  `json:"readyElapsedFromRentalMillis,omitempty"`
+	Model                        string `json:"model,omitempty"`
+	ContextTokens                int    `json:"contextTokens,omitempty"`
+	Clients                      int    `json:"clients,omitempty"`
+	Profile                      string `json:"profile,omitempty"`
+	Checkpoint                   string `json:"checkpoint,omitempty"`
+	LastError                    string `json:"lastError,omitempty"`
 }
 
 type sessionTimeSnapshot struct {
@@ -113,16 +125,28 @@ func buildSessionSnapshot(state sessionstate.State, now time.Time) sessionSnapsh
 	return sessionSnapshot{
 		CollectedAt: now.UTC(),
 		Session: sessionInfo{
-			InstanceID:    state.InstanceID,
-			Status:        state.Status,
-			GPUModel:      state.GPUModel,
-			Runtime:       runtimeForState(state),
-			Model:         interactiveModelAlias,
-			ContextTokens: contextForState(state),
-			Clients:       clientsForState(state),
-			Profile:       state.Profile,
-			Checkpoint:    state.Checkpoint,
-			LastError:     state.LastError,
+			InstanceID:                   state.InstanceID,
+			Status:                       state.Status,
+			GPUModel:                     state.GPUModel,
+			Runtime:                      runtimeForState(state),
+			RuntimeDeployment:            runtimeDeploymentForStatus(state),
+			RuntimeSourceCommit:          state.RuntimeSourceCommit,
+			ModelArtifactRevision:        state.ModelArtifactRevision,
+			ModelArtifactSHA256:          state.ModelArtifactSHA256,
+			ModelArtifactSizeBytes:       state.ModelArtifactSizeBytes,
+			ModelArtifactFormat:          state.ModelArtifactFormat,
+			RuntimeBundleTag:             state.RuntimeBundleTag,
+			RuntimeBundleSHA256:          state.RuntimeBundleSHA256,
+			RuntimeAcquisitionMillis:     state.RuntimeAcquisitionMillis,
+			RuntimeVerificationMillis:    state.RuntimeVerificationMillis,
+			ModelAcquisitionMillis:       state.ModelAcquisitionMillis,
+			ReadyElapsedFromRentalMillis: state.ReadyElapsedFromRentalMillis,
+			Model:                        interactiveModelAlias,
+			ContextTokens:                contextForState(state),
+			Clients:                      clientsForState(state),
+			Profile:                      state.Profile,
+			Checkpoint:                   state.Checkpoint,
+			LastError:                    state.LastError,
 		},
 		Time: sessionTimeSnapshot{
 			StartedAt:         state.StartedAt,

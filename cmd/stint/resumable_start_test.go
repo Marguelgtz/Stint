@@ -112,6 +112,31 @@ func TestRunStartResumableValidateOnlyParsesSmokeArgumentsWithoutConfig(t *testi
 	}
 }
 
+func TestRunStartResumableValidateOnlySelectsPinnedReleaseDeployment(t *testing.T) {
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "no-home"))
+	err := runStartResumable([]string{
+		"interactive", "--runtime", "ninfer", "--ninfer-deployment", "release-bundle", "--validate-only",
+	})
+	if err != nil {
+		t.Fatalf("validate-only rejected opt-in release-bundle deployment: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "unknown deployment", args: []string{"interactive", "--ninfer-deployment", "latest", "--validate-only"}, want: "unknown NInfer deployment"},
+		{name: "incompatible runtime", args: []string{"interactive", "--runtime", "llama.cpp", "--ninfer-deployment", "release-bundle", "--validate-only"}, want: "requires --runtime auto or ninfer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runStartResumable(tc.args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("runStartResumable(%v) error = %v, want containing %q", tc.args, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunStartResumableValidateOnlyRejectsBadCostBeforeConfig(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "no-home"))
 	for _, tc := range []struct {
