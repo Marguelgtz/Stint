@@ -81,8 +81,8 @@ func TestNInferProductionTupleUsesValidated4090V2Profile(t *testing.T) {
 	if ninferCUDAFloor != "12.8" || ninferGPUArchitecture != "89" {
 		t.Fatalf("NInfer target = CUDA >= %s, SM%s; want CUDA >= 12.8, SM89", ninferCUDAFloor, ninferGPUArchitecture)
 	}
-	if ninferArtifactFormat != 2 || ninferModelRevision != "18dfc887423fa5aabf3cb56fac41490e462b3fab" || ninferModelSHA256 != "eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e" {
-		t.Fatalf("NInfer model artifact tuple changed unexpectedly: format=v%d revision=%s sha256=%s", ninferArtifactFormat, ninferModelRevision, ninferModelSHA256)
+	if ninferArtifactFormat != 2 || ninferModelRevision != "18dfc887423fa5aabf3cb56fac41490e462b3fab" || ninferModelSHA256 != "eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e" || ninferModelSizeBytes != 18210531328 {
+		t.Fatalf("NInfer model artifact tuple changed unexpectedly: format=v%d revision=%s size=%d sha256=%s", ninferArtifactFormat, ninferModelRevision, ninferModelSizeBytes, ninferModelSHA256)
 	}
 	if native, err := resolveNInferConfig(ninferConfigNative); err != nil || native.ContextTokens != 262144 {
 		t.Fatalf("native NInfer context = %+v, %v; want 262144 tokens", native, err)

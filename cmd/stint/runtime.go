@@ -24,6 +24,7 @@ const (
 	ninferModelRevision    = "18dfc887423fa5aabf3cb56fac41490e462b3fab"
 	ninferModelURL         = "https://huggingface.co/neroued/Qwen3.8-27B-NInfer/resolve/" + ninferModelRevision + "/qwen3_8_27b.ninfer"
 	ninferModelSHA256      = "eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e"
+	ninferModelSizeBytes   = int64(18210531328)
 )
 
 func normalizeRuntime(value string) (string, error) {
