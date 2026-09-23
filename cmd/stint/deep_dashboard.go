@@ -28,6 +28,7 @@ const (
 
 type deepDashboardSnapshot struct {
 	State       deep.DeepState
+	Latest      bool
 	Coordinator string
 	ActiveSince *time.Time
 	Events      []deepdash.Event
@@ -221,10 +222,12 @@ func (c *deepDashboardController) handleKey(key byte) (quit, changed, land bool)
 		c.model.View = deepdash.Activity
 	case '4':
 		c.model.View = deepdash.WorkerView
+	case '5':
+		c.model.View = deepdash.PhaseDetails
 	case dashboardKeyPrevious:
-		c.model.View = deepdash.View((int(c.model.View) + 3) % 4)
+		c.model.View = deepdash.View((int(c.model.View) + 4) % 5)
 	case dashboardKeyNext, '\t':
-		c.model.View = deepdash.View((int(c.model.View) + 1) % 4)
+		c.model.View = deepdash.View((int(c.model.View) + 1) % 5)
 	case 'r', 'R':
 		c.loadLocal()
 		c.startRefresh()
@@ -251,6 +254,9 @@ func (c *deepDashboardController) handleKey(key byte) (quit, changed, land bool)
 }
 
 func (c *deepDashboardController) isLatest() bool {
+	if !c.snapshot.Latest {
+		return false
+	}
 	latest, err := deep.LoadLatestState(c.paths.StateDir)
 	if err != nil || latest.SessionID != c.snapshot.State.SessionID {
 		return false
@@ -282,6 +288,22 @@ func (c *deepDashboardController) project() {
 	m.SessionID = s.SessionID
 	m.Mission = s.MissionName
 	m.Phase = string(s.Phase)
+	m.BaseCommit = s.BaseCommit
+	m.Branch = s.Branch
+	m.Verify = s.Verify
+	m.LandingReason = s.LandingReason
+	m.LandingCommit = s.LandingCommit
+	m.LandingVerify = s.LandingVerify
+	m.LandingVerifyDone = s.LandingVerifyDone
+	m.LandingHandoff = s.LandingHandoff
+	m.LandedAt = s.LandedAt
+	m.Latest = c.snapshot.Latest
+	m.CanLand = c.isLatest() && s.Phase != deep.PhaseLanded && s.Phase != deep.PhaseStopped
+	if s.ComputeBinding != nil {
+		m.ComputeBinding = fmt.Sprintf("%s instance %d", s.ComputeBinding.Provider, s.ComputeBinding.InstanceID)
+	} else {
+		m.ComputeBinding = "unbound"
+	}
 	m.WorkerName = "Hermes on compute box"
 	if s.Exec != nil && s.Exec.Worker != "" {
 		m.WorkerName = "Hermes on compute box"
@@ -293,7 +315,11 @@ func (c *deepDashboardController) project() {
 	m.Events = c.snapshot.Events
 	m.Tasks = make([]deepdash.Task, 0, len(s.Tasks))
 	for _, task := range s.Tasks {
-		m.Tasks = append(m.Tasks, deepdash.Task{ID: task.ID, Objective: task.Objective, Status: string(task.Status), Attempts: task.Attempts, Blocker: task.Blocker, LastResult: task.LastResult})
+		verifiedAt := ""
+		if task.VerifiedAt != nil {
+			verifiedAt = task.VerifiedAt.Local().Format(time.RFC3339)
+		}
+		m.Tasks = append(m.Tasks, deepdash.Task{ID: task.ID, Objective: task.Objective, Status: string(task.Status), Attempts: task.Attempts, Blocker: task.Blocker, LastResult: task.LastResult, Verify: task.Verify, CheckpointCommit: task.CheckpointCommit, VerifiedAt: verifiedAt})
 	}
 	m.Compute = projectDeepDashboardCompute(c.compute, c.computeLive)
 	m.Worker = c.worker
@@ -399,6 +425,8 @@ func loadDeepDashboardSnapshot(stateDir, sessionID string) (deepDashboardSnapsho
 	if err != nil {
 		return deepDashboardSnapshot{}, err
 	}
+	latest, latestErr := deep.LoadLatestState(stateDir)
+	isLatest := latestErr == nil && latest.SessionID == state.SessionID
 	coordinator := "not running"
 	if alive, pid := deep.CoordinatorAlive(stateDir, state.SessionID); alive {
 		coordinator = fmt.Sprintf("running (pid %d)", pid)
@@ -421,7 +449,7 @@ func loadDeepDashboardSnapshot(stateDir, sessionID string) (deepDashboardSnapsho
 	for _, incident := range incidents {
 		events = append(events, deepdash.Event{Time: incident.Time.Local().Format("15:04:05"), Kind: incident.Kind, Task: incident.Task, Detail: incident.Detail})
 	}
-	return deepDashboardSnapshot{State: state, Coordinator: coordinator, ActiveSince: activeSince, Events: events}, nil
+	return deepDashboardSnapshot{State: state, Latest: isLatest, Coordinator: coordinator, ActiveSince: activeSince, Events: events}, nil
 }
 
 func activeTaskID(tasks []deep.Task) string {

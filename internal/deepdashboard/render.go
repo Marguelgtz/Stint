@@ -17,10 +17,12 @@ const (
 	Tasks
 	Activity
 	WorkerView
+	PhaseDetails
 )
 
 type Task struct {
 	ID, Objective, Status, LastResult, Blocker string
+	Verify, CheckpointCommit, VerifiedAt       string
 	Attempts                                   int
 }
 
@@ -50,25 +52,37 @@ type Modal struct {
 }
 
 type Model struct {
-	Width, Height int
-	NoColor       bool
-	View          View
-	SessionID     string
-	Mission       string
-	Phase         string
-	WorkerName    string
-	Coordinator   string
-	StartedAt     time.Time
-	Deadline      time.Time
-	LandBefore    time.Time
-	Now           time.Time
-	Tasks         []Task
-	ActiveSince   *time.Time
-	Events        []Event
-	Compute       Compute
-	Worker        Worker
-	Error, Notice string
-	Modal         *Modal
+	Width, Height     int
+	NoColor           bool
+	View              View
+	SessionID         string
+	Mission           string
+	Phase             string
+	BaseCommit        string
+	Branch            string
+	Verify            string
+	ComputeBinding    string
+	LandingReason     string
+	LandingCommit     string
+	LandingVerify     string
+	LandingHandoff    string
+	LandingVerifyDone bool
+	LandedAt          *time.Time
+	Latest            bool
+	CanLand           bool
+	WorkerName        string
+	Coordinator       string
+	StartedAt         time.Time
+	Deadline          time.Time
+	LandBefore        time.Time
+	Now               time.Time
+	Tasks             []Task
+	ActiveSince       *time.Time
+	Events            []Event
+	Compute           Compute
+	Worker            Worker
+	Error, Notice     string
+	Modal             *Modal
 }
 
 type palette struct{ noColor bool }
@@ -105,6 +119,8 @@ func Render(m Model) string {
 		body = activityView(m, p)
 	case WorkerView:
 		body = workerView(m, p)
+	case PhaseDetails:
+		body = phaseView(m, p)
 	default:
 		body = runView(m, p)
 	}
@@ -150,6 +166,11 @@ func runView(m Model, p palette) string {
 	} else {
 		worker += " · compute not recorded"
 	}
+	if !m.Latest {
+		worker += " · historical session"
+	} else if !m.Compute.Available {
+		worker += " · compute binding not currently verified"
+	}
 	fmt.Fprintf(&b, "%s  %s\n", p.bold(or(m.Mission, "unnamed mission")), p.muted("session "+m.SessionID))
 	fmt.Fprintf(&b, "Worker     %s\n", worker)
 	fmt.Fprintf(&b, "Coordinator %s\n", or(m.Coordinator, "unknown"))
@@ -186,6 +207,15 @@ func runView(m Model, p palette) string {
 		b.WriteString(strings.Join(parts, " · "))
 	}
 	b.WriteString("\n" + p.bold("CONTEXT") + "   " + contextLine(m.Worker, p))
+	for i := len(m.Tasks) - 1; i >= 0; i-- {
+		if m.Tasks[i].CheckpointCommit != "" {
+			b.WriteString("\n" + p.bold("CHECKPOINT") + " " + m.Tasks[i].ID + " · " + m.Tasks[i].CheckpointCommit)
+			break
+		}
+	}
+	if !m.CanLand && m.Phase != "landed" && m.Phase != "stopped" {
+		b.WriteString("\n" + p.warn("Landing is disabled until this is the latest session attached to its recorded compute."))
+	}
 	return b.String()
 }
 
@@ -198,6 +228,15 @@ func tasksView(m Model, p palette) string {
 		label := taskStatus(task.Status, p)
 		line := fmt.Sprintf("%-12s %-11s %d  %s", task.ID, label, task.Attempts, compact(task.Objective, max(12, m.Width-32)))
 		lines = append(lines, line)
+		if task.VerifiedAt != "" {
+			lines = append(lines, "             verified at "+task.VerifiedAt)
+		}
+		if task.CheckpointCommit != "" {
+			lines = append(lines, "             checkpoint SHA "+task.CheckpointCommit)
+		}
+		if task.Verify != "" {
+			lines = append(lines, "             verify "+compact(task.Verify, max(12, m.Width-25)))
+		}
 		if task.Blocker != "" {
 			lines = append(lines, "             "+p.danger("blocker: ")+compact(task.Blocker, max(12, m.Width-25)))
 		} else if task.LastResult != "" && (task.Status == "incomplete" || task.Status == "verified") {
@@ -205,6 +244,80 @@ func tasksView(m Model, p palette) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func phaseView(m Model, p palette) string {
+	lines := []string{p.bold("PHASE DETAILS"), ""}
+	sessionKind := "latest session"
+	if !m.Latest {
+		sessionKind = "historical session · landing disabled"
+	} else if !m.CanLand && m.Phase != "landed" && m.Phase != "stopped" {
+		sessionKind = "latest session · compute detached or unverified · landing disabled"
+	}
+	lines = append(lines,
+		"Session          "+m.SessionID+" · "+sessionKind,
+		"Phase            "+or(m.Phase, "unknown"),
+		"Coordinator      "+or(m.Coordinator, "unknown"),
+		"Branch           "+or(m.Branch, "unknown"),
+		"Base commit      "+or(m.BaseCommit, "unknown"),
+		"Compute binding  "+or(m.ComputeBinding, "unbound"),
+		"Verification     "+or(m.Verify, "not configured"),
+		"Land before      "+timeLabel(m.LandBefore),
+	)
+	if !m.StartedAt.IsZero() {
+		lines = append(lines, "Started          "+m.StartedAt.Local().Format(time.RFC3339))
+	}
+	lines = append(lines, "\n"+p.bold("TASK VERIFICATION AND CHECKPOINTS"))
+	if len(m.Tasks) == 0 {
+		lines = append(lines, p.muted("No tasks recorded."))
+	} else {
+		for _, task := range m.Tasks {
+			verification := "not verified"
+			if task.Status == "verified" {
+				verification = "verified"
+				if task.VerifiedAt != "" {
+					verification += " at " + task.VerifiedAt
+				}
+			}
+			lines = append(lines, task.ID+" · "+task.Status+" · "+verification)
+			if task.CheckpointCommit != "" {
+				lines = append(lines, "  checkpoint SHA "+task.CheckpointCommit)
+			}
+		}
+	}
+	lines = append(lines, "\n"+p.bold("LANDING"))
+	lines = append(lines,
+		"Reason           "+or(m.LandingReason, "not started"),
+		"Final verify     "+landingVerifyStatus(m.LandingVerify, m.LandingVerifyDone),
+		"Landing commit   "+or(m.LandingCommit, "not recorded"),
+	)
+	handoff := "not written"
+	if strings.TrimSpace(m.LandingHandoff) != "" {
+		handoff = "written"
+	}
+	lines = append(lines, "Handoff          "+handoff)
+	if m.LandedAt != nil {
+		lines = append(lines, "Landed at        "+m.LandedAt.Local().Format(time.RFC3339))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func landingVerifyStatus(result string, recorded bool) string {
+	if !recorded {
+		return "pending"
+	}
+	status := strings.TrimSpace(strings.SplitN(result, "\n", 2)[0])
+	if status == "" {
+		return "recorded (no verification command configured)"
+	}
+	return status
+}
+
+func timeLabel(value time.Time) string {
+	if value.IsZero() {
+		return "not set"
+	}
+	return value.Local().Format(time.RFC3339)
 }
 
 func activityView(m Model, p palette) string {
@@ -261,13 +374,17 @@ func workerView(m Model, p palette) string {
 }
 
 func footer(m Model, p palette) string {
-	nav := []string{"1 Run", "2 Tasks", "3 Activity", "4 Worker"}
-	for i, view := range []View{Run, Tasks, Activity, WorkerView} {
+	nav := []string{"1 Run", "2 Tasks", "3 Activity", "4 Worker", "5 Phase"}
+	for i, view := range []View{Run, Tasks, Activity, WorkerView, PhaseDetails} {
 		if m.View == view {
 			nav[i] = p.accent("[" + nav[i] + "]")
 		}
 	}
-	return strings.Join(wrap(append(nav, "r Refresh", "s Land", "q Exit"), m.Width), "\n")
+	land := "s Land"
+	if !m.CanLand {
+		land = "s Land disabled"
+	}
+	return strings.Join(wrap(append(nav, "r Refresh", land, "q Exit"), m.Width), "\n")
 }
 
 func modalView(modal Modal, width int, p palette) string {
