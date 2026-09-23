@@ -92,7 +92,7 @@ func run(args []string) error {
 	case "setup":
 		return runSetup(args[1:])
 	case "doctor":
-		return runDoctor()
+		return runDoctorCommand(args[1:])
 	case "status":
 		return runStatus()
 	case "onboard":

@@ -46,6 +46,13 @@ func runResume(args []string) (retErr error) {
 	if state.Profile != "interactive" {
 		return fmt.Errorf("resume currently supports interactive sessions only, got %q", state.Profile)
 	}
+	if state.Status == "STOPPED" {
+		if err := archiveGoneSession(paths, state); err != nil {
+			return fmt.Errorf("session is already confirmed stopped; finalize its archive: %w", err)
+		}
+		fmt.Println("Session was already stopped; archived and cleared local session state.")
+		return nil
+	}
 
 	credentials, err := config.LoadCredentials(paths)
 	if err != nil {
@@ -61,32 +68,42 @@ func runResume(args []string) (retErr error) {
 		if ready || !preserve {
 			return
 		}
-		killPID(state.TunnelPID)
-		state.TunnelPID = 0
-		state.Status = sessionstate.StatusRecoverable
-		if retErr != nil {
+		if current, loadErr := sessionstate.Load(paths); loadErr == nil && current.InstanceID == state.InstanceID {
+			state = current
+		}
+		if state.Status != "STOPPED" {
+			state.Status = sessionstate.StatusRecoverable
+		}
+		if retErr != nil && state.Status != "STOPPED" {
 			state.LastError = retErr.Error()
+		}
+		if state.Status != "STOPPED" && !sessionWatchdogRunning(state) {
+			if err := ensureWatchdogAlive(paths, &state); err != nil {
+				fmt.Fprintf(os.Stderr, "stint: paid instance %d has no verified deadline watchdog: %v\n", state.InstanceID, err)
+			}
 		}
 		_ = sessionstate.Save(paths, state)
 		if retErr != nil {
-			fmt.Fprintf(os.Stderr, "\nPaid instance %d remains resumable at %s. Run: stint resume\n", state.InstanceID, valueOr(state.Checkpoint, state.Status))
+			if state.Status == "STOPPED" {
+				fmt.Fprintf(os.Stderr, "\nVast confirmed instance %d is destroyed; its local archive still needs recovery. Run: stint resume or stint down\n", state.InstanceID)
+			} else {
+				fmt.Fprintf(os.Stderr, "\nPaid instance %d remains resumable at %s. Run: stint resume\n", state.InstanceID, valueOr(state.Checkpoint, state.Status))
+			}
 		}
 	}()
 
 	if !state.Deadline.IsZero() && !time.Now().Before(state.Deadline) {
-		killPID(state.TunnelPID)
-		killPID(state.WatchdogPID)
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		destroyErr := client.DestroyInstance(ctx, state.InstanceID)
+		destroyErr := destroyAndArchiveSession(ctx, paths, client, state)
 		cancel()
 		if destroyErr != nil {
 			return fmt.Errorf("session deadline passed and cleanup failed: %w", destroyErr)
 		}
 		preserve = false
-		if err := sessionstate.Clear(paths); err != nil {
-			return err
-		}
 		return errors.New("session deadline has passed; compute was destroyed")
+	}
+	if err := ensureWatchdogAlive(paths, &state); err != nil {
+		return fmt.Errorf("ensure session watchdog before resume: %w", err)
 	}
 
 	if localModelReady(rootCtx, 1500*time.Millisecond) {
@@ -102,8 +119,17 @@ func runResume(args []string) (retErr error) {
 	}
 
 	if state.TunnelPID > 0 {
-		killPID(state.TunnelPID)
+		stopped, stopErr := stopSessionTunnel(paths, state)
+		if stopErr != nil {
+			return stopErr
+		}
+		if !stopped && processAlive(state.TunnelPID) {
+			return fmt.Errorf("recorded tunnel pid %d could not be verified as Stint-owned; refusing to signal it", state.TunnelPID)
+		}
 		state.TunnelPID = 0
+		if err := sessionstate.Save(paths, state); err != nil {
+			return err
+		}
 		fmt.Printf("Stopping stale local tunnel on port %d...\n", clinePort)
 		if err := waitForPortAvailable(rootCtx, clinePort, resumePortReleaseTimeout); err != nil {
 			return fmt.Errorf("%w; stop the process using it, then run: stint resume", err)
@@ -137,8 +163,10 @@ func runResume(args []string) (retErr error) {
 		var apiErr *vast.APIError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
 			preserve = false
-			_ = sessionstate.Clear(paths)
-			return errors.New("the recorded Vast instance no longer exists; cleared local session state")
+			if archiveErr := archiveGoneSession(paths, state); archiveErr != nil {
+				return fmt.Errorf("the recorded Vast instance no longer exists; finalize local session history: %w", archiveErr)
+			}
+			return errors.New("the recorded Vast instance no longer exists; archived and cleared local session state")
 		}
 		return err
 	}
@@ -306,7 +334,7 @@ func localModelReady(ctx context.Context, timeout time.Duration) bool {
 }
 
 func ensureWatchdogAlive(paths config.Paths, state *sessionstate.State) error {
-	if processAlive(state.WatchdogPID) {
+	if watchdogProcessIsRunning(*state) {
 		return nil
 	}
 	pid, err := spawnWatchdog(paths)
@@ -316,6 +344,8 @@ func ensureWatchdogAlive(paths config.Paths, state *sessionstate.State) error {
 	state.WatchdogPID = pid
 	return sessionstate.Save(paths, *state)
 }
+
+var watchdogProcessIsRunning = sessionWatchdogRunning
 
 func processAlive(pid int) bool {
 	if pid <= 0 {

@@ -144,6 +144,9 @@ func TestMaxAdditionalDurationUsesProfileCeiling(t *testing.T) {
 }
 
 func TestDeadlineCommandsPersistUpdatedDeadline(t *testing.T) {
+	oldWatchdogCheck := watchdogProcessIsRunning
+	watchdogProcessIsRunning = func(state sessionstate.State) bool { return state.WatchdogPID == os.Getpid() }
+	t.Cleanup(func() { watchdogProcessIsRunning = oldWatchdogCheck })
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))

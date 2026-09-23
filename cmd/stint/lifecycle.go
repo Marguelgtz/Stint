@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -136,12 +137,19 @@ func runStart(args []string) error {
 	ready := false
 	defer func() {
 		if created && !ready {
-			killPID(state.TunnelPID)
-			killPID(state.WatchdogPID)
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-			_ = client.DestroyInstance(cleanupCtx, state.InstanceID)
+			if cleanupErr := destroyAndArchiveSession(cleanupCtx, paths, client, state); cleanupErr != nil {
+				fmt.Fprintf(os.Stderr, "stint: cleanup instance %d: %v\n", state.InstanceID, cleanupErr)
+				if current, loadErr := sessionstate.Load(paths); loadErr == nil && current.InstanceID == state.InstanceID {
+					state = current
+				}
+				if state.Status != "STOPPED" && !sessionWatchdogRunning(state) {
+					if watchdogErr := ensureWatchdogAlive(paths, &state); watchdogErr != nil {
+						fmt.Fprintf(os.Stderr, "stint: paid instance %d has no verified deadline watchdog: %v\n", state.InstanceID, watchdogErr)
+					}
+				}
+			}
 			cancel()
-			_ = sessionstate.Clear(paths)
 		}
 	}()
 
@@ -303,6 +311,7 @@ func startRemoteModel(ctx context.Context, paths config.Paths, state sessionstat
 func runDown(args []string) error {
 	fs := flag.NewFlagSet("down", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	yes := fs.Bool("yes", false, "destroy without the interactive type-to-confirm")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -323,24 +332,88 @@ func runDown(args []string) error {
 	if err != nil {
 		return err
 	}
+	if !*yes && !confirmDestroy(os.Stdin, os.Stdout, state) {
+		return nil
+	}
 	credentials, err := config.LoadCredentials(paths)
 	if err != nil {
 		return err
 	}
 	client := vast.NewClient(credentials.Vast.APIKey)
-	killPID(state.TunnelPID)
-	killPID(state.WatchdogPID)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	fmt.Printf("Destroying Vast instance %d...\n", state.InstanceID)
-	if err := client.DestroyInstance(ctx, state.InstanceID); err != nil {
-		return err
-	}
-	if err := sessionstate.Clear(paths); err != nil {
+	if err := destroyAndArchiveSession(ctx, paths, client, state); err != nil {
+		// Keep the active record and deadline watchdog whenever provider teardown
+		// or the durable archive cannot be confirmed.
+		fmt.Printf("Teardown incomplete; local session state was kept: %v\n", err)
 		return err
 	}
 	fmt.Println("Compute destroyed. Cline endpoint is offline.")
 	return nil
+}
+
+// destroyGonePollInterval is the gap between Vast show polls that verify a
+// destroyed instance has actually disappeared before local state is cleared.
+var destroyGonePollInterval = 2 * time.Second
+
+// instanceGoneProbe adapts the Vast client to a probe that returns nil once
+// the instance no longer exists (404/410) and an error while it is still
+// visible or on transient API failures.
+func instanceGoneProbe(client *vast.Client, instanceID int64) func(context.Context) error {
+	return func(ctx context.Context) error {
+		_, err := client.ShowInstance(ctx, instanceID)
+		if err == nil {
+			return errors.New("instance still visible")
+		}
+		var apiErr *vast.APIError
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusGone) {
+			return nil
+		}
+		return err
+	}
+}
+
+// waitForInstanceGone polls show until it reports the instance as gone or
+// the context expires. Transient API failures do not abort verification;
+// an unconfirmed teardown returns an error so the caller keeps tracking
+// the paid instance.
+func waitForInstanceGone(ctx context.Context, show func(context.Context) error) error {
+	for {
+		if err := show(ctx); err == nil {
+			return nil
+		}
+		timer := time.NewTimer(destroyGonePollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("instance not confirmed gone: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+// confirmDestroy is the type-to-confirm gate before `stint down` destroys a
+// paid instance: it summarizes what is about to be destroyed and requires
+// the literal word "destroy" (the dashboard uses an equivalent modal). Any
+// other input — including EOF on a non-interactive stdin — aborts with no
+// side effects; unattended callers pass --yes to skip the gate.
+func confirmDestroy(stdin io.Reader, out io.Writer, state sessionstate.State) bool {
+	fmt.Fprintf(out, "Instance       %d\n", state.InstanceID)
+	fmt.Fprintf(out, "Remaining      %s\n", formatSessionDuration(time.Until(state.Deadline)))
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "This requests destruction of the Vast instance. Stint waits for Vast to confirm it is gone, archives the session, then clears local tracking state.")
+	fmt.Fprint(out, "Type \"destroy\" to confirm: ")
+	line, err := bufio.NewReader(stdin).ReadString('\n')
+	if err != nil {
+		fmt.Fprintln(out, "\nConfirmation unavailable (no interactive input). Use --yes to destroy without confirmation.")
+		return false
+	}
+	if strings.TrimSpace(line) != "destroy" {
+		fmt.Fprintln(out, "Aborted: session left running.")
+		return false
+	}
+	return true
 }
 
 func runWatchdog(args []string) error {
@@ -361,14 +434,10 @@ func runWatchdog(args []string) error {
 	if err != nil {
 		return err
 	}
-	killPID(state.TunnelPID)
 	client := vast.NewClient(credentials.Vast.APIKey)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	if err := client.DestroyInstance(ctx, state.InstanceID); err != nil {
-		return err
-	}
-	return sessionstate.Clear(paths)
+	return destroyAndArchiveSession(ctx, paths, client, state)
 }
 
 func confirmRental() (bool, error) {
@@ -519,39 +588,21 @@ func sshArgs(paths config.Paths, state sessionstate.State, knownHosts, remoteCom
 }
 
 func startTunnel(paths config.Paths, state sessionstate.State) (int, error) {
-	ssh, err := localenv.SSHExecutable()
-	if err != nil {
-		return 0, err
-	}
 	if err := paths.Ensure(); err != nil {
 		return 0, err
 	}
-	logPath := filepath.Join(paths.StateDir, "tunnel.log")
+	logPath, err := sessionEvidenceLogPath(paths, state.InstanceID, "tunnel.log")
+	if err != nil {
+		return 0, err
+	}
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, err
 	}
-	knownHosts := filepath.Join(paths.StateDir, "known_hosts")
-	forward := fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", clinePort, clineRemotePort)
-	args := []string{
-		"-N",
-		"-i", paths.SSHPrivateKey,
-		"-p", strconv.Itoa(state.SSHPort),
-		"-o", "BatchMode=yes",
-		"-o", "ExitOnForwardFailure=yes",
-		"-o", "ServerAliveInterval=15",
-		"-o", "ServerAliveCountMax=3",
-		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "UserKnownHostsFile=" + knownHosts,
-		"-L", forward,
-		"root@" + state.SSHHost,
-	}
-	cmd := exec.Command(ssh, args...)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	if err := cmd.Start(); err != nil {
+	cmd, err := startTunnelProcess(paths, state, logFile)
+	if err != nil {
 		_ = logFile.Close()
-		return 0, fmt.Errorf("start SSH tunnel: %w", err)
+		return 0, err
 	}
 	pid := cmd.Process.Pid
 	time.Sleep(1200 * time.Millisecond)
@@ -619,11 +670,26 @@ func spawnWatchdog(paths config.Paths) (int, error) {
 	if err := paths.Ensure(); err != nil {
 		return 0, err
 	}
-	logFile, err := os.OpenFile(filepath.Join(paths.StateDir, "watchdog.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	state, err := sessionstate.Load(paths)
+	if err != nil {
+		return 0, fmt.Errorf("load session for watchdog: %w", err)
+	}
+	logPath, err := sessionEvidenceLogPath(paths, state.InstanceID, "watchdog.log")
 	if err != nil {
 		return 0, err
 	}
-	cmd := exec.Command(exe, "_watchdog")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	cmd := exec.Command(exe, "_watchdog", strconv.FormatInt(state.InstanceID, 10))
+	// Detach the watchdog from the spawning terminal's process group so it
+	// survives the SIGHUP that closing that terminal sends to the group. The
+	// watchdog is the only local deadline enforcer for a paid instance; if it
+	// died with the operator's shell, an unattended session could run past its
+	// deadline with nothing locally watching to destroy it. (A Vast-side
+	// auto-destroy field does not exist, so this local process is the ceiling.)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
@@ -634,14 +700,4 @@ func spawnWatchdog(paths config.Paths) (int, error) {
 	_ = cmd.Process.Release()
 	_ = logFile.Close()
 	return pid, nil
-}
-
-func killPID(pid int) {
-	if pid <= 0 {
-		return
-	}
-	process, err := os.FindProcess(pid)
-	if err == nil {
-		_ = process.Signal(syscall.SIGTERM)
-	}
 }
