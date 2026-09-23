@@ -12,6 +12,10 @@ permissions:
   actions: read
   contents: write
 
+concurrency:
+  group: publish-ninfer-runtime-81b68a20-sm89
+  cancel-in-progress: false
+
 jobs:
   publish:
     name: Verify exact build artifact and publish once
