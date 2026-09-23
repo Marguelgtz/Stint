@@ -3,14 +3,15 @@
 **Status:** one authoritative `main` is verified through CI, source/runtime and
 historical PR semantics are grounded, and the immutable runtime bundle remains
 opt-in. One fresh RTX 4090 source-build run reached READY and supplied a live
-startup/perf baseline. The remaining acceptance gate is release-bundle and
-Deep Work qualification on RTX 4090.
+startup/perf baseline. A second fresh 4090 run stopped during release-asset
+download at about 48%; release-bundle and Deep Work qualification remain open.
 
 ## Authoritative repository and verification
 
 - Product `main` before this evidence-documentation PR:
-  `9638ac6fef4ad81a993a5bf1d73ffeffeb30a1ef` (after #138).
-- Landed-main run `35923648426` passed all five required CI jobs.
+  `bc368274ab5746a03eaa8c497b83023ddab3f6fe` (after #139).
+- PR #139 exact-head run `35924946874` and landed-main run `35925100519`
+  passed all five required CI jobs.
 - Exact landed-main push run `35916137793` passed all five required jobs.
 - PR #131 merged as `2b5f7342093c520175b608a1a64bbce0b9443f31`. Its PR run
   `35905726077` appeared green but physically tested synthetic merge tree
@@ -110,15 +111,31 @@ returned 42 and 56. Live perf passed at 7,413 actual prompt tokens (TTFT 4.91s,
 decode; 22.4/24 GB VRAM, no OOM). The full 262144 context was not filled, the
 two clients were not tested at full context, no release-bundle deployment was
 used, and this run did not execute Deep Work. Source-build now has a measured
-READY baseline; the release-bundle and GHCR paths still lack comparable live
-startup timing.
+READY baseline.
+
+A fresh RTX 4090 run then selected the immutable release bundle on the same
+Vast offer, at `$0.4759259/hour`, with a one-hour `$0.48` schedule cap and
+`$0.50` session ceiling. Stint measured `52.3 MB/s` in its network
+qualification, and the pinned 18.2 GB model was cached. The 939,381,613-byte
+GitHub Release asset reached about 428 MiB (48%) after 25 minutes; its last
+sampled minutes were around 16–17 KB/s. The run was stopped at 26m41s to avoid
+spending the remaining lease on an incomplete transfer. Estimated prorated
+cost was `$0.21` (not provider-invoice reconciled). Stint archived STOPPED,
+confirmed provider teardown, and reported no active compute.
+
+The release archive was not completed or SHA-verified. This run did not reach
+runtime verification, model load, READY, inference, perf, Deep Work,
+publication, or final archive. The exact cause of the GitHub-route slowdown
+is unknown; general network qualification does not measure the release asset
+path. Keep `release-bundle` opt-in and `source-build` default. Improve and
+locally verify release asset delivery before another bounded 4090 attempt.
 
 Keep release deployment opt-in until a fresh RTX 4090 run covers the immutable
 bundle, short two-lane requests, full native-context stability, correctness,
 Hermes xhigh/medium routing, independent verification, checkpoint publication,
-handoff/archive, and teardown. Compare its READY path with this source-build
-baseline. See the [grounding plan](STINT_REPOSITORY_GROUNDING_PLAN.md) for the
-current step-by-step gate.
+handoff/archive, and teardown. First improve and locally verify asset delivery;
+then compare READY time with the source-build baseline. See the
+[grounding plan](STINT_REPOSITORY_GROUNDING_PLAN.md) for the current gate.
 
 The generic read-only Vast plan at `2026-09-23 20:12 UTC` selected an excluded
 RTX 3090 at `$0.379/hour`; it did not authorize or trigger a rental. The actual
@@ -134,10 +151,12 @@ branches were not modified to rerun them.
 
 ## Next work
 
-1. Run the release bundle on one fresh RTX 4090 with the published immutable
-   tuple; complete the remaining runtime and Deep Work acceptance gates while
-   keeping price/candidate limits explicit.
-2. Compare release-bundle startup with the source-build baseline before choosing
+1. Improve release asset delivery and verify it locally, including retry and
+   integrity behavior on a throttled/range-capable fixture.
+2. After the transfer path can leave time for acceptance, run the immutable
+   release bundle on one fresh RTX 4090 and complete the remaining runtime and
+   Deep Work gates within explicit price and candidate limits.
+3. Compare release-bundle startup with the source-build baseline before choosing
    a production default. Keep source-build as default until qualification passes.
-3. Refresh the open-PR ledger after acceptance; keep #85 parked and #110–#113
+4. Refresh the open-PR ledger after acceptance; keep #85 parked and #110–#113
    open, unmerged, and untouched.
