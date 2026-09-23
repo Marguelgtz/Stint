@@ -17,7 +17,10 @@ const (
 	interactiveRuntimeContext = 126976
 
 	ninferSourceRepository = "https://github.com/sergiuszm/ninfer-4090.git"
-	ninferSourceCommit     = "981b685ea2124fdaed023123d2e63fd29d529ab8"
+	ninferSourceCommit     = "81b68a20a9a0d9ab47d7e5838887c6d636ab76e0"
+	ninferCUDAFloor        = "12.8"
+	ninferGPUArchitecture  = "89"
+	ninferArtifactFormat   = 2
 	ninferModelRevision    = "18dfc887423fa5aabf3cb56fac41490e462b3fab"
 	ninferModelURL         = "https://huggingface.co/neroued/Qwen3.8-27B-NInfer/resolve/" + ninferModelRevision + "/qwen3_8_27b.ninfer"
 	ninferModelSHA256      = "eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e"

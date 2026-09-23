@@ -55,6 +55,8 @@ jobs:
         run: bash scripts/test_onbox_supervisor.sh
       - name: Test fresh-box smoke CLI preflight without provider mutation
         run: bash scripts/test_onbox_smoke_preflight.sh
+      - name: Test NInfer runtime bundle packaging and archive safety
+        run: python3 scripts/test_ninfer_runtime_bundle.py
 
   race-tests:
     name: race-tests

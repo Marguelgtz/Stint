@@ -1,0 +1,114 @@
+name: Publish NInfer Runtime Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful Build NInfer Runtime Bundle workflow run on main
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    name: Verify exact build artifact and publish once
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify source workflow run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          run_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID")"
+          test "$(jq -r .path <<<"$run_json")" = .github/workflows/ninfer-runtime-bundle.yml
+          test "$(jq -r .event <<<"$run_json")" = workflow_dispatch
+          test "$(jq -r .head_branch <<<"$run_json")" = main
+          test "$(jq -r .head_sha <<<"$run_json")" = "$GITHUB_SHA"
+          test "$(jq -r .conclusion <<<"$run_json")" = success
+          test "$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled)" = true
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/ninfer-runtime-81b68a20-sm89" >/dev/null 2>&1; then
+            echo "release tag already exists; immutable releases are never overwritten" >&2
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/ninfer-runtime-81b68a20-sm89" >/dev/null 2>&1; then
+            echo "git tag already exists; refusing to reuse it" >&2
+            exit 1
+          fi
+
+      - name: Download assets from the exact successful build run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        run: gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" --name ninfer-runtime-bundle-81b68a20-sm89 --dir dist/ninfer-runtime
+
+      - name: Verify archive, sidecar, manifest, and pinned tuple
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz
+            stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz.sha256
+            stint-ninfer-81b68a20-sm89-linux-amd64.manifest.json
+          )
+          actual=(dist/ninfer-runtime/*)
+          test "${#actual[@]}" -eq "${#expected[@]}"
+          for name in "${expected[@]}"; do test -f "dist/ninfer-runtime/$name"; done
+          python3 scripts/ninfer_runtime_bundle.py verify \
+            --archive dist/ninfer-runtime/"${expected[0]}" \
+            --checksum dist/ninfer-runtime/"${expected[1]}" \
+            --manifest dist/ninfer-runtime/"${expected[2]}"
+          cat > "$RUNNER_TEMP/release-notes.md" <<'EOF'
+          Stint's verified Linux x86-64 NInfer server bundle for RTX 4090 / SM89.
+
+          The attached manifest records the exact NInfer source commit, Qwen NInfer v2 artifact revision and SHA-256, CUDA floor, and immutable Vast base-image digest. The `.sha256` sidecar covers the archive. This bundle passed build and clean-base CLI/dependency smoke checks on the recorded base image. GPU model-loading and performance qualification are tracked separately; publishing does not promote the release path to the default startup strategy.
+          EOF
+
+      - name: Create draft release and attach all assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ninfer-runtime-81b68a20-sm89 \
+            dist/ninfer-runtime/stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz \
+            dist/ninfer-runtime/stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz.sha256 \
+            dist/ninfer-runtime/stint-ninfer-81b68a20-sm89-linux-amd64.manifest.json \
+            --draft --title 'Stint NInfer runtime 81b68a20 SM89' \
+            --notes-file "$RUNNER_TEMP/release-notes.md" --target "$GITHUB_SHA"
+
+      - name: Confirm draft contains every asset before publishing
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/ninfer-runtime-81b68a20-sm89")"
+          test "$(jq -r .draft <<<"$draft")" = true
+          for name in \
+            stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz \
+            stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz.sha256 \
+            stint-ninfer-81b68a20-sm89-linux-amd64.manifest.json; do
+            jq -e --arg name "$name" '.assets[] | select(.name == $name)' <<<"$draft" >/dev/null
+          done
+          echo "release_id=$(jq -r .id <<<"$draft")" >> "$GITHUB_OUTPUT"
+
+      - name: Publish once and verify immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --input - <<<'{"draft":false}'
+          published="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/ninfer-runtime-81b68a20-sm89")"
+          test "$(jq -r .draft <<<"$published")" = false
+          test "$(jq -r .immutable <<<"$published")" = true
+          echo "Published immutable release ninfer-runtime-81b68a20-sm89"

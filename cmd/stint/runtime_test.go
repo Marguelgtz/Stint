@@ -71,6 +71,24 @@ func TestNInferModelArtifactIsRevisionPinned(t *testing.T) {
 	}
 }
 
+func TestNInferProductionTupleUsesValidated4090V2Profile(t *testing.T) {
+	if ninferSourceRepository != "https://github.com/sergiuszm/ninfer-4090.git" {
+		t.Fatalf("NInfer source repository = %q", ninferSourceRepository)
+	}
+	if ninferSourceCommit != "81b68a20a9a0d9ab47d7e5838887c6d636ab76e0" {
+		t.Fatalf("NInfer source commit = %q", ninferSourceCommit)
+	}
+	if ninferCUDAFloor != "12.8" || ninferGPUArchitecture != "89" {
+		t.Fatalf("NInfer target = CUDA >= %s, SM%s; want CUDA >= 12.8, SM89", ninferCUDAFloor, ninferGPUArchitecture)
+	}
+	if ninferArtifactFormat != 2 || ninferModelRevision != "18dfc887423fa5aabf3cb56fac41490e462b3fab" || ninferModelSHA256 != "eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e" {
+		t.Fatalf("NInfer model artifact tuple changed unexpectedly: format=v%d revision=%s sha256=%s", ninferArtifactFormat, ninferModelRevision, ninferModelSHA256)
+	}
+	if native, err := resolveNInferConfig(ninferConfigNative); err != nil || native.ContextTokens != 262144 {
+		t.Fatalf("native NInfer context = %+v, %v; want 262144 tokens", native, err)
+	}
+}
+
 func TestNInferBootstrapIsPinnedAndPrefetchesInParallel(t *testing.T) {
 	command := ninferBootstrapCommand()
 	for _, required := range []string{
