@@ -1,10 +1,16 @@
 # Deep Work integration and on-box execution plan
 
-**Status:** Active integration against current `main`.
+**Status:** Integration landed on current `main`; fresh-GPU live acceptance remains incomplete.
 **Canonical plan:** This file is the single living action plan for the Deep Work
 integration mission. The dashboard plan and per-run action plans are historical or
 run-scoped evidence, not competing integration plans.
 **Last reconciled:** 2026-09-23.
+
+**Landing:** PR #107 merged the cumulative integration stack in merge commit
+`2041498ed00724cef3bca3769ccaa9907e87efa2` on 2026-09-23. This lands the stack
+from starting `main` `c4322e32f2fbaabb027f4b9a555e40899d7f756b`. The merged tree
+passes `go test -count=1 ./...`; full fresh-box execution did not pass and remains
+an explicit follow-up.
 
 This plan was recovered from `origin/fix/deep-work-onbox-publishing` at
 `62f89ddcd0b98962f6b5f7c0d1360ac43e5ff3a6` (`docs/DEEP_WORK_ONBOX_EXECUTION_PLAN.md`)
@@ -21,36 +27,36 @@ not the target design.
 - The operator checkout remains on `fix/p0-ninfer-session-safety` at
   `792bb508...`; it has untracked run reports, directories, and a `stint` binary.
   They are preserved and excluded from integration commits.
-- Published integration stack: draft PR #96
+- Published integration stack: PR #96
   (https://github.com/Marguelgtz/Stint/pull/96) contains the recovered plan and
-  dynamic NInfer artifact fix; draft PR #97
+  dynamic NInfer artifact fix; PR #97
   (https://github.com/Marguelgtz/Stint/pull/97) is based on #96 and adds the
-  pre-rental full-session cost check. Draft PR #98
+  pre-rental full-session cost check. PR #98
   (https://github.com/Marguelgtz/Stint/pull/98), branch
   `integrate/deep-work-hermes-core-20260922`, stacks on #97 and ports the Hermes
-  coordinator/dashboard core. Draft PR #99
+  coordinator/dashboard core. PR #99
   (https://github.com/Marguelgtz/Stint/pull/99), branch
   `integrate/deep-work-hermes-only-20260922`, stacks on #98 with commit
   `5401752` for compute identity, Hermes-only execution, and dashboard safety.
-  Draft PR #100 (https://github.com/Marguelgtz/Stint/pull/100), branch
+  PR #100 (https://github.com/Marguelgtz/Stint/pull/100), branch
   `integrate/deep-work-bootstrap-20260922`, stacks on #99 with commit
-  `453c91f` for fresh-box qualification and current operator docs. Draft PR #101
+  `453c91f` for fresh-box qualification and current operator docs. PR #101
   (https://github.com/Marguelgtz/Stint/pull/101), branch
   `integrate/deep-work-onbox-recovery-20260922`, stacks on #100 with commit
-  `1356ef4` for durable resume/rebind on restored compute. PR #100 previously
-  reported no checks; PR #101 is open/draft. None of these drafts are merged.
-  Draft PR #102 (https://github.com/Marguelgtz/Stint/pull/102), branch
+  `1356ef4` for durable resume/rebind on restored compute. PR #100 reported no
+  standalone checks; the cumulative integration head passed exact-head CI.
+  PR #102 (https://github.com/Marguelgtz/Stint/pull/102), branch
   `integrate/deep-work-publisher-policy-20260923`, stacks on #101 with commit
   `04151f5` for persisted GitHub policy and bounded engineering publication;
-  plan/evidence commit `4bf3dd1` records its passing exact-head CI. Draft PR #103
+  plan/evidence commit `4bf3dd1` records its passing exact-head CI. PR #103
   (https://github.com/Marguelgtz/Stint/pull/103), branch
   `integrate/deep-work-final-evidence-gate-20260923`, stacks on #102 with commit
   `8aea2bd` for durable terminal-state checks and fail-closed configured R2
-  archiving; plan/evidence commit `ad55713` records passing exact-head CI. Draft
-  PR #104 (https://github.com/Marguelgtz/Stint/pull/104), branch
+  archiving; plan/evidence commit `ad55713` records passing exact-head CI. PR
+  #104 (https://github.com/Marguelgtz/Stint/pull/104), branch
   `integrate/deep-work-ninfer-recovery-fixture-20260923`, stacks on #103 with
   commit `d971d24` for executable NInfer transfer-recovery evidence; plan/evidence
-  commit `19e712a` records its passing exact-head CI. Draft PR #105
+  commit `19e712a` records its passing exact-head CI. PR #105
   (https://github.com/Marguelgtz/Stint/pull/105), branch
   `integrate/deep-work-smoke-cli-preflight-20260923`, stacks on #104 with commit
   `d497ce1` to align the live-smoke rental command with the current CLI; commit
@@ -60,17 +66,16 @@ not the target design.
   rental candidate per authorized launch. Commit `53b5bcc` raises the advertised
   network floor and reserves $1.50 of the remaining smoke budget for the second
   single-candidate launch; the current follow-up tightens the final retry's cap
-  using measured transfer-time and bandwidth-cost evidence. Draft PR #106
+  using measured transfer-time and bandwidth-cost evidence. PR #106
   (https://github.com/Marguelgtz/Stint/pull/106), branch
   `integrate/deep-work-ninfer-default-token-budget-20260923`, stacks on #105 to
   fix the fresh-box NInfer launch contract discovered by the live test.
-- PR #107 (https://github.com/Marguelgtz/Stint/pull/107) is the cumulative
-  current-main integration PR, based on `main` and carrying the complete #96–106
-  commit stack. It is open and not draft; the repository's recent landing
-  convention is a merge commit. Exact-head CI passed at `b629871` before this
-  plan update; wait for checks on the new head before merging.
-  The PR explicitly leaves fresh-GPU acceptance unverified after the latest
-  provider host failed authenticated SSH before `READY`.
+- PR #107 (https://github.com/Marguelgtz/Stint/pull/107) carried the cumulative
+  #96–106 stack directly against current `main`; it merged by merge commit
+  `2041498`. GitHub marked #96 merged; PRs #97–106 were closed after their
+  commits landed through #107. Their remote branches remain available for
+  provenance. Exact-head `build-check`, `go-vet`, `unit-tests`, `race-tests`, and
+  `spark-profile` passed on the cumulative head before merge.
 - All historical Deep Work feature PRs remain open. Their source heads share an
   old base (`d34cb2b...`) and are not safe merge units against current `main`.
   Use their code and evidence selectively on this clean integration branch.
@@ -165,7 +170,7 @@ not the target design.
 - **Outcome / uncertainty:** Strategy above. The minimal dependency boundary between
   #80 publication and #85 maintenance is still under code inspection.
 
-### [~] Integrate Hermes-on-box runtime and phase-aware fresh-box bootstrap
+### [!] Integrate Hermes-on-box runtime and phase-aware fresh-box bootstrap
 
 - **Problem / invariant:** A fresh qualified GPU must reach `RUNNING` only after
   Hermes, model routes, scripts, repository, and declared verification tools are
@@ -186,7 +191,8 @@ not the target design.
   repo with `go.mod`; for Stint itself it runs `go test ./...` before startup and
   checks NInfer flags and the requested model. Generic missions still receive
   executable-presence preflight only; arbitrary language dependencies are not
-  installed. Commit `453c91f` is pushed in draft PR #100, stacked on #99. Local
+  installed. Commit `453c91f` was pushed in PR #100, stacked on #99, and is now
+  included in the #107 landing. Local
   full Go tests, shell syntax, Python byte-compilation, and diff checks pass. A
   fresh GPU has not run this launcher yet, so actual install/provider behavior,
   readiness, and disconnect recovery remain unverified; historical GPU evidence
@@ -253,7 +259,10 @@ not the target design.
   totals may include small storage or transfer charges from earlier attempts.
   No further rental was started after this SSH failure. The corrected launch
   contract is covered by local tests and exact-head CI, but its fresh-box
-  behavior and the complete on-box Deep Work flow remain unverified.
+  behavior and the complete on-box Deep Work flow remain unverified. The
+  cumulative stack is now on `main` through PR #107; `go test -count=1 ./...`
+  passes at merge commit `2041498`. The live acceptance is still blocked before
+  `READY` after the last host's authenticated SSH timeout.
 
 ### [~] Repair coordinator identity, policy reconstruction, and durable transitions
 
@@ -288,8 +297,8 @@ not the target design.
   branch before binding, reanchors deadline to the READY compute deadline,
   preserves omitted settings, and writes RUNNING after durable state and checks.
   Tests cover settings overrides, plan retargeting, resume deadline/rebind,
-  implicit-rebind refusal, and readiness JSON. Commit `1356ef4` is in draft PR
-  #101; neither #99 nor #101 is merged. Actual volume restore remains external:
+  implicit-rebind refusal, and readiness JSON. Commit `1356ef4` was in PR #101;
+  its code landed through #107. Actual volume restore remains external:
   resume requires the durable state and repository to be mounted at the same
   configured root; the launcher does not copy lost disks or restore R2 objects.
 
@@ -341,7 +350,7 @@ not the target design.
   limits, PR identity, retry preservation, and exact final landing. The broader
   #85 maintenance and merge APIs are not dependencies of core publication and
   remain deferred because their generic push and bounded collection gaps are not
-  repaired by this slice. PR #102 is open/draft and stacks on #101; local
+  repaired by this slice. PR #102 stacked on #101 and landed through #107; local
   verification passed and its GitHub `build-check`, `go-vet`, `unit-tests`,
   `race-tests`, and `spark-profile` checks passed. No live GPU smoke has been run.
 
@@ -350,7 +359,7 @@ not the target design.
 - **Problem / invariant:** Runtime must pin immutable artifact identity and SHA while
   deriving transfer size dynamically and safely recovering corrupt/oversized files.
 - **Evidence:** #74 contains immutable revision/dynamic-size work; #76 adds current
-  lifecycle safety. They are open and based on historical branches.
+  lifecycle safety. Those source PRs remain open and based on historical branches.
 - **Bounded change:** Compared current `main` with #74 and applied only
   `cmd/stint/runtime.go` and its focused tests. The NInfer model URL now pins
   revision `18dfc887423fa5aabf3cb56fac41490e462b3fab` while preserving SHA
@@ -363,7 +372,7 @@ not the target design.
 - **Outcome / uncertainty:** The source and static regressions are integrated;
   `go test ./cmd/stint` passed, including revision pinning, absence of fixed-size
   metadata, generated-shell syntax, and checks for dynamic-size/recovery commands.
-  Commit `d971d24` in draft PR #104 extracts the production artifact preparation
+  Commit `d971d24` in PR #104 extracts the production artifact preparation
   command and adds a no-network execution fixture. The fixture passes dynamic size
   discovery, valid partial resume, oversized and same-size corrupt artifact
   replacement, corrupt partial clean retry after SHA mismatch, and a model path
@@ -386,7 +395,7 @@ not the target design.
   success; archive failure, missing helper, and nonterminal coordinator exit fail;
   archive-disabled fixture keeps existing optional behavior; source state remains
   on-box after finalization.
-- **Outcome / uncertainty:** Commit `8aea2bd` in draft PR #103 adds these gates
+- **Outcome / uncertainty:** Commit `8aea2bd` in PR #103 adds these gates
   and the fixture. Bash syntax and `bash scripts/test_onbox_supervisor.sh` pass;
   PR #103 exact-head `build-check`, `go-vet`, `unit-tests`, `race-tests`, and
   `spark-profile` pass. Plan/evidence commit `ad55713` is pushed. The live R2
@@ -411,24 +420,45 @@ not the target design.
 - PR #100 commit `453c91f`: `go test ./...` — PASS; `bash -n` for the launcher, provisioner, phase setup, smoke, and supervisor scripts — PASS; Python byte-compilation for phase proxy, observer, and publisher — PASS; `git diff --check` — PASS. ShellCheck is unavailable.
 - PR #100 currently reports no GitHub checks. No fresh GPU validation has been run against PR #100. Local static checks do not prove package installs, Hermes configuration compatibility, route inference, watchdog startup, or supervisor recovery on a clean GPU.
 - PR #101 commit `1356ef4`: `go test -count=1 ./cmd/stint ./internal/deep ./internal/session` — PASS; `go test ./...` — PASS; Bash syntax for launcher, supervisor, provisioner, and live-smoke scripts — PASS; embedded resume-preflight Python compile and fixture checks (same identity, implicit mismatch refusal, explicit mismatch allowance, missing branch refusal) — PASS; `git diff --check` — PASS. GitHub `build-check`, `go-vet`, `race-tests`, `spark-profile`, and `unit-tests` — PASS. No live replacement-compute or volume-restore run has been performed.
-- PR #102 implementation commit `04151f5`: `go test -count=1 ./...` — PASS; `python3 scripts/test_onbox_github_publish.py` — PASS (7 tests); Python byte-compilation — PASS; Bash syntax for launcher, smoke, supervisor, and provisioner — PASS; embedded resume-preflight Python compilation — PASS; `git diff --check` — PASS. Draft PR #102 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. No live GPU smoke was run.
-- PR #103 commit `8aea2bd`: `bash -n scripts/onbox-deep-supervisor.sh scripts/test_onbox_supervisor.sh`, `bash scripts/test_onbox_supervisor.sh`, and `git diff --check` — PASS. Draft PR #103 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `ad55713` is pushed. No live GPU smoke was run.
-- PR #104 commit `d971d24`: `go test -count=1 ./...` — PASS, including the five-case local NInfer artifact fixture; publisher safety tests (7) and supervisor completion fixture — PASS; shell syntax and `git diff --check` — PASS. Draft PR #104 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `19e712a` is pushed. No live GPU smoke was run.
+- PR #102 implementation commit `04151f5`: `go test -count=1 ./...` — PASS; `python3 scripts/test_onbox_github_publish.py` — PASS (7 tests); Python byte-compilation — PASS; Bash syntax for launcher, smoke, supervisor, and provisioner — PASS; embedded resume-preflight Python compilation — PASS; `git diff --check` — PASS. PR #102 exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. It was closed after landing through #107. No live GPU smoke was run at that checkpoint.
+- PR #103 commit `8aea2bd`: `bash -n scripts/onbox-deep-supervisor.sh scripts/test_onbox_supervisor.sh`, `bash scripts/test_onbox_supervisor.sh`, and `git diff --check` — PASS. PR #103 exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `ad55713` is pushed. It was closed after landing through #107. No live GPU smoke was run at that checkpoint.
+- PR #104 commit `d971d24`: `go test -count=1 ./...` — PASS, including the five-case local NInfer artifact fixture; publisher safety tests (7) and supervisor completion fixture — PASS; shell syntax and `git diff --check` — PASS. PR #104 exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `19e712a` is pushed. It was closed after landing through #107. No live GPU smoke was run at that checkpoint.
 - PR #105 commit `d497ce1` removed the stale tunnel flag; its exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed. Commit `ad422e0` added a lower-only `--max-cost-usd` and `--validate-only`, replacing the ineffective `--help` preflight. Commit `e658c09` added `--max-hourly-usd`; increasing the profile's $0.40/hour limit requires an explicit session cap and the per-candidate full-session check still guards each rental. Commit `11acb62` limits each live-smoke launch to one candidate; `53b5bcc` and `0f1b198` narrow the remaining-budget retries. `go test -count=1 ./...`, publisher fixtures (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check` pass through `0f1b198`; PR #105's exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` pass. Paid attempts one and two rented `52145135` and `52146240`, then were destroyed before model startup after 11.8 and 13.8 MB/s failed the 30 MB/s floor. Attempt three rented `52147295` at $0.625/hour, qualified at 100.3 MB/s, compiled NInfer, verified the model SHA, and reached `READY` in 13:50. Production fresh-box preflight installed Node/Hermes/Go, passed `go test ./...`, then failed closed on the missing `--default-max-tokens 262144` launch flag across all five bounded provision retries. No `RUNNING` handshake or Hermes task occurred. PR #106 adds that context-matched token limit and regressions; its local `go test -count=1 ./cmd/stint`, `go test -count=1 ./...`, publisher fixture (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check` pass. Exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` pass. The next bounded host, `52149289`, exposed SSH metadata but failed Stint's authenticated SSH probe and was destroyed before `READY`; no launcher or model transfer ran. All four hosts are torn down and isolated Stint status is clear. Estimated total provider spend is $0.52-$0.57, with small earlier storage/transfer charges potentially settling separately.
+- PR #107 landing verification: the merge commit is `2041498ed00724cef3bca3769ccaa9907e87efa2`; `go test -count=1 ./...` — PASS from a detached worktree of the exact merged `main`. PR #107 exact-head CI passed all five required checks. At landing, `main` advanced from `c4322e3` to `2041498`.
 
 ## Next action
 
-PR #107 carries the complete integration stack against the unchanged starting
-`main` SHA `c4322e3`; the cumulative code and its exact-head checks pass. Merge it
-using the repository's merge-commit convention, then record and verify the
-resulting `main` SHA. Fresh-box validation remains blocked before `READY`: the
-latest provider host failed the authenticated SSH probe and was destroyed.
-Preserve that result as a provider startup failure, not as evidence for or
-against the corrected NInfer launch. Before claiming Deep Work live readiness,
-retry from a new bounded host and record whether the normal launcher reaches
-`RUNNING`, survives operator disconnect, completes xhigh/medium work, verifies
-and publishes checkpoints, archives final R2 evidence, writes handoff, and tears
-down. Check required local credentials/artifacts by presence only; do not expose
-their contents. PR #101's explicit compute-resume gate does not restore state
-volumes, so replacement-compute recovery remains unproven until a durable-volume
-restore is exercised or recorded as an external dependency.
+The source integration landed via PR #107 at `2041498`; the exact merged tree
+passes `go test -count=1 ./...`. Fresh-box validation remains blocked before
+`READY`: the latest provider host failed the authenticated SSH probe and was
+destroyed. Preserve that result as a provider startup failure, not as evidence
+for or against the corrected NInfer launch. The next live step is to build the
+current `main` and rerun `scripts/run-onbox-deep-smoke.sh` with the secure token
+file, GitHub destination, and a fresh isolated artifact root. Keep its built-in
+1.5-hour duration, $1.20 rental cap, $0.80/hour ceiling, and single-candidate
+limit. The full run must reach `RUNNING`, survive operator disconnect, complete
+xhigh/medium work, verify and publish checkpoints, archive final R2 evidence,
+write handoff, and tear down before live readiness can be claimed. Check required
+local credentials/artifacts by presence only; do not expose their contents.
+PR #101's explicit compute-resume gate does not restore state volumes, so
+replacement-compute recovery remains unproven until a durable-volume restore is
+exercised or recorded as an external dependency.
+
+Use this command shape from a clean current-`main` checkout, replacing only the
+secure token-file path with its configured location:
+
+```bash
+mkdir -p /tmp/stint-main-onbox-smoke
+go build -o /tmp/stint-main-onbox-smoke/stint ./cmd/stint
+STINT_BIN=/tmp/stint-main-onbox-smoke/stint \
+STINT_ONBOX_RUN_ID=20260923-postland-live \
+STINT_ONBOX_RUN_ROOT=/tmp/stint-main-onbox-smoke/state \
+STINT_ONBOX_CONFIG_ROOT=/tmp/stint-main-onbox-smoke/config \
+STINT_ONBOX_ARTIFACT_DIR=/tmp/stint-main-onbox-smoke/artifacts \
+STINT_GITHUB_TOKEN_FILE=/path/to/secure/github.token \
+STINT_GITHUB_REPOSITORY=Marguelgtz/Stint \
+STINT_GITHUB_BASE=main \
+STINT_GITHUB_MODE=engineering \
+STINT_GITHUB_APPROVAL=internal \
+bash scripts/run-onbox-deep-smoke.sh
+```
