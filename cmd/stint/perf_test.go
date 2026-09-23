@@ -106,6 +106,13 @@ func TestBuildPerfPromptDeterministic(t *testing.T) {
 	}
 }
 
+func TestBuildPerfPromptRequestsVisibleCompletion(t *testing.T) {
+	prompt := buildPerfPrompt(8192)
+	if !strings.HasSuffix(prompt, "Answer with exactly one word: READY.") {
+		t.Fatal("benchmark prompt must request a short visible completion")
+	}
+}
+
 func TestBuildPerfPromptScalesWithTarget(t *testing.T) {
 	small := buildPerfPrompt(1024)
 	large := buildPerfPrompt(32768)
