@@ -121,7 +121,7 @@ func buildPerfPrompt(tokenTarget int) string {
 			emitted += perfCorpus.words[index]
 		}
 	}
-	return strings.TrimRight(b.String(), " ")
+	return strings.TrimRight(b.String(), " ") + "\n\nAnswer with exactly one word: READY."
 }
 
 // validatePerfDepth checks the requested benchmark depths against the active
