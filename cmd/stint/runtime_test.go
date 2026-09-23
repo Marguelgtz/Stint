@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -328,6 +329,75 @@ func TestNInferReleaseDownloaderUsesParallelRangesAndRetries(t *testing.T) {
 	}
 	if !failedRange.Load() || retryCount.Load() != 1 {
 		t.Fatalf("transient range failure was not retried: failed=%v retries=%d", failedRange.Load(), retryCount.Load())
+	}
+}
+
+func TestNInferReleaseDownloaderReusesCompletedRangesAfterResume(t *testing.T) {
+	const chunkSize = 4096
+	payload := make([]byte, 4*chunkSize)
+	for i := range payload {
+		payload[i] = byte((i * 17) % 253)
+	}
+	digest := sha256.Sum256(payload)
+	var denyOneRange atomic.Bool
+	denyOneRange.Store(true)
+	var requestsMu sync.Mutex
+	chunkRequests := map[int64]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var start, end int64
+		if count, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil || count != 2 {
+			http.Error(w, "missing byte range", http.StatusBadRequest)
+			return
+		}
+		if end > start {
+			requestsMu.Lock()
+			chunkRequests[start]++
+			requestsMu.Unlock()
+		}
+		if start == chunkSize && denyOneRange.Load() {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if start < 0 || end < start || end >= int64(len(payload)) {
+			http.Error(w, "invalid byte range", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		body := payload[int(start) : int(end)+1]
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	output := filepath.Join(t.TempDir(), "runtime.tar.gz")
+	script := strings.Replace(ninferReleaseDownloaderScript, "MAX_ATTEMPTS = 5", "MAX_ATTEMPTS = 1", 1)
+	first := exec.Command("python3", "-c", script, "--chunk-size", strconv.Itoa(chunkSize), "--workers", "2", server.URL, output, hex.EncodeToString(digest[:]))
+	result, err := first.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected the first download attempt to stop with one cached range missing")
+	}
+	if !strings.Contains(string(result), "failed after 1 attempts") {
+		t.Fatalf("first download failure was not explicit: %s", result)
+	}
+	denyOneRange.Store(false)
+	runNInferReleaseDownloader(t, server.URL, output, hex.EncodeToString(digest[:]), "--chunk-size", strconv.Itoa(chunkSize), "--workers", "2")
+	got, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatal("resumed archive bytes differ from the fixture")
+	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	for _, start := range []int64{0, 2 * chunkSize, 3 * chunkSize} {
+		if chunkRequests[start] != 1 {
+			t.Fatalf("completed range %d was not reused; requests=%d", start, chunkRequests[start])
+		}
+	}
+	if chunkRequests[chunkSize] != 2 {
+		t.Fatalf("failed range was not retried after resume; requests=%d", chunkRequests[chunkSize])
 	}
 }
 

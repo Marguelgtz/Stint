@@ -184,9 +184,9 @@ redirect (`206`, total size 939,381,613 bytes). A single 2 MiB range took
 Vast node, so they do not predict its range-download rate. The code change in
 progress uses eight 16 MiB ranges, retries failed chunks, preserves completed
 chunks for Stint resume, verifies the final pinned SHA-256 before installation,
-and falls back to resumable `curl` if the server lacks range support. Local fixtures cover
-concurrent ranges, transient retry, final integrity, and the no-range
-fallback. Full Go tests, race tests, vet, CLI build, Python bundle fixtures,
+and falls back to resumable `curl` if the server lacks range support. Local
+fixtures cover concurrent ranges, transient retries, resume after interruption,
+bad-digest rejection, and the no-range fallback. Full Go tests, race tests, vet, CLI build, Python bundle fixtures,
 and shell/Python syntax checks pass locally; exact-head CI and another live
 4090 measurement are still required.
 
