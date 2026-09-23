@@ -32,7 +32,7 @@ const (
 	ninferDeploymentReleaseBundle = "release-bundle"
 	ninferRuntimeReleaseTag       = "ninfer-runtime-81b68a20-sm89"
 	ninferRuntimeBundleName       = "stint-ninfer-81b68a20-sm89-linux-amd64.tar.gz"
-	ninferRuntimeBundleSHA256     = "16a1d238defe0d14eac6a354a541023074da741d9ee1aee0c736bb3ed74ed1c8"
+	ninferRuntimeBundleSHA256     = "6725e60c8e3edb2982ad828898210868dd98ea1d4fe4d35f97bfa1e625414416"
 	ninferRuntimeReleaseURL       = "https://github.com/Marguelgtz/Stint/releases/download/" + ninferRuntimeReleaseTag
 )
 
