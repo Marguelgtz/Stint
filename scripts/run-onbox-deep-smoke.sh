@@ -78,11 +78,11 @@ chmod 600 "$CONFIG_ROOT/stint/credentials.json"
 
 START_ARGS=(--hours 1.5 --runtime ninfer --ninfer-config native --clients 2
   --min-measured-download-mbps 10 --min-network-mbps 500
-  --network-candidate-attempts 1 --max-hourly-usd 0.8 --max-cost-usd 1.2 --yes)
+  --network-candidate-attempts 1 --max-hourly-usd 0.48 --max-cost-usd 0.72 --yes)
 "$STINT_BIN" start interactive "${START_ARGS[@]}" --validate-only >/dev/null 2>&1 || \
 	die "smoke rental arguments failed current Stint CLI validation"
 
-say "renting isolated RTX 4090 session for on-box supervisor smoke (maximum rental estimate \$1.20; maximum rate \$0.80/hour)"
+say "renting isolated RTX 4090 session for on-box supervisor smoke (maximum rental estimate \$0.72; maximum rate \$0.48/hour)"
 setsid "$STINT_BIN" start interactive "${START_ARGS[@]}" >>"$LOG" 2>&1 < /dev/null &
 START_PID=$!
 LOCAL_READY=1

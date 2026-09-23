@@ -58,15 +58,15 @@ if [ "$result" -eq 0 ]; then
   echo "smoke fixture unexpectedly passed its deliberately blocked rental" >&2
   exit 1
 fi
-grep -Fq 'maximum rental estimate $1.20' "$TMP/artifacts/launcher.log"
+grep -Fq 'maximum rental estimate $0.72' "$TMP/artifacts/launcher.log"
 grep -Fq 'FAKE_RENT_BLOCKED' "$TMP/artifacts/launcher.log"
 grep -Fxq -- '--validate-only' "$TMP/preflight-args"
 grep -Fxq -- '--network-candidate-attempts' "$TMP/preflight-args"
 grep -Fxq -- '1' "$TMP/preflight-args"
 grep -Fxq -- '--max-hourly-usd' "$TMP/preflight-args"
-grep -Fxq -- '0.8' "$TMP/preflight-args"
+grep -Fxq -- '0.48' "$TMP/preflight-args"
 grep -Fxq -- '--max-cost-usd' "$TMP/preflight-args"
-grep -Fxq -- '1.2' "$TMP/preflight-args"
+grep -Fxq -- '0.72' "$TMP/preflight-args"
 grep -Fxq -- '--min-measured-download-mbps' "$TMP/preflight-args"
 grep -Fxq -- '10' "$TMP/preflight-args"
 grep -Fxq -- '--min-network-mbps' "$TMP/preflight-args"
