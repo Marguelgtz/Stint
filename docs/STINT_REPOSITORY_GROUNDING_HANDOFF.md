@@ -1,14 +1,15 @@
 # Stint repository grounding handoff
 
-**Status:** source and runtime convergence landed; the first pinned immutable NInfer runtime release is published. Fresh RTX 4090 acceptance and final PR/documentation closeout remain. Release-bundle startup is still opt-in.
+**Status:** source/runtime convergence, immutable NInfer release, canonical docs, report preservation and authorized stale-PR closures are complete. Fresh RTX 4090 acceptance remains blocked by current offer pricing/reliability. Release-bundle startup is still opt-in.
 
 ## Repository and landed work
 
 - Starting main: `9634bf762a2dc9021747eb786db7fd23ccab84e9`.
-- Current main before final docs/cleanup: `23908fc719576376b32ce46fb0a34745c27cc9fb`.
+- Current main before this final ledger refresh: `36d12ac1c3df55cb0a4f1d7ebe5ee557b26316fa` (landed #125).
 - Grounding/runtime merges #116–#130 preserve lifecycle/provider safety, both dashboards, Hermes-on-box Deep Work, Spark path evidence, startup phase events, and the tuple-pinned runtime bundle build/deployment path. Exact commit and CI records are in [`STINT_REPOSITORY_GROUNDING_PLAN.md`](STINT_REPOSITORY_GROUNDING_PLAN.md).
 - The original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa` and its untracked user artifacts remain untouched.
-- The current open PR graph has 12 PRs immediately before #125's final docs update: #48–#51, #73, #85, #93, #110–#113, and #125. Keep #110–#113 open, unmerged and untouched. Close #48–#51 and #73 only after the canonical docs record their replacements and preserve #73's reports.
+- PR #125 merged at `36d12ac1c3df55cb0a4f1d7ebe5ee557b26316fa`; its PR run `35904065343` and landed-main run `35904245746` passed all five required jobs. README/operator guidance and canonical docs were refreshed, and #73's two reports were preserved byte-for-byte under `docs/history/` with hashes in the ledger.
+- After #125 merged, #48–#51 and #73 were closed on 2026-09-23. The resulting open-PR snapshot contained six PRs: #85 (parked), #93 (separate documentation rework), and protected #110–#113 (keep open, unmerged and untouched). Exact heads, observed bases and checks are in the ledger.
 
 ## Current architecture and NInfer tuple
 
@@ -29,10 +30,8 @@
 
 ## Remaining work
 
-1. Refresh and merge PR #125 with the candidate, pin, immutable release and publisher-fix evidence. Preserve the existing #73 CP1 reports byte-for-byte under `docs/history/`.
-2. After that docs merge, close #48–#51 as replaced by #121–#130 and close #73 after its reports land. Keep #85 parked, #93 for separate documentation rework, and #110–#113 untouched. Refresh the ledger's final open-PR snapshot after the closures.
-3. Recheck RTX 4090 availability later under unchanged limits: $0.40/hour, $2.50 total session, at most three candidates, 500 Mbps advertised and 40 MB/s measured. Do not raise caps. Current offer pricing/reliability blocks fresh model-load, two-lane, native-context, correctness, Deep Work and teardown acceptance; preserve opt-in behavior.
-4. Update this handoff to the final `main` SHA after docs/cleanup and report exact remaining blockers.
+1. Recheck RTX 4090 availability later under unchanged limits: $0.40/hour, $2.50 total session, at most three candidates, 500 Mbps advertised and 40 MB/s measured. Do not raise caps. Current offer pricing/reliability blocks fresh model-load, two-lane, native-context, correctness, Deep Work and teardown acceptance; preserve opt-in behavior.
+2. Keep #85 parked, #93 for separate documentation rework, and #110–#113 untouched as protected live evidence. Re-read the ledger before any future PR cleanup.
 
 **Next Stint task:** qualify the pinned immutable runtime on a fresh RTX 4090, including two lanes, native context, correctness, Deep Work and teardown; evaluate the newer upstream vision fix separately.
 
