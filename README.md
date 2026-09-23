@@ -263,7 +263,7 @@ One consequence of the project's fast development is that not every older archit
 
 Open PR state is not the same as shipped behavior. The exact current branch heads, bases, checks, evidence and dispositions are recorded in the [semantic PR ledger](docs/STINT_OPEN_PR_GROUNDING_LEDGER.md).
 
-At this snapshot, #110–#113 are protected generated Deep Work evidence and must remain open and unmerged. #85 is a parked maintenance experiment; #93 needs separate documentation rework. PRs #48–#51 have been replaced by the current tuple-pinned runtime path, and #73's reports are preserved under `docs/history/`; they are being closed after the canonical docs record that evidence. Historical branches #57–#89 describe the work that led to the current Hermes-on-box architecture, not a list of current product gaps.
+The current open PR snapshot contains #85 (parked maintenance experiment), #93 (separate documentation rework), and protected generated Deep Work evidence #110–#113, which must remain open and unmerged. PRs #48–#51 were closed after their runtime replacements were verified; #73 was closed after its reports were preserved under `docs/history/` and recorded by the canonical docs. Historical branches #57–#89 describe the work that led to the current Hermes-on-box architecture, not a list of current product gaps.
 
 ## Known gaps on current `main`
 

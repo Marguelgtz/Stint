@@ -9,7 +9,7 @@ the concise recovery point.
 
 - Repository: `Marguelgtz/Stint`, default branch `main`.
 - Starting main: `9634bf762a2dc9021747eb786db7fd23ccab84e9`.
-- Current main before this docs update: `23908fc719576376b32ce46fb0a34745c27cc9fb`.
+- Current main before this docs update: `36d12ac1c3df55cb0a4f1d7ebe5ee557b26316fa` (after #125's docs merge).
 - The user's original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa` and its untracked files/local binary remain untouched. Work used isolated `/tmp` worktrees.
 - Current main preserves Hermes-on-box Deep Work, both dashboards, NInfer lane semantics, paid-session/provider safety, exact-head CI, and Spark path observation. See the ledger for historical source comparisons.
 
@@ -33,6 +33,7 @@ Grounding and runtime slices merged after the starting point:
 | #128 | `24a05e663489cd4063fcaa505fc26e3e3a9f732e` | pin the uploaded, clean-base-smoke-tested bundle SHA | `35899139527` |
 | #129 | `58afa4af857cf12e5135d4e78c46b79c96313922` | stage candidates as provenance-bound draft releases; least-privilege publisher | `35901071060` |
 | #130 | `23908fc719576376b32ce46fb0a34745c27cc9fb` | resolve draft releases via authenticated listing and asset IDs | `35901919089` |
+| #125 | `36d12ac1c3df55cb0a4f1d7ebe5ee557b26316fa` | refresh README/operator guidance, canonical grounding docs and verbatim #73 history | `35904245746` |
 
 Each listed exact landed-main run completed all five required Stint jobs. #124
 PR-head runs `35882783534`, `35894208985`, `35898993338`, `35900956163`, and
@@ -137,10 +138,10 @@ deployment opt-in and recheck later under the same limits.
 ## PR/evidence and history policy
 
 - Keep #110–#113 open, unmerged and untouched; they are successful generated evidence for session `20260923-022052`.
-- #48–#51's unique bundle/timing/deployment ideas have been replaced by #121–#130. Their candidate build, exact pin, draft-to-immutable publisher and bundle SHA are now verified; close the old stacks after this canonical record lands.
-- #73's two unique CP1 reports are preserved verbatim under `docs/history/`, provenance points to source commit `e78ceef308d85c9cac7c71e7d172bed7c66c4182`; close after this documentation change merges.
+- #48–#51 were closed on 2026-09-23 after #125 merged. Their unique bundle/timing/deployment ideas are replaced by #121–#130; the candidate build, exact pin, draft-to-immutable publisher and bundle SHA are verified.
+- #73 was closed on 2026-09-23 after #125 merged. Its two unique CP1 reports are preserved verbatim under `docs/history/`; provenance points to source commit `e78ceef308d85c9cac7c71e7d172bed7c66c4182`.
 - Keep #85 parked as a separate high-authority maintenance experiment; keep #93 open for rework against current documentation paths.
-- All other previously open PRs have been closed/merged and their semantics or evidence are accounted for in the ledger. The final snapshot table will be refreshed after docs merge and closures.
+- Keep #110–#113 open, unmerged and untouched as protected generated Deep Work evidence. The final GitHub snapshot after #125 and the five closures contained exactly six open PRs: #85, #93 and #110–#113. The ledger records their exact heads, bases and check rollups.
 
 ## Checkpoints
 
@@ -156,13 +157,13 @@ deployment opt-in and recheck later under the same limits.
 - [x] Build and clean-base smoke candidate run `35894635094`, pin its uploaded archive via #128, and publish/verify immutable release via #129–#130 (`35902030339`).
 - [x] Inspect the current market read-only under existing caps; no RTX 4090 qualifies at `2026-09-23 18:37 UTC`, and no compute was rented.
 - [!] Fresh RTX 4090 runtime and Deep Work acceptance: no offer passes current $0.40/hour price and reliability policy; do not raise limits.
-- [~] Merge canonical docs, close only #48–#51 and #73 after their replacement/history records land, then record the final open-PR snapshot and whole-repository state.
+- [x] Merge #125 with the canonical docs and verbatim #73 history; then close only #48–#51 and #73 after their replacement/history records landed.
+- [x] Refresh the final open-PR snapshot after those closures; #85/#93 remain separate and #110–#113 remain protected.
 
 ## Final-state rules
 
 The exact-main candidate workflow and immutable publication are verified.
-Remaining completion gates are fresh RTX 4090 availability/acceptance and
-final docs/PR cleanup. Do not claim normal startup uses the release bundle:
-source-build remains the default until the full live promotion gate passes.
-Preserve the tuple rationale, release hash, CI and failure history here before
-closing superseded PRs.
+Fresh RTX 4090 acceptance is blocked by current offer pricing/reliability under
+the unchanged limits, so leave release-bundle startup opt-in and source-build
+as the default. The #125 docs merge, report preservation, and authorized PR
+closures are complete; this final ledger refresh records the resulting state.
