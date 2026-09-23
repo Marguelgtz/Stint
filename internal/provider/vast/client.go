@@ -105,7 +105,7 @@ func (c *Client) VerifyAuth(ctx context.Context) error {
 	if c.APIKey == "" {
 		return errors.New("Vast API key is empty")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("/api/v1/instances"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("/api/v1/instances/"), nil)
 	if err != nil {
 		return fmt.Errorf("build Vast auth request: %w", err)
 	}

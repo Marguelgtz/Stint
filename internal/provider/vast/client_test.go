@@ -18,7 +18,7 @@ func TestVerifyAuthUsesV1Instances(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Fatalf("Authorization = %q", got)
 		}
-		if r.URL.Path != "/api/v1/instances" {
+		if r.URL.Path != "/api/v1/instances/" {
 			t.Fatalf("path = %q", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")

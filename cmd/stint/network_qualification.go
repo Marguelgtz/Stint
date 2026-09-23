@@ -345,10 +345,5 @@ func formatProjectedDuration(value time.Duration) string {
 func destroyRejectedInstance(client *vast.Client, paths config.Paths, state sessionstate.State) error {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	if err := client.DestroyInstance(cleanupCtx, state.InstanceID); err != nil {
-		return err
-	}
-	killPID(state.TunnelPID)
-	killPID(state.WatchdogPID)
-	return sessionstate.Clear(paths)
+	return destroyAndArchiveSession(cleanupCtx, paths, client, state)
 }

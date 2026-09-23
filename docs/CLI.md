@@ -13,7 +13,7 @@ http://127.0.0.1:8409/v1    (model: qwen3.8-27b)
 ```bash
 stint auth vast                   # store + verify your Vast API key
 stint setup ssh                   # create the dedicated Stint SSH keypair
-stint doctor                      # verify credentials, SSH key, OpenSSH, port 8409
+stint doctor                      # verify prerequisites or diagnose the active session
 stint plan interactive --hours 5  # read-only plan; never rents
 stint start interactive           # rent, boot, tunnel; READY when live
 stint status                      # inspect remaining time and the deadline
@@ -28,7 +28,7 @@ stint down                        # destroy compute and clear the session
 | --- | --- | --- |
 | `stint auth vast` | Setup | Verifies and stores the Vast API key |
 | `stint setup ssh` | Setup | Creates the dedicated Stint SSH keypair |
-| `stint doctor` | Setup | Checks local prerequisites and Vast access |
+| `stint doctor [--json] [--last]` | Setup | Checks prerequisites or diagnoses an active/recent paid session |
 | `stint status` | Setup | Shows local state, remaining time, and the active session |
 | `stint onboard spark` | Setup | Prints the Spark onboarding plan (read-only) |
 | `stint plan <profile>` | Planning | Ranks marketplace offers under hard policy (read-only) |
@@ -63,10 +63,10 @@ Creates (or reuses) a dedicated ed25519 SSH keypair under `~/.config/stint/ssh/`
 
 ### `stint doctor`
 
-Verifies everything needed for live planning and paid start: Vast credentials, OpenSSH, the dedicated Stint SSH key, and local port 8409.
+With no active session, verifies everything needed for live planning and paid start: Vast credentials, OpenSSH, the dedicated Stint SSH key, and local port 8409. With an active session, checks provider state, lifecycle ownership, SSH/runtime health, tunnel, local endpoint, and deadline watchdog, then reports one diagnosis with a recovery action. `--json` emits machine-readable output; `--last` inspects the latest archived session.
 
-- Exit status is non-zero when any check fails.
-- Run it after `stint auth vast` and `stint setup ssh`.
+- Doctor is read-only. It does not rent, resume, destroy, or mutate provider compute.
+- If the paid session is unhealthy, follow the reported recovery action before starting another rental.
 
 ### `stint status`
 
@@ -210,13 +210,13 @@ The detached watchdog is deadline-aware rather than a one-shot sleep:
 3. When the apparent deadline arrives, it acquires the same lifecycle lock used by start/resume/down/deadline mutation.
 4. It re-reads the state **under that lock** before destroying compute. An extension that commits at the old expiry boundary therefore wins safely.
 5. A watchdog whose recorded instance no longer matches the session exits without touching the replacement instance.
-6. If provider destruction fails, state is preserved and the watchdog retries rather than silently abandoning the paid resource.
+6. If provider destruction fails, state is preserved and the watchdog retries rather than silently abandoning the paid resource. The watchdog also verifies each destroy by polling Vast until the instance disappears; a destroy that was accepted but is still visible is treated as failed and retried the same way.
 
 Interactive confirmation does not hold the lifecycle lock. Stint previews the change first, then after confirmation acquires the lock and verifies that the instance and deadline are unchanged before committing. This prevents an unattended confirmation prompt from blocking auto-destroy.
 
 ### `stint down`
 
-Stops the local tunnel and watchdog, destroys the Vast instance, and clears the local session state. Safe to run when no session is recorded.
+Stops the local tunnel and watchdog, destroys the Vast instance, and clears the local session state. Before any destruction it shows the instance and remaining time and requires you to type the literal word `destroy`; any other input aborts with the session left running. `stint down --yes` skips the prompt for unattended use. After the destroy is accepted, `stint down` polls Vast until the instance has disappeared; if it is still visible, a warning is printed and the session state is kept (re-running `stint down` once the instance is gone is a safe no-op). Safe to run when no session is recorded.
 
 - Compute is also destroyed automatically at the session deadline by the watchdog.
 

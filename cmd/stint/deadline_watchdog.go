@@ -224,12 +224,8 @@ func destroyExpiredSession(paths config.Paths, state sessionstate.State) error {
 	if err != nil {
 		return err
 	}
-	killPID(state.TunnelPID)
 	client := vast.NewClient(credentials.Vast.APIKey)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	if err := client.DestroyInstance(ctx, state.InstanceID); err != nil {
-		return err
-	}
-	return sessionstate.Clear(paths)
+	return destroyAndArchiveSession(ctx, paths, client, state)
 }

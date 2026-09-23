@@ -82,15 +82,19 @@ var (
 	}
 
 	cmdDoctor = cliCommand{
-		name:     "doctor",
-		section:  "setup",
-		summary:  "check local prerequisites and Vast access",
-		detail:   "Verifies everything needed for live planning and paid start: Vast credentials with instance-read and search access, OpenSSH, the dedicated Stint SSH key, and local port 8409 for the Cline tunnel.",
-		usage:    "stint doctor",
-		examples: []string{"stint doctor"},
+		name:    "doctor",
+		section: "setup",
+		summary: "check prerequisites or diagnose the active paid session",
+		detail:  "With no active session, verifies the local/Vast prerequisites needed for paid start. With a recorded session, Doctor checks provider state, lifecycle ownership, SSH/runtime health, tunnel, local endpoint, and deadline watchdog, then reports a root-cause diagnosis and recovery action.",
+		usage:   "stint doctor [--json] [--last]",
+		flags: []cliFlag{
+			{name: "--json", defaultVal: "false", purpose: "print the diagnostic report as machine-readable JSON"},
+			{name: "--last", defaultVal: "false", purpose: "inspect the most recently archived session instead of the active session"},
+		},
+		examples: []string{"stint doctor", "stint doctor --json", "stint doctor --last"},
 		notes: []string{
-			"Exit status is non-zero when any check fails.",
-			"Run `stint doctor` after `stint auth vast` and `stint setup ssh`.",
+			"Doctor is read-only: it does not rent, resume, destroy, or mutate provider compute.",
+			"When a paid session is active, Doctor reports session reality instead of preflight readiness.",
 		},
 	}
 
@@ -202,9 +206,10 @@ var (
 		name:     "down",
 		section:  "compute",
 		summary:  "destroy the instance, tunnel, and session state",
-		detail:   "Stops the local tunnel and watchdog, destroys the Vast instance, and clears the local session state. Safe to run when no session is recorded.",
-		usage:    "stint down",
-		examples: []string{"stint down"},
+		detail:   "Stops the local tunnel and watchdog, destroys the Vast instance, and clears the local session state. Before any destruction it shows the instance and remaining time and requires the literal word \"destroy\" to be typed; --yes skips the prompt for unattended use. Safe to run when no session is recorded.",
+		usage:    "stint down [--yes]",
+		flags:    []cliFlag{{name: "--yes", defaultVal: "false", purpose: "destroy without the interactive type-to-confirm"}},
+		examples: []string{"stint down", "stint down --yes"},
 		notes: []string{
 			"Compute is also destroyed automatically at the session deadline by the watchdog.",
 		},
@@ -360,7 +365,7 @@ func printUsage() {
 	b.WriteString("QUICK START\n")
 	b.WriteString("  stint auth vast                   store + verify your Vast API key\n")
 	b.WriteString("  stint setup ssh                   create the dedicated Stint SSH keypair\n")
-	b.WriteString("  stint doctor                      verify credentials, SSH key, OpenSSH, port 8409\n")
+	b.WriteString("  stint doctor                      check prerequisites or diagnose the active session\n")
 	b.WriteString("  stint plan interactive --hours 5  read-only plan; never rents\n")
 	b.WriteString("  stint start interactive           rent, boot, tunnel; READY when live\n")
 	b.WriteString("  stint down                        destroy compute and clear the session\n\n")

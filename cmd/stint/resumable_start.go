@@ -290,10 +290,20 @@ func runStartResumable(args []string) (retErr error) {
 		if !created || ready {
 			return
 		}
+		if current, loadErr := sessionstate.Load(paths); loadErr == nil && current.InstanceID == state.InstanceID {
+			state = current
+		}
+		if state.Status == "STOPPED" {
+			fmt.Fprintf(os.Stderr, "stint: instance %d is confirmed destroyed; local stopped-session record was retained for archive recovery\n", state.InstanceID)
+			return
+		}
 
-		killPID(state.TunnelPID)
-		state.TunnelPID = 0
 		if checkpointIsRecoverable(state.Checkpoint) {
+			if state.Status != "STOPPED" && !sessionWatchdogRunning(state) {
+				if watchdogErr := ensureWatchdogAlive(paths, &state); watchdogErr != nil {
+					fmt.Fprintf(os.Stderr, "stint: preserved instance %d has no verified deadline watchdog: %v\n", state.InstanceID, watchdogErr)
+				}
+			}
 			state.Status = sessionstate.StatusRecoverable
 			if retErr != nil {
 				state.LastError = retErr.Error()
@@ -305,13 +315,23 @@ func runStartResumable(args []string) (retErr error) {
 			return
 		}
 
-		killPID(state.WatchdogPID)
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		if destroyErr := client.DestroyInstance(cleanupCtx, state.InstanceID); destroyErr != nil {
+		if destroyErr := destroyAndArchiveSession(cleanupCtx, paths, client, state); destroyErr != nil {
 			fmt.Fprintf(os.Stderr, "stint: cleanup instance %d: %v\n", state.InstanceID, destroyErr)
+			if current, loadErr := sessionstate.Load(paths); loadErr == nil && current.InstanceID == state.InstanceID {
+				state = current
+				if state.Status != "STOPPED" {
+					state.LastError = "startup cleanup failed: " + destroyErr.Error()
+					_ = sessionstate.Save(paths, state)
+				}
+			}
+			if state.Status != "STOPPED" && !sessionWatchdogRunning(state) {
+				if watchdogErr := ensureWatchdogAlive(paths, &state); watchdogErr != nil {
+					fmt.Fprintf(os.Stderr, "stint: paid instance %d has no verified deadline watchdog: %v\n", state.InstanceID, watchdogErr)
+				}
+			}
 		}
 		cancel()
-		_ = sessionstate.Clear(paths)
 	}()
 
 	qualified := false
