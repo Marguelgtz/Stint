@@ -9,7 +9,7 @@ the concise recovery point.
 
 - Repository: `Marguelgtz/Stint`, default branch `main`.
 - Starting main: `9634bf762a2dc9021747eb786db7fd23ccab84e9`.
-- Current main before this final landing-record refresh: `270caea33fec1b08493312c45b2ced19b21e07d1` (after #135; exact-main CI run `35916137793` passed all five required jobs).
+- Current main before this live-evidence refresh: `9638ac6fef4ad81a993a5bf1d73ffeffeb30a1ef` (after #138; landed-main CI run `35923648426` passed all five required jobs).
 - The user's original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa` and its untracked files/local binary remain untouched. Work used isolated `/tmp` worktrees.
 - Current main preserves Hermes-on-box Deep Work, both dashboards, NInfer lane semantics, paid-session/provider safety, exact-head CI, and Spark path observation. See the ledger for historical source comparisons.
 
@@ -39,6 +39,8 @@ Grounding and runtime slices merged after the starting point:
 | #133 | `3586022bd6b2cc4565a4d94e519398222d85a443` | port selected docs taxonomy; refresh canonical runtime/PR grounding | `35911926414` |
 | #134 | `25eea6fcc4fdbc9d24588599f849a5afe5b4e613` | final PR/evidence snapshot refresh | `35912925386` |
 | #135 | `270caea33fec1b08493312c45b2ced19b21e07d1` | correct stale PR snapshot; constrain Deep Work smoke to RTX 4090 and $0.40/hour | `35916137793` |
+| #136 | `86f124f9c1a5fa3cb0ccf1040ac392e26b09e365` | record 4090-only smoke landing and current grounding state | `35917484715` |
+| #138 | `9638ac6fef4ad81a993a5bf1d73ffeffeb30a1ef` | make `stint perf` request visible output; verify the fix on RTX 4090 | `35923648426` |
 
 Each listed exact landed-main run completed all five required Stint jobs. #124
 Pull-request runs `35882783534`, `35894208985`, `35898993338`, `35900956163`,
@@ -110,6 +112,38 @@ allowed for bundle acquisition or validation failure. The release path remains
 unpromoted until fresh RTX 4090 acceptance covers model loading, two lanes,
 native context, correctness, Deep Work and teardown.
 
+### First live RTX 4090 source-build run
+
+On 2026-09-23, one RTX 4090 only (Vast offer `40583612`, instance `52296599`)
+ran the pinned NInfer source-build path. The offer was `$0.4759259/hour`; the
+one-off launch used a one-hour schedule capped at `$0.48` and a `$0.50` total
+session cap. This was the user's explicit one-run exception to the normal
+`$0.40/hour` target; no profile or repository price policy changed. The run
+used one candidate attempt and measured `46.3 MB/s` transfer throughput, above
+the 40 MB/s requirement. No 3090 was selected or used.
+
+Startup telemetry measured SSH-ready at 58s after rental, network qualification
+at 76s, source runtime acquisition/build at 23m51s, runtime verification at
+0.12s, and model acquisition at 8m26s overlapping the build. READY arrived
+26m17s after rental. The prorated cost is estimated at about `$0.31` (not a
+reconciled provider invoice); scheduled exposure was at most `$0.48`. The
+instance was destroyed after the run.
+
+At native context `262144` with two configured clients, two concurrent chat
+requests returned `42` and `56`. An 8K perf sample processed 7,413 actual
+prompt tokens with TTFT 4.91s, total 5.18s, and 164.8 tok/s decode. A request
+for 200,000 tokens processed 178,904 actual prompt tokens with TTFT 124.59s,
+total 124.78s, and 549.0 tok/s decode; VRAM was 22.4/24.0 GB with no OOM.
+This did not fill the full 262,144-token context or prove two simultaneous
+full-context lanes.
+
+The live perf run exposed that the synthetic benchmark prompt could end with
+no generated token on a reasoning model. #138 adds an explicit one-word
+completion instruction and regression test; the fixed binary passed both
+live perf samples. The run did not exercise release-bundle deployment or a
+Deep Work workflow. It establishes a source-build READY-time baseline, not a
+release-bundle A/B result.
+
 Local deterministic evidence: `go test -count=1 ./...`,
 `go test -race -count=1 ./...`, `go vet ./...`, build, four Python bundle
 tests, shell syntax, `git diff --check`, exact pinned-source binary help/`ldd`,
@@ -180,11 +214,11 @@ which constrains the provider query to RTX 4090 only; never rent or test on a
 3090.
 
 The clean-base bundle extraction, CLI, and dynamic-library smoke is not a
-runtime-readiness comparison. No Stint source-build, immutable-release-bundle,
-and historical GHCR image A/B has measured provider loading, SSH-to-READY, or
-rental-to-READY time. Compilation of 332 source targets and the release
-candidate archive hash establish build provenance only, not live startup
-benefit.
+runtime-readiness comparison. Source-build now has one live 4090 startup
+baseline; release-bundle and historical GHCR have not measured provider
+loading or rental-to-READY time on comparable fresh hosts. Compilation of 332
+source targets and the release candidate archive hash establish build
+provenance only, not live startup benefit.
 
 ### Historical runtime image decision
 
@@ -202,16 +236,19 @@ excluded because image acquisition/provider loading and startup behavior had
 not been revalidated against the current lifecycle, and it moved more startup
 behavior inside the provider image path, reducing SSH-level observability.
 The current release bundle keeps the standard Vast CUDA base and visible SSH
-lifecycle, but its live `READY` path has not been compared with source-build
-or GHCR. Keep #32 as a historical control candidate; do not restore it as the
-default from compilation evidence alone.
+lifecycle. Source-build now has a live 4090 READY baseline, but the release
+bundle and GHCR have not been measured on comparable fresh hosts. Keep #32 as
+a historical control candidate; do not restore it as the default from
+compilation evidence alone.
 
-Keep the current limits fixed: $0.40/hour, $2.50 total session ceiling, at
-most three distinct candidates, 500 Mbps advertised bandwidth and 40 MB/s
-measured throughput. Do not raise a cap to obtain a candidate. Fresh RTX 4090
-model-load, two-lane, native-context, correctness, Deep Work and teardown
-acceptance is blocked by current offer pricing/reliability; leave release
-deployment opt-in and recheck later under the same limits.
+The normal interactive target remains `$0.40/hour` and `$2.50` per session.
+The user authorized a bounded one-off price exception when a 4090 is required
+and no qualifying offer fits the target. Each exception must set its GPU-only
+objective, hourly/session ceiling, network floor and one-candidate maximum
+before launch. Keep the RTX 4090 selector explicit, never use a 3090, and do
+not change the permanent profile. Source-build smoke has completed; fresh
+release-bundle qualification, full-context/two-lane coverage, Deep Work on the
+bundle path, and teardown evidence remain.
 
 ## PR/evidence and history policy
 
@@ -220,7 +257,7 @@ deployment opt-in and recheck later under the same limits.
 - #73 was closed on 2026-09-23 after #125 merged. Its two unique CP1 reports are preserved verbatim under `docs/history/`; provenance points to source commit `e78ceef308d85c9cac7c71e7d172bed7c66c4182`.
 - Successful generated Deep Work evidence #81–#84 (session `20260908-194552`) and failed attempts #86–#89 (sessions `20260909-012307` and `20260909-014522`) were closed unmerged on 2026-09-23 after checkpoint/handoff SHAs and accurate lessons were recorded in the ledger.
 - Keep #85 parked as a separate high-authority maintenance experiment. PR #93 was closed after selected taxonomy and current pages landed in #133; its replacement and closure comment are recorded in the ledger.
-- Keep #110–#113 open, unmerged and untouched as protected generated Deep Work evidence. GitHub's post-#135 snapshot contained exactly five open PRs: #85 and #110–#113. Their legacy CI rollups were on synthetic merge trees; exact-head CI is not established. The refreshed refs and check runs are recorded in the ledger.
+- Keep #110–#113 open, unmerged and untouched as protected generated Deep Work evidence. The post-#138 snapshot still contains exactly #85 and #110–#113. Their legacy CI rollups were on synthetic merge trees; exact-head CI is not established. Current refs remain in the ledger.
 
 ## Checkpoints
 
@@ -235,29 +272,28 @@ deployment opt-in and recheck later under the same limits.
 - [x] Replace repeated-build hash assumptions with candidate build and pin-gated promotion (#127); legacy PR merge-tree and landed-main CI passed.
 - [x] Build and clean-base smoke candidate run `35894635094`, pin its uploaded archive via #128, and publish/verify immutable release via #129–#130 (`35902030339`).
 - [x] Inspect the market read-only under existing caps at `18:37 UTC`, recheck the plan at `19:06 UTC`, and refresh it at `20:12 UTC`; no qualifying RTX 4090 was established and no compute was rented.
-- [!] Fresh RTX 4090 runtime and Deep Work acceptance: the 20:12 UTC generic plan's RTX 3090 selection is excluded; the closest rejected RTX 4090 offers exceeded the fixed $0.40/hour ceiling. Run acceptance only through the RTX 4090-filtered `--runtime ninfer` path; never fall back to a 3090 or raise limits.
+- [x] Complete the first fresh RTX 4090 source-build smoke with a one-off hourly exception; record READY time, throughput, chat correctness, perf, cost ceiling and teardown. Merge the visible-output fix in #138.
+- [~] Qualify the immutable release-bundle path on a fresh RTX 4090. Cover model loading, two short lanes, native context, correctness, Hermes Deep Work, publication, final archive, teardown and comparative READY time. Keep release-bundle opt-in until this gate passes.
 - [x] Merge #125 with the canonical docs and verbatim #73 history; then close only #48–#51 and #73 after their replacement/history records landed.
 - [x] Merge #131 and record its landing SHA / main CI; inspect its pull-request run and identify the synthetic-merge checkout gap.
 - [x] Repair CI in #132: required jobs check exact PR head SHA, then `unit-tests` runs again on GitHub's synthetic merge tree; exact-head, merge-tree, and landed-main checks passed.
 - [x] Close old generated PRs #81–#84 (successful) and #86–#89 (failed) after preserving their session IDs, checkpoint/handoff SHAs, and outcomes.
 - [x] Port selected #93 taxonomy to current docs; archive superseded content; add current index, operations, roadmap and architecture pages in #133.
 - [x] After #133's exact-head, synthetic merge-tree and main push CI passed, comment on and close #93; verify the resulting five-PR open snapshot and record its refs/check evidence.
-- [x] Merge #135 after exact-head and synthetic merge-tree verification; explicitly filter the live Deep Work smoke to RTX 4090 at the existing $0.40/hour cap, then verify landed-main CI. No GPU was rented.
+- [x] Merge #135 after exact-head and synthetic merge-tree verification; its smoke remains RTX 4090-only at the normal $0.40/hour target.
+- [x] Merge #136 smoke-landing docs and #138 perf-prompt fix. #138 exact-head CI `35923353592` and landed-main CI `35923648426` passed all five required jobs.
 
 ## Final-state rules
 
 The exact-main candidate workflow and immutable publication are verified.
-The #132 exact-head and synthetic-merge CI repair is green on PR head
-`a90b059c81d7a7bfb1fdbc17aff053e40c217429` and main
-`4ff7159c018c75372b31aca7627151e30fed669b`. Fresh RTX 4090 acceptance remains
-blocked by current offer pricing/reliability under the unchanged limits, so
-leave release-bundle startup opt-in and source-build as the default. The docs
-taxonomy review, #93 disposition, and final five-PR snapshot are recorded.
-PR #135 (`e601f169349f37794ffd0c8007b1ed9d734daf3a`) passed exact-head CI run
-`35915946946` and its synthetic merge-tree test before merging as
-`270caea33fec1b08493312c45b2ced19b21e07d1`; exact-main run `35916137793`
-passed all five required jobs. The live smoke now sets `--runtime ninfer`,
-uses the unchanged $0.40/hour cap, and has no 3090 fallback. The remaining
-gate is live RTX 4090 acceptance; its exact-host model-load, two-lane,
-native-context, correctness, Deep Work, teardown, and comparable READY-time
-evidence is unavailable under current offer pricing/reliability.
+PR #138 passed exact-head CI run `35923353592` and merged as
+`9638ac6fef4ad81a993a5bf1d73ffeffeb30a1ef`; landed-main run `35923648426`
+passed all five required jobs. A one-off source-build run on RTX 4090 measured
+26m17s rental-to-READY, with source runtime acquisition at 23m51s and model
+transfer overlapping at 8m26s. It confirmed 46.3 MB/s, two concurrent short
+chat responses, 8K and 178,904-token perf, no OOM, and verified teardown. It
+did not exercise release-bundle deployment, the full 262,144-token context or
+a Deep Work run. Source-build now has a live READY baseline; the next gate is
+fresh 4090 release-bundle and Deep Work acceptance. The normal `$0.40/hour`
+target remains; bounded one-off price overrides are authorized when a 4090 is
+necessary. Never use a 3090.
