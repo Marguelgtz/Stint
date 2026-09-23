@@ -13,27 +13,29 @@ class RuntimeBundleTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.binary = self.root / "ninfer-serve"
-        self.binary.write_bytes(b"fixture runtime\n")
-        self.binary.chmod(0o755)
+        self.binaries = {name: self.root / name for name in bundle.BINARY_NAMES}
+        for index, binary in enumerate(self.binaries.values()):
+            binary.write_bytes(f"fixture runtime {index}\n".encode())
+            binary.chmod(0o755)
 
     def tearDown(self):
         self.temp.cleanup()
 
     def package(self):
-        return bundle.package(self.binary, self.root / "dist")
+        return bundle.package(self.binaries, self.root / "dist")
 
     def test_package_is_reproducible_and_verifies_on_clean_extract(self):
         archive, checksum, manifest = self.package()
         first_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
         first_assets = tuple(path.read_bytes() for path in (archive, checksum, manifest))
-        archive2, checksum2, manifest2 = bundle.package(self.binary, self.root / "dist2")
+        archive2, checksum2, manifest2 = bundle.package(self.binaries, self.root / "dist2")
         self.assertEqual(first_hash, hashlib.sha256(archive2.read_bytes()).hexdigest())
         self.assertEqual(first_assets, tuple(path.read_bytes() for path in (archive2, checksum2, manifest2)))
         extracted = self.root / "clean"
         bundle.extract(archive, manifest, checksum, extracted)
-        self.assertEqual((extracted / "ninfer-serve").read_bytes(), self.binary.read_bytes())
-        self.assertTrue((extracted / "ninfer-serve").stat().st_mode & 0o111)
+        for name, binary in self.binaries.items():
+            self.assertEqual((extracted / name).read_bytes(), binary.read_bytes())
+            self.assertTrue((extracted / name).stat().st_mode & 0o111)
         self.assertEqual(bundle.verify(archive, manifest, checksum)["sourceCommit"], bundle.SOURCE_COMMIT)
 
     def test_rejects_traversal_and_link_entries_even_with_consistent_sidecar(self):
@@ -44,6 +46,11 @@ class RuntimeBundleTests(unittest.TestCase):
             info = tarfile.TarInfo("../outside")
             info.size = 1
             archive.addfile(info, io.BytesIO(b"x"))
+            for name, binary in self.binaries.items():
+                info = tarfile.TarInfo(name)
+                info.size = binary.stat().st_size
+                with binary.open("rb") as stream:
+                    archive.addfile(info, stream)
             info = tarfile.TarInfo("manifest.json")
             info.size = len(manifest_data)
             archive.addfile(info, io.BytesIO(manifest_data))
@@ -57,6 +64,10 @@ class RuntimeBundleTests(unittest.TestCase):
         manifest_data = manifest_path.read_bytes()
         malicious = self.root / archive_path.name
         with tarfile.open(malicious, "w:gz") as archive:
+            info = tarfile.TarInfo("ninfer")
+            info.size = self.binaries["ninfer"].stat().st_size
+            with self.binaries["ninfer"].open("rb") as stream:
+                archive.addfile(info, stream)
             info = tarfile.TarInfo("ninfer-serve")
             info.type = tarfile.SYMTYPE
             info.linkname = "../../outside"

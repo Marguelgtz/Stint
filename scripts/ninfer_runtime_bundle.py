@@ -23,6 +23,7 @@ GPU_ARCHITECTURE = "89"
 BASE_IMAGE_TAG = "vastai/base-image:cuda-12.8.1-cudnn-devel-ubuntu24.04-py310"
 BASE_IMAGE_DIGEST = "sha256:bf6bb047dbc1105c89a5ac41b9a32205a2f2e022cb24d632d055c5b14a86f7ec"
 ENTRYPOINT = "ninfer-serve"
+BINARY_NAMES = ("ninfer", "ninfer-serve")
 BUNDLE_FORMAT_VERSION = 1
 
 
@@ -40,7 +41,7 @@ def asset_names() -> tuple[str, str, str]:
     return archive, f"{archive}.sha256", f"{prefix}.manifest.json"
 
 
-def expected_manifest(binary_sha256: str, binary_size: int) -> dict[str, object]:
+def expected_manifest(binaries: dict[str, tuple[str, int]]) -> dict[str, object]:
     return {
         "bundleFormatVersion": BUNDLE_FORMAT_VERSION,
         "runtime": "ninfer",
@@ -57,10 +58,9 @@ def expected_manifest(binary_sha256: str, binary_size: int) -> dict[str, object]
         "baseImage": {"tag": BASE_IMAGE_TAG, "digest": BASE_IMAGE_DIGEST},
         "entrypoint": ENTRYPOINT,
         "buildIdentifier": f"ninfer-{SOURCE_COMMIT}-cuda128-sm89-v1",
-        "binary": {
-            "path": ENTRYPOINT,
-            "sha256": binary_sha256,
-            "sizeBytes": binary_size,
+        "binaries": {
+            name: {"path": name, "sha256": values[0], "sizeBytes": values[1]}
+            for name, values in sorted(binaries.items())
         },
     }
 
@@ -69,16 +69,22 @@ def _manifest_bytes(manifest: dict[str, object]) -> bytes:
     return (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
 
 
-def package(binary: Path, output_dir: Path) -> tuple[Path, Path, Path]:
-    if not binary.is_file() or binary.is_symlink():
-        raise ValueError("runtime binary must be a regular file")
-    if not os.access(binary, os.X_OK):
-        raise ValueError("runtime binary is not executable")
+def package(binaries: dict[str, Path], output_dir: Path) -> tuple[Path, Path, Path]:
+    if set(binaries) != set(BINARY_NAMES):
+        raise ValueError(f"bundle requires exactly these binaries: {BINARY_NAMES!r}")
+    for name, binary in binaries.items():
+        if not binary.is_file() or binary.is_symlink():
+            raise ValueError(f"runtime binary {name} must be a regular file")
+        if not os.access(binary, os.X_OK):
+            raise ValueError(f"runtime binary {name} is not executable")
 
     archive_name, checksum_name, manifest_name = asset_names()
     output_dir.mkdir(parents=True, exist_ok=True)
-    binary_hash = sha256_file(binary)
-    manifest = expected_manifest(binary_hash, binary.stat().st_size)
+    binary_manifest = {
+        name: (sha256_file(path), path.stat().st_size)
+        for name, path in binaries.items()
+    }
+    manifest = expected_manifest(binary_manifest)
     manifest_data = _manifest_bytes(manifest)
     archive_path = output_dir / archive_name
     manifest_path = output_dir / manifest_name
@@ -90,10 +96,11 @@ def package(binary: Path, output_dir: Path) -> tuple[Path, Path, Path]:
     with archive_path.open("wb") as raw:
         with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz:
             with tarfile.open(fileobj=gz, mode="w", format=tarfile.USTAR_FORMAT) as archive:
-                for name, path, mode, data in (
-                    (ENTRYPOINT, binary, 0o755, None),
-                    ("manifest.json", None, 0o644, manifest_data),
-                ):
+                members = [
+                    (name, binaries[name], 0o755, None)
+                    for name in BINARY_NAMES
+                ] + [("manifest.json", None, 0o644, manifest_data)]
+                for name, path, mode, data in members:
                     info = tarfile.TarInfo(name)
                     info.uid = 0
                     info.gid = 0
@@ -119,7 +126,8 @@ def package(binary: Path, output_dir: Path) -> tuple[Path, Path, Path]:
 def _read_manifest_member(archive: tarfile.TarFile) -> tuple[dict[str, object], bytes]:
     members = archive.getmembers()
     names = [member.name for member in members]
-    if sorted(names) != sorted([ENTRYPOINT, "manifest.json"]) or len(names) != 2:
+    expected_names = [*BINARY_NAMES, "manifest.json"]
+    if sorted(names) != sorted(expected_names) or len(names) != len(expected_names):
         raise ValueError(f"unexpected archive entries: {names!r}")
     for member in members:
         path = PurePosixPath(member.name)
@@ -127,10 +135,10 @@ def _read_manifest_member(archive: tarfile.TarFile) -> tuple[dict[str, object], 
             raise ValueError(f"unsafe archive path: {member.name!r}")
         if not member.isfile():
             raise ValueError(f"archive entry is not a regular file: {member.name!r}")
-    binary_member = archive.getmember(ENTRYPOINT)
     manifest_member = archive.getmember("manifest.json")
-    if binary_member.mode & 0o111 == 0:
-        raise ValueError("runtime entrypoint is not executable in archive")
+    for name in BINARY_NAMES:
+        if archive.getmember(name).mode & 0o111 == 0:
+            raise ValueError(f"runtime binary {name} is not executable in archive")
     stream = archive.extractfile(manifest_member)
     if stream is None:
         raise ValueError("manifest.json is unreadable")
@@ -151,12 +159,14 @@ def verify(archive_path: Path, manifest_path: Path, checksum_path: Path) -> dict
         manifest, manifest_data = _read_manifest_member(archive)
         if manifest_data != manifest_path.read_bytes():
             raise ValueError("external manifest does not match archived manifest")
-        binary_member = archive.getmember(ENTRYPOINT)
-        binary_stream = archive.extractfile(binary_member)
-        if binary_stream is None:
-            raise ValueError("runtime entrypoint is unreadable")
-        binary_hash = hashlib.sha256(binary_stream.read()).hexdigest()
-        expected = expected_manifest(binary_hash, binary_member.size)
+        binaries = {}
+        for name in BINARY_NAMES:
+            member = archive.getmember(name)
+            binary_stream = archive.extractfile(member)
+            if binary_stream is None:
+                raise ValueError(f"runtime binary {name} is unreadable")
+            binaries[name] = (hashlib.sha256(binary_stream.read()).hexdigest(), member.size)
+        expected = expected_manifest(binaries)
         if manifest != expected:
             raise ValueError("manifest does not match the pinned NInfer production tuple")
     return manifest
@@ -168,7 +178,7 @@ def extract(archive_path: Path, manifest_path: Path, checksum_path: Path, destin
     if any(destination.iterdir()):
         raise ValueError("extraction destination must be empty")
     with tarfile.open(archive_path, mode="r:gz") as archive:
-        for name in (ENTRYPOINT, "manifest.json"):
+        for name in (*BINARY_NAMES, "manifest.json"):
             member = archive.getmember(name)
             source = archive.extractfile(member)
             if source is None:
@@ -176,7 +186,7 @@ def extract(archive_path: Path, manifest_path: Path, checksum_path: Path, destin
             target = destination / name
             with target.open("xb") as output:
                 shutil.copyfileobj(source, output)
-            target.chmod(0o755 if name == ENTRYPOINT else 0o644)
+            target.chmod(0o755 if name in BINARY_NAMES else 0o644)
 
 
 def main() -> None:
@@ -185,7 +195,8 @@ def main() -> None:
     for command in ("package", "verify", "extract"):
         sub = subparsers.add_parser(command)
         if command == "package":
-            sub.add_argument("--binary", required=True, type=Path)
+            sub.add_argument("--ninfer", required=True, type=Path)
+            sub.add_argument("--ninfer-serve", required=True, type=Path)
             sub.add_argument("--output-dir", required=True, type=Path)
         else:
             sub.add_argument("--archive", required=True, type=Path)
@@ -195,7 +206,7 @@ def main() -> None:
                 sub.add_argument("--destination", required=True, type=Path)
     args = parser.parse_args()
     if args.command == "package":
-        for path in package(args.binary, args.output_dir):
+        for path in package({"ninfer": args.ninfer, "ninfer-serve": args.ninfer_serve}, args.output_dir):
             print(path)
     elif args.command == "verify":
         verify(args.archive, args.manifest, args.checksum)

@@ -8,9 +8,10 @@ The selected candidate is `sergiuszm/ninfer-4090` source
 
 Run `scripts/build_ninfer_runtime_bundle.sh` on a disposable Linux runner with
 Docker, at least 35 GiB free space, and network access. It builds the exact
-source in Vast's base image pinned by digest, packages only `ninfer-serve` and
-the manifest, and smoke-tests safe extraction, `--help`, and dynamic library
-resolution in a fresh container of that same base image.
+source in Vast's base image pinned by digest, packages only the `ninfer` and
+`ninfer-serve` binaries plus the manifest, and smoke-tests safe
+extraction, both `--help` commands, and dynamic library resolution in a fresh
+container of that same base image.
 
 The bundle workflow uses a trusted ephemeral self-hosted runner because the
 base image is larger than the disk available on GitHub's standard Linux

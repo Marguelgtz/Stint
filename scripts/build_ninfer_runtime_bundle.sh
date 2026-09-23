@@ -53,12 +53,16 @@ cmake -S "$src" -B "$build" -G Ninja \
   -DNINFER_BUILD_BENCHMARKS=OFF
 cmake --build "$build" --parallel 4 --target ninfer ninfer-serve
 test -x "$build/apps/ninfer-serve"
+test -x "$build/apps/ninfer"
+"$build/apps/ninfer" --help >/dev/null
 "$build/apps/ninfer-serve" --help >/dev/null
+cp "$build/apps/ninfer" /work/out/ninfer
 cp "$build/apps/ninfer-serve" /work/out/ninfer-serve
 '
 
 python3 "$repo_root/scripts/ninfer_runtime_bundle.py" package \
-  --binary "$work_dir/out/ninfer-serve" \
+  --ninfer "$work_dir/out/ninfer" \
+  --ninfer-serve "$work_dir/out/ninfer-serve" \
   --output-dir "$output_dir"
 
 for archive in "$output_dir"/*.tar.gz; do
@@ -81,8 +85,12 @@ python3 /repo/scripts/ninfer_runtime_bundle.py extract \
   --checksum "/bundle/'"$(basename "$checksum")"'" \
   --destination /extract
 test -x /extract/ninfer-serve
+test -x /extract/ninfer
+"/extract/ninfer" --help >/dev/null
 "/extract/ninfer-serve" --help >/dev/null
-ldd_output="$(ldd /extract/ninfer-serve)"
-if grep -q "not found" <<<"$ldd_output"; then printf '%s\n' "$ldd_output" >&2; exit 1; fi
+for binary in /extract/ninfer /extract/ninfer-serve; do
+  ldd_output="$(ldd "$binary")"
+  if grep -q "not found" <<<"$ldd_output"; then printf '%s\n' "$ldd_output" >&2; exit 1; fi
+done
 '
 done
