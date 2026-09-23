@@ -24,7 +24,7 @@ Vast GPU
 Qwen3.8-27B through NInfer or llama.cpp
 ```
 
-The live profile on `main` is `interactive`. A `deep` profile exists in planning fixtures, but the Deep Work executor itself is not on `main` yet.
+The live provisioning profile on `main` is `interactive`. Hermes-on-box Deep Work is a separate bounded mission workflow; see [`DEEP_WORK.md`](DEEP_WORK.md) for its setup, policy and operation.
 
 ## Prerequisites
 
@@ -202,11 +202,7 @@ If startup progressed far enough to preserve the paid instance, Stint records th
 
 ### Important current-main teardown behavior
 
-On the current `main` branch, CLI `stint down` is immediately destructive once invoked. It does **not** ask for a typed confirmation and it treats a successful Vast destroy API call as sufficient before clearing local session state.
-
-The dashboard's `d` action has its own confirmation UI, but that does not change direct CLI behavior.
-
-Open lifecycle-safety work adds stronger confirmation, provider-side disappearance verification, and broader lock/preemption diagnostics. Until that work lands, do not assume those safeguards exist on `main`.
+Plain `stint down` asks the operator to type `destroy` before requesting teardown; `stint down --yes` skips that interactive gate. Stint waits for Vast to confirm the exact instance is gone, writes an append-only session archive, and clears active local state only after those steps succeed. If provider teardown or archiving cannot be confirmed, the active record and deadline watchdog remain. See the recovery and lifecycle sections below before destroying a paid session.
 
 ## Current-main lifecycle model
 
@@ -248,13 +244,12 @@ Typical Linux paths:
 
 ## Known gaps on current main
 
-These are important distinctions between shipped `main` behavior and work that exists only in pull requests:
+These are important distinctions between current `main` behavior and future work:
 
-1. **Deep Work is not on `main`.** The unattended mission executor, Hermes-on-box worker, phase-aware reasoning, Deep Work dashboard, GPU-owned GitHub publishing, and policy-driven maintenance are still in stacked PRs.
-2. **The NInfer artifact path on `main` is still mutable.** The current source uses a Hugging Face `/resolve/main/` model URL together with a fixed expected transfer size. PR #74 pins an immutable revision and derives the real artifact size dynamically.
-3. **CLI teardown does not yet verify provider disappearance.** Stronger `down` confirmation, destroy verification, lock-owner diagnostics, active-session Doctor behavior, and instance-scoped evidence are in the open lifecycle-safety stack, especially PR #76.
-4. **The runtime-bundle startup path is experimental.** PRs #48-#51 explore replacing the full custom NInfer startup path with a relocatable runtime bundle; that path is not the default on `main`.
-5. **Vast is the only live provider.** Other provider and protocol ideas are not part of the current live implementation.
+1. **The immutable NInfer runtime bundle is published but not live-qualified.** It is available only through explicit `release-bundle` selection and remains fail-closed; fresh RTX 4090 model-load, correctness, two-lane, native-context, Deep Work and teardown acceptance is still required before promotion.
+2. **Source-build remains the default.** There is no comparable source-build versus release-bundle READY-time measurement.
+3. **Vast is the only live compute provider.** Other provider and protocol ideas are not part of current paid operation.
+4. **Some older operational documents are stale.** Check current source and the repository README, Deep Work guide and canonical grounding documents if an older reference disagrees.
 
 ## Development checks
 

@@ -26,7 +26,7 @@ Cline / Hermes / another OpenAI-compatible client
                  NInfer or llama.cpp
 ```
 
-> **Repository status:** active prototype / pre-V0. The current `main` branch supports paid **interactive** sessions. The Deep Work executor and its on-box autonomous workflow are still in stacked pull requests and are **not** part of `main` yet.
+> **Repository status:** active prototype / pre-V0. Current `main` supports paid interactive sessions and bounded Hermes-on-box Deep Work missions. Deep Work uses detached supervision, persisted policy, independent task verification, and explicit landing; see [`docs/DEEP_WORK.md`](docs/DEEP_WORK.md) before running it.
 
 ## Start here
 
@@ -37,15 +37,15 @@ Cline / Hermes / another OpenAI-compatible client
 
 ## What is on `main`
 
-The current shipped repository boundary was reconciled against `main` on 2026-09-11.
+The current repository boundary was reconciled against `main` on 2026-09-23.
 
 | Area | Current `main` |
 | --- | --- |
 | Live compute provider | Vast |
 | Live profile | `interactive` |
-| Planning | live `interactive`; fixture-only `deep` profile |
+| Planning | Vast `interactive`; Deep Work missions use the separate on-box coordinator |
 | Model | `qwen3.8-27b` |
-| Runtimes | NInfer on qualified RTX 4090 hosts; llama.cpp fallback/explicit runtime |
+| Runtimes | NInfer for the selected SM89 tuple; llama.cpp fallback/explicit runtime |
 | Stable client endpoint | `http://127.0.0.1:8409/v1` |
 | NInfer context profiles | `coding` 126,976; `precision` 172,032; `native` 262,144 |
 | NInfer lanes | one or two client lanes over a shared dynamic KV/context pool |
@@ -57,9 +57,9 @@ The current shipped repository boundary was reconciled against `main` on 2026-09
 | Operator UI | `stint dash` terminal cockpit |
 | Benchmarking | explicit `stint perf`, including real prompt-depth tests |
 | Spark boundary | repository evidence/onboarding integration remains separate from compute lifecycle |
-| Deep Work executor | **not on `main`** |
+| Deep Work executor | Hermes-on-box, detached supervisor, persisted coordination and verified landing |
 
-Recent `main` work includes mutable session deadlines, session snapshot telemetry, the live dashboard and recovery controls, deeper prompt benchmarking, passive inference observation, dual NInfer lanes, and retrying stale Vast offers during startup.
+Recent `main` work includes safer paid-session teardown, mutable deadlines, session snapshot telemetry, both dashboards, deeper prompt benchmarking, passive inference observation, dual NInfer lanes, Hermes-on-box Deep Work, startup phase evidence, and a pinned immutable NInfer runtime release. Source-build remains the startup default; the release-bundle path is opt-in pending fresh RTX 4090 acceptance.
 
 ## Main commands
 
@@ -148,8 +148,9 @@ post-SSH recoverable failure -> RECOVERABLE -> stint resume -> READY
 
 ### NInfer
 
-NInfer is qualified for RTX 4090 hosts with CUDA 12.8+ and SM89. The source
-pin is `sergiuszm/ninfer-4090` commit
+The selected NInfer build tuple targets RTX 4090 hosts with CUDA 12.8+ and
+SM89; fresh Stint live acceptance is still required. The source pin is
+`sergiuszm/ninfer-4090` commit
 `81b68a20a9a0d9ab47d7e5838887c6d636ab76e0`; the model is NInfer v2 artifact
 revision `18dfc887423fa5aabf3cb56fac41490e462b3fab`, SHA-256
 `eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e`.
@@ -162,16 +163,16 @@ verification error; it does not silently compile after a bad or missing
 release. Use `stint resume --ninfer-deployment source-build` to explicitly
 recover a paid session after a bundle failure. Status snapshots record the
 deployment method, runtime and model pins, acquisition/verification durations,
-and rental-to-READY time. A successful `main` candidate build must pass the
-clean-base smoke; the release publisher then requires the merged `main` SHA pin
-to match the candidate archive and allows only the runtime hash pin and its
-test fixture updates since that build. The immutable release is attached to
-the pinning `main` commit. Until that release exists, the opt-in path
-intentionally cannot start.
+and rental-to-READY time. Candidate builds pass clean-base smoke before
+uploading. The publisher checks the originating run, draft provenance and
+exact archive SHA pin before publishing the immutable release. The release
+tag is created from the exact candidate `main` build; its archive now matches
+the SHA pinned in current `main`.
 
-The bundle remains opt-in until a `main` candidate build and clean-base smoke
-pass, its exact SHA pin is merged, and a fresh RTX 4090 model-load, two-lane,
-native-context and Deep Work acceptance run is recorded.
+The bundle remains opt-in until a fresh RTX 4090 model-load, response
+correctness, two-lane, native-context, Deep Work and teardown acceptance run is
+recorded. No comparable source-build versus release-bundle READY-time result
+is available yet.
 
 | Config | Context | KV | Typical use |
 | --- | ---: | --- | --- |
@@ -260,46 +261,18 @@ One consequence of the project's fast development is that not every older archit
 
 ## Work still in pull requests
 
-Open PR state is not the same as shipped behavior. Several PRs are stacked, generated by Deep Work itself, divergent from current `main`, or superseded by later integration branches. They should not be treated as independently mergeable just because they are open.
+Open PR state is not the same as shipped behavior. The exact current branch heads, bases, checks, evidence and dispositions are recorded in the [semantic PR ledger](docs/STINT_OPEN_PR_GROUNDING_LEDGER.md).
 
-### Deep Work line
-
-Deep Work is the largest current body of unmerged product work:
-
-- [#57](https://github.com/Marguelgtz/Stint/pull/57) introduces the bounded mission executor and `stint deep start/status/stop` model.
-- [#59](https://github.com/Marguelgtz/Stint/pull/59) moves the Hermes worker onto the compute box.
-- [#77](https://github.com/Marguelgtz/Stint/pull/77) adds phase-aware reasoning and a living action plan.
-- [#78](https://github.com/Marguelgtz/Stint/pull/78) hardens the long-run configuration and phase routing.
-- [#79](https://github.com/Marguelgtz/Stint/pull/79) adds the Deep Work execution dashboard.
-- [#80](https://github.com/Marguelgtz/Stint/pull/80) moves checkpoint publication and GitHub ownership onto the GPU.
-- [#85](https://github.com/Marguelgtz/Stint/pull/85) adds policy-driven Deep Work GitHub maintenance and release provenance.
-
-PRs #81-#89 are mostly GPU-generated checkpoint/handoff artifacts from Deep Work test sessions. They are useful evidence, but they are not separate product features that should be read as a roadmap.
-
-### Runtime and lifecycle fixes
-
-- [#74](https://github.com/Marguelgtz/Stint/pull/74) fixes the NInfer artifact-revision/size failure by pinning an immutable model revision and deriving the transfer size dynamically.
-- [#76](https://github.com/Marguelgtz/Stint/pull/76) is the broader current-stack P0 lifecycle-safety integration: lock-owner metadata, safer `down` preemption, authoritative instance lookup, active-session Doctor diagnostics, and instance-scoped evidence. Its own description notes that older safety work should not be merged wholesale around it.
-
-### Startup experiment history
-
-PRs [#48](https://github.com/Marguelgtz/Stint/pull/48) through [#51](https://github.com/Marguelgtz/Stint/pull/51) explored a relocatable NInfer runtime bundle and a faster Vast base-image startup path. The current implementation rebuilds that architecture against the selected source/artifact tuple and keeps source-build as the explicit default and recovery path.
-
-### Documentation reorganization
-
-[#93](https://github.com/Marguelgtz/Stint/pull/93) reorganizes the older flat documentation set. It predates this current-state README pass and will need reconciliation rather than being assumed conflict-free.
-
-A number of older open branches such as #11, #36, #56, #58, and portions of the #60-#70 stack predate or overlap later `main` work. They are repository history and investigation context until deliberately reconciled.
+At this snapshot, #110–#113 are protected generated Deep Work evidence and must remain open and unmerged. #85 is a parked maintenance experiment; #93 needs separate documentation rework. PRs #48–#51 have been replaced by the current tuple-pinned runtime path, and #73's reports are preserved under `docs/history/`; they are being closed after the canonical docs record that evidence. Historical branches #57–#89 describe the work that led to the current Hermes-on-box architecture, not a list of current product gaps.
 
 ## Known gaps on current `main`
 
 These matter when operating the repository today:
 
-1. **Deep Work is not shipped on `main`.** Do not expect `stint deep ...` from a normal main build.
-2. **The immutable runtime bundle still needs live RTX 4090 qualification.** The bundle has not yet established model-loading, response quality, dual-lane, native-context or Deep Work parity on a rented host, so it remains opt-in.
-3. **CLI `stint down` is currently immediate.** It does not ask for a typed confirmation and does not verify that Vast has stopped reporting the instance before local state is cleared. Stronger behavior is still in the open safety stack.
-4. **Vast is the only live compute provider.** Provider abstraction ideas exist, but current paid operation is Vast-specific.
-5. **The project is evolving faster than some older docs.** Check whether a behavior is on `main` or only in a PR before relying on it.
+1. **The immutable runtime bundle still needs live RTX 4090 qualification.** Its exact archive is published and pinned, but model loading, response correctness, two-lane operation, native-context operation, Deep Work and teardown have not been qualified on a fresh rented host. Keep `release-bundle` opt-in.
+2. **Source-build remains the default startup path.** No comparable source-build versus release-bundle READY-time measurement is recorded.
+3. **Vast is the only live compute provider.** Deep Work's instance binding and mission policy do not make other providers available.
+4. **Some older operational docs remain stale.** Prefer this README, [`docs/INSTRUCTIONS.md`](docs/INSTRUCTIONS.md), [`docs/DEEP_WORK.md`](docs/DEEP_WORK.md), and the canonical grounding documents; verify a behavior against current source when they disagree.
 
 ## Build and development
 
