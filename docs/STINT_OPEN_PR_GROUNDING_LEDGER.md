@@ -88,7 +88,7 @@ in the full record where available. #110–#113 are protected evidence.
 | #111 | OPEN, draft | `stint/deep-20260923-022052-02-phase-001` @ `f7349155788c9ec0b7a0086af9b2a8f66c704cce` | #110 branch @ `a051c94a0f02b5d65a4e5a4fb2b7b6ee86e892f4` | Five required checks green | Keep open and unmerged |
 | #112 | OPEN, draft | `stint/deep-20260923-022052-03-phase-002` @ `553c20c49f8c798cbd1074b03870fb63e642ee7a` | #111 branch @ `f7349155788c9ec0b7a0086af9b2a8f66c704cce` | Five required checks green | Keep open and unmerged |
 | #113 | OPEN, draft | `stint/deep-20260923-022052-handoff` @ `7f7fd4344e9e470f19c1d2e95d75ec06357fbc00` | #112 branch @ `553c20c49f8c798cbd1074b03870fb63e642ee7a` | Five required checks green | Keep open and unmerged |
-| #125 | OPEN | `docs/stint-grounding-final-20260923` @ refreshed head pending | `main` @ `23908fc719576376b32ce46fb0a34745c27cc9fb` | Refreshed exact-head CI pending | Land after all five checks pass; then close #48–#51 and #73 |
+| #125 | OPEN | `docs/stint-grounding-final-20260923` @ `0ca3fe0bacda3eebc81c5d8f1fbdb0838cc4994c` | `main` @ `23908fc719576376b32ce46fb0a34745c27cc9fb` | Refreshed exact-head CI pending | Land after all five checks pass; then close #48–#51 and #73 |
 
 ### #124 — feat: add opt-in immutable NInfer runtime deployment
 
@@ -111,7 +111,7 @@ in the full record where available. #110–#113 are protected evidence.
 
 ### #125 — docs: finalize Stint grounding ledger and history
 
-- **PR / exact head:** [#125](https://github.com/Marguelgtz/Stint/pull/125), `docs/stint-grounding-final-20260923` (refreshed head recorded after push).
+- **PR / exact head:** [#125](https://github.com/Marguelgtz/Stint/pull/125), `docs/stint-grounding-final-20260923` at `0ca3fe0bacda3eebc81c5d8f1fbdb0838cc4994c`.
 - **Base:** `main` at observed current SHA `23908fc719576376b32ce46fb0a34745c27cc9fb` before PR merge.
 - **State / mergeability:** OPEN; refreshed exact-head checks pending.
 - **Exact-head CI/checks:** The original head's run `35885441146` passed the five required jobs; the refreshed head must pass exact-head CI before merge.
