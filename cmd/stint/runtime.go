@@ -474,6 +474,7 @@ exec /workspace/stint/ninfer/build/apps/ninfer-serve "$model" \
   --model-id %s \
   --max-context %d \
   --kv-capacity %d \
+  --default-max-tokens %d \
   --max-concurrency %d \
   --max-pending-requests 16 \
   --pending-timeout-ms 600000 \
@@ -482,7 +483,7 @@ exec /workspace/stint/ninfer/build/apps/ninfer-serve "$model" \
   --spec mtp \
   --draft-tokens 3 \
   --lm-head-draft \
-  --preserve-thinking`, artifactCommand, clineRemotePort, interactiveModelAlias, contextTokens, contextTokens, clients, config.KVDType)
+  --preserve-thinking`, artifactCommand, clineRemotePort, interactiveModelAlias, contextTokens, contextTokens, contextTokens, clients, config.KVDType)
 	return fmt.Sprintf(`set -eu
 mkdir -p /workspace/stint/models
 pid_file=/workspace/stint/llama.pid

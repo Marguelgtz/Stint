@@ -116,6 +116,7 @@ func TestNInferLaunchUsesQualified4090Profile(t *testing.T) {
 		"--model-id qwen3.8-27b",
 		"--max-context 126976",
 		"--kv-capacity 126976",
+		"--default-max-tokens 126976",
 		"--kv-dtype int8",
 		"--spec mtp",
 		"--draft-tokens 3",

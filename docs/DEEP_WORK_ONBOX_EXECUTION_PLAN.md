@@ -60,7 +60,10 @@ not the target design.
   rental candidate per authorized launch. Commit `53b5bcc` raises the advertised
   network floor and reserves $1.50 of the remaining smoke budget for the second
   single-candidate launch; the current follow-up tightens the final retry's cap
-  using measured transfer-time and bandwidth-cost evidence.
+  using measured transfer-time and bandwidth-cost evidence. Draft PR #106
+  (https://github.com/Marguelgtz/Stint/pull/106), branch
+  `integrate/deep-work-ninfer-default-token-budget-20260923`, stacks on #105 to
+  fix the fresh-box NInfer launch contract discovered by the live test.
 - All historical Deep Work feature PRs remain open. Their source heads share an
   old base (`d34cb2b...`) and are not safe merge units against current `main`.
   Use their code and evidence selectively on this clean integration branch.
@@ -212,12 +215,23 @@ not the target design.
   and projected READY was 24:19 from rental. Stint still rejected and destroyed
   the host before model startup; estimated active-rental spend was about $0.02.
   Thus neither instance ran NInfer or Deep Work; no session remains. In line
-  with the original $2 total authorization, the next (and final) one-candidate
-  attempt uses a 500 Mbps advertised-network minimum, a lower 10 MB/s measured
-  floor supported by the observed 24-minute readiness projection, a $0.80/hour
-  ceiling, and a $1.20 scheduled-session cap, preserving budget for model
-  transfer and the two rejected starts. The single-candidate limit remains.
-  Local checks pass; CI and that final retry remain pending.
+  The final one-candidate attempt used a 500 Mbps advertised-network minimum,
+  10 MB/s measured floor, $0.80/hour ceiling, and $1.20 scheduled-session cap.
+  It rented RTX 4090 instance `52147295` in the Netherlands at $0.625/hour
+  (projected session $0.94), measured 100.3 MB/s, and reached model-serving
+  `READY` after 13:50 from rental. Native NInfer compiled all 246 build steps
+  with CUDA 12.8.93, the model checksum passed, and Stint established the
+  watchdog and tunnel. The production launcher transferred the pinned runtime
+  and mission, verified GitHub destination, installed Node 22, Hermes, and Go
+  1.27.1, and passed the target repository's full `go test ./...` preflight.
+  It then failed closed five times because the running NInfer argv omitted
+  `--default-max-tokens 262144`, required by `scripts/provision-box.sh`. The
+  launcher never reported `RUNNING`, Hermes never started, and no Deep Work
+  task ran; smoke cleanup destroyed the instance and `stint status` now shows no
+  active compute. This is a production runtime launch bug, not an environment
+  or marketplace blocker. PR #106 adds the missing flag using the selected
+  context limit and regression coverage. The full fresh-box attempt against
+  that fix remains unrun; exact-head CI is pending.
 
 ### [~] Repair coordinator identity, policy reconstruction, and durable transitions
 
@@ -378,13 +392,15 @@ not the target design.
 - PR #102 implementation commit `04151f5`: `go test -count=1 ./...` — PASS; `python3 scripts/test_onbox_github_publish.py` — PASS (7 tests); Python byte-compilation — PASS; Bash syntax for launcher, smoke, supervisor, and provisioner — PASS; embedded resume-preflight Python compilation — PASS; `git diff --check` — PASS. Draft PR #102 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. No live GPU smoke was run.
 - PR #103 commit `8aea2bd`: `bash -n scripts/onbox-deep-supervisor.sh scripts/test_onbox_supervisor.sh`, `bash scripts/test_onbox_supervisor.sh`, and `git diff --check` — PASS. Draft PR #103 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `ad55713` is pushed. No live GPU smoke was run.
 - PR #104 commit `d971d24`: `go test -count=1 ./...` — PASS, including the five-case local NInfer artifact fixture; publisher safety tests (7) and supervisor completion fixture — PASS; shell syntax and `git diff --check` — PASS. Draft PR #104 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `19e712a` is pushed. No live GPU smoke was run.
-- PR #105 commit `d497ce1` removed the stale tunnel flag; its exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed. Commit `ad422e0` added a lower-only `--max-cost-usd` and `--validate-only`, replacing the ineffective `--help` preflight. Commit `e658c09` added `--max-hourly-usd`; increasing the profile's $0.40/hour limit requires an explicit session cap and the per-candidate full-session check still guards each rental. Commit `11acb62` limits each live-smoke launch to one candidate. Commits through `53b5bcc` pass `go test -count=1 ./...`, publisher fixtures (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check`. GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed on `e658c09` and `11acb62`. The initial search found no candidates under the original $0.40/hour ceiling. Paid attempt one rented `52145135` and was destroyed after 11.8 MB/s fell below the 30 MB/s floor; paid attempt two rented `52146240` and was destroyed after 13.8 MB/s fell below that floor despite an estimated READY time of 24:19. Both ended before NInfer model startup; active-rental estimates were about $0.02 each, and no active session remains. The final one-candidate attempt changes the measured floor to 10 MB/s, keeps the advertised minimum at 500 Mbps, and tightens scheduled rental cap/rate to $1.20/$0.80 per hour to preserve headroom under the user's $2 total authorization. Its local tests pass; CI is pending.
+- PR #105 commit `d497ce1` removed the stale tunnel flag; its exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed. Commit `ad422e0` added a lower-only `--max-cost-usd` and `--validate-only`, replacing the ineffective `--help` preflight. Commit `e658c09` added `--max-hourly-usd`; increasing the profile's $0.40/hour limit requires an explicit session cap and the per-candidate full-session check still guards each rental. Commit `11acb62` limits each live-smoke launch to one candidate; `53b5bcc` and `0f1b198` narrow the remaining-budget retries. `go test -count=1 ./...`, publisher fixtures (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check` pass through `0f1b198`; PR #105's exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` pass. Paid attempts one and two rented `52145135` and `52146240`, then were destroyed before model startup after 11.8 and 13.8 MB/s failed the 30 MB/s floor. Attempt three rented `52147295` at $0.625/hour, qualified at 100.3 MB/s, compiled NInfer, verified the model SHA, and reached `READY` in 13:50. Production fresh-box preflight installed Node/Hermes/Go, passed `go test ./...`, then failed closed on the missing `--default-max-tokens 262144` launch flag across all five bounded provision retries. No `RUNNING` handshake, Hermes task, verification, publication, or handoff occurred. Cleanup destroyed the instance; no active compute remains. PR #106 adds the missing context-matched default token limit and regressions; its local test results and CI are pending.
 
 ## Next action
 
-Wait for PR #105 exact-head CI on the final bounded settings, then build the
-binary from that checked head and run the final authorized fresh-GPU attempt through
-`scripts/run-onbox-deep-smoke.sh`. Record whether it reaches RUNNING, disconnect
+Complete and verify PR #106's NInfer launch-argument fix, wait for exact-head CI,
+then decide how to exercise the fix within the remaining authorized budget.
+The prior production run already proved GPU qualification and model readiness,
+but it did not reach `RUNNING`. Record whether the corrected launcher reaches
+RUNNING, disconnect
 survival, xhigh/medium work, independent verification, publication, final R2
 archive, handoff, and teardown. Check required local credentials/artifacts by
 presence only; do not expose their contents. PR #101's explicit compute-resume
