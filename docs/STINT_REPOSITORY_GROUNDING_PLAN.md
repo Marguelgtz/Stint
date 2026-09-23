@@ -9,7 +9,7 @@ the concise recovery point.
 
 - Repository: `Marguelgtz/Stint`, default branch `main`.
 - Starting main: `9634bf762a2dc9021747eb786db7fd23ccab84e9`.
-- Current main before this final grounding refresh: `3586022bd6b2cc4565a4d94e519398222d85a443` (after #133; exact-main CI run `35911926414` passed all five required jobs).
+- Current main before this PR-state and README refresh: `25eea6fcc4fdbc9d24588599f849a5afe5b4e613` (after #134; exact-main CI run `35912925386` passed all five required jobs).
 - The user's original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa` and its untracked files/local binary remain untouched. Work used isolated `/tmp` worktrees.
 - Current main preserves Hermes-on-box Deep Work, both dashboards, NInfer lane semantics, paid-session/provider safety, exact-head CI, and Spark path observation. See the ledger for historical source comparisons.
 
@@ -37,6 +37,7 @@ Grounding and runtime slices merged after the starting point:
 | #131 | `2b5f7342093c520175b608a1a64bbce0b9443f31` | record final release/PR closeout snapshot | `35905880710` |
 | #132 | `4ff7159c018c75372b31aca7627151e30fed669b` | check exact PR heads and synthetic merge trees in CI | `35909255732` |
 | #133 | `3586022bd6b2cc4565a4d94e519398222d85a443` | port selected docs taxonomy; refresh canonical runtime/PR grounding | `35911926414` |
+| #134 | `25eea6fcc4fdbc9d24588599f849a5afe5b4e613` | final PR/evidence snapshot refresh | `35912925386` |
 
 Each listed exact landed-main run completed all five required Stint jobs. #124
 Pull-request runs `35882783534`, `35894208985`, `35898993338`, `35900956163`,
@@ -167,7 +168,15 @@ $0.40/hour ceiling, and nine also failed the reliability threshold. A later
 read-only interactive planner run at `19:06 UTC` selected an RTX 3090 at
 $0.395/hour, which does not satisfy the selected SM89 runtime objective. Both
 checks were performed under the existing caps; no instance was rented and no
-GPU spend occurred.
+GPU spend occurred. A fresh read-only one-hour plan at `2026-09-23 20:12 UTC`
+queried 41 offers and reported 8 generic interactive qualifiers, selecting an
+RTX 3090 at `$0.379/hour`. Its closest rejected offers were RTX 4090s beginning
+at `$0.476/hour`, rejected by price. This was a generic interactive plan;
+its RTX 3090 selection is excluded from the runtime/Deep Work mission. The
+plan explicitly reported `mutating: false` and `computeRented: false`; no
+compute was rented. Acceptance must use the explicit `--runtime ninfer` path,
+which constrains the provider query to RTX 4090 only; never rent or test on a
+3090.
 
 The clean-base bundle extraction, CLI, and dynamic-library smoke is not a
 runtime-readiness comparison. No Stint source-build, immutable-release-bundle,
@@ -210,7 +219,7 @@ deployment opt-in and recheck later under the same limits.
 - #73 was closed on 2026-09-23 after #125 merged. Its two unique CP1 reports are preserved verbatim under `docs/history/`; provenance points to source commit `e78ceef308d85c9cac7c71e7d172bed7c66c4182`.
 - Successful generated Deep Work evidence #81–#84 (session `20260908-194552`) and failed attempts #86–#89 (sessions `20260909-012307` and `20260909-014522`) were closed unmerged on 2026-09-23 after checkpoint/handoff SHAs and accurate lessons were recorded in the ledger.
 - Keep #85 parked as a separate high-authority maintenance experiment. PR #93 was closed after selected taxonomy and current pages landed in #133; its replacement and closure comment are recorded in the ledger.
-- Keep #110–#113 open, unmerged and untouched as protected generated Deep Work evidence. GitHub's final snapshot after #93 closed contained exactly five open PRs: #85 and #110–#113. Their legacy CI rollups were on synthetic merge trees; exact-head CI is not established.
+- Keep #110–#113 open, unmerged and untouched as protected generated Deep Work evidence. GitHub's post-#134 snapshot contained exactly five open PRs: #85 and #110–#113. Their legacy CI rollups were on synthetic merge trees; exact-head CI is not established. The refreshed refs and check runs are recorded in the ledger.
 
 ## Checkpoints
 
@@ -224,8 +233,8 @@ deployment opt-in and recheck later under the same limits.
 - [x] Merge hash-pin correction #126 after its PR CI; exact landed-main run `35887717054` passed all required jobs.
 - [x] Replace repeated-build hash assumptions with candidate build and pin-gated promotion (#127); legacy PR merge-tree and landed-main CI passed.
 - [x] Build and clean-base smoke candidate run `35894635094`, pin its uploaded archive via #128, and publish/verify immutable release via #129–#130 (`35902030339`).
-- [x] Inspect the current market read-only under existing caps at `18:37 UTC` and recheck the interactive plan at `19:06 UTC`; no qualifying RTX 4090 was established and no compute was rented.
-- [!] Fresh RTX 4090 runtime and Deep Work acceptance: no offer passes current $0.40/hour price and reliability policy; do not raise limits.
+- [x] Inspect the market read-only under existing caps at `18:37 UTC`, recheck the plan at `19:06 UTC`, and refresh it at `20:12 UTC`; no qualifying RTX 4090 was established and no compute was rented.
+- [!] Fresh RTX 4090 runtime and Deep Work acceptance: the 20:12 UTC generic plan's RTX 3090 selection is excluded; the closest rejected RTX 4090 offers exceeded the fixed $0.40/hour ceiling. Run acceptance only through the RTX 4090-filtered `--runtime ninfer` path; never fall back to a 3090 or raise limits.
 - [x] Merge #125 with the canonical docs and verbatim #73 history; then close only #48–#51 and #73 after their replacement/history records landed.
 - [x] Merge #131 and record its landing SHA / main CI; inspect its pull-request run and identify the synthetic-merge checkout gap.
 - [x] Repair CI in #132: required jobs check exact PR head SHA, then `unit-tests` runs again on GitHub's synthetic merge tree; exact-head, merge-tree, and landed-main checks passed.
