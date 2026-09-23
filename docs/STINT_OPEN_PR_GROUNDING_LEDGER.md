@@ -2,7 +2,7 @@
 
 **Historical inventory:** the complete detailed records below were captured on 2026-09-23 after #118 merged (38 open PRs). Their paths, symbols, and recorded check rollups describe that point-in-time snapshot. Base SHAs are observed PR base refs, not claims that stale branches include current `main`.
 
-**Open snapshot after #132:** checked after #132 merged and the older run-evidence PRs #81–#84 and #86–#89 were closed. GitHub reported six open PRs: #85, #93, and protected Deep Work evidence #110–#113. The #93 taxonomy proposal is being replaced selectively in this docs closeout; its final closed state and the resulting five-PR snapshot will be recorded after the replacement merges. Exact heads, observed bases, and checks for the six-PR snapshot are in the table below. The protected generated PRs #110–#113 remain untouched.
+**Final open snapshot after #133 and #93 closure:** checked on 2026-09-23 after #133 merged and #93 closed. GitHub reported five open PRs: #85 and protected Deep Work evidence #110–#113. Their exact heads and observed base SHAs are recorded in the final snapshot at the end of this ledger. The protected generated PRs #110–#113 remain untouched.
 
 **Purpose:** account for each open PR by semantics. Green checks alone do not make a stale/stacked PR safe to merge. Generated GPU-run artifacts remain outside product `main`.
 
@@ -27,6 +27,7 @@
 - #125 grounding docs: head `b94cca7feb3933100105d4e11c1d26ba6ca0a7b7`; merge `36d12ac1c3df55cb0a4f1d7ebe5ee557b26316fa`; legacy PR run `35904065343` and landed-main run `35904245746` passed all five required jobs. It corrected stale README/operator guidance, recorded the pinned immutable release and market blocker, and preserved #73's two reports byte-for-byte.
 - #131 closeout docs: head `09ba98e0f6b6c59c6a4001e8e44e43b6511c5ba3`; merge `2b5f7342093c520175b608a1a64bbce0b9443f31`; run `35905726077` reported all five jobs successful on the PR head SHA and main run `35905880710` passed all five jobs. Post-merge inspection found the pull-request workflow had physically checked out GitHub's synthetic merge commit `45644d2` (head `09ba98e` into base `36d12ac`), despite the run being attached to the PR head SHA. This exposed that prior PR CI did not structurally prove exact-head checkout.
 - #132 CI repair: head `a90b059c81d7a7bfb1fdbc17aff053e40c217429`, base `main` at `2b5f7342093c520175b608a1a64bbce0b9443f31`, merged as `4ff7159c018c75372b31aca7627151e30fed669b`. PR run `35908857053` checked out the exact PR head and passed all five required jobs; `unit-tests` then explicitly checked out synthetic merge tree `1a1b01ba429d8953df2f8519ad31b2ea7bb416cf` and reran Go, Python, and shell suites successfully. Exact landed-main push run `35909255732` passed all five required jobs on `4ff7159…`. Spark Observability was neutral in both pull-request runs.
+- #133 documentation taxonomy/current-grounding port: head `58e3a5832dbffdcf683665598e8c0d5335c34760`, base `main` at `4ff7159c018c75372b31aca7627151e30fed669b`, merged as `3586022bd6b2cc4565a4d94e519398222d85a443`. PR run `35911740797` checked the exact head and passed all five required jobs; its unit job separately tested synthetic merge tree `2f349cf2c57e4cdc5e9809019de963558d0b3069` successfully. Exact landed-main run `35911926414` passed all five required jobs.
 - #117 active-lane semantics: `/metrics` `requests_processing`, with `/slots` processing-lane fallback; retained/resident prompt tokens contribute to resident depth, not active count. NInfer cache ratio is prefix-cache hits / (hits + uncached prompt tokens), and NInfer prefill is marked uncached; llama.cpp cache ratio uses cached/total prompt tokens.
 - #117 event history intentionally carries no caller/client identity; `session_digest` is not a stable Stint identity.
 
@@ -73,13 +74,14 @@
 | #87 | CLOSED, EVIDENCE ONLY | Not code-replaced; failure/handoff remains inspectable in PR history and ledger. |
 | #88 | CLOSED, EVIDENCE ONLY | Not code-replaced; failure is recorded here; current preferred evidence is #110–#113. |
 | #89 | CLOSED, EVIDENCE ONLY | Not code-replaced; preserve PR history and this ledger. |
-| #93 | PORT SELECTED TAXONOMY | Replacement adds a docs index and current pages; old Cline/pre-V0 content is archived and labeled historical. Close #93 only after that replacement merges. |
+| #93 | CLOSED, PORT SELECTED TAXONOMY | Closed 2026-09-23 after #133 merged; [replacement/closure comment](https://github.com/Marguelgtz/Stint/pull/93#issuecomment-5801853350). #133 adds the docs index and current operations/roadmap/architecture pages; old Cline/pre-V0 content is retained and labeled historical. |
 | #110 | KEEP OPEN AS CURRENT EVIDENCE | No replacement; this is the latest successful evidence. |
 | #111 | KEEP OPEN AS CURRENT EVIDENCE | No replacement; part of latest live evidence chain. |
 | #112 | KEEP OPEN AS CURRENT EVIDENCE | No replacement; part of latest live evidence chain. |
 | #113 | KEEP OPEN AS CURRENT EVIDENCE | No replacement; this is the latest live evidence chain. |
 | #131 | LANDED | Closeout documentation; PR run `35905726077` exposed a synthetic-merge checkout gap later fixed by #132; exact main CI `35905880710`. |
 | #132 | LANDED | `.github/workflows/ci.yml` now checks exact PR head and reruns integration suite on merge tree; PR run `35908857053`, merge `4ff7159…`, main run `35909255732`. |
+| #133 | LANDED | Selected documentation taxonomy/current-grounding port; PR run `35911740797` verified exact head and synthetic merge tree; main run `35911926414`. |
 
 ## Historical open PR snapshot (after #125 merged and #48–#51/#73 closed)
 
@@ -938,8 +940,8 @@ recorded separately at the end of this ledger.
 
 - **PR / exact head:** [#93](https://github.com/Marguelgtz/Stint/pull/93), `docs/reorganize-documentation` at `2fd8988ab195a05f20330b2f0d5475f4a1457f97`.
 - **Base:** `main` at observed base SHA `74ef5db14e0fe4b0e8e9865baeb5a9321c5eb5fb`.
-- **State / mergeability:** OPEN; ready for review; `UNKNOWN`.
-- **Legacy PR check rollup:** spark-profile=SUCCESS, go-vet=SUCCESS, unit-tests=SUCCESS, Spark Observability=NEUTRAL.
+- **State / mergeability:** CLOSED, unmerged on 2026-09-23T19:51:25Z; ready for review at close.
+- **Legacy PR check rollup:** spark-profile=SUCCESS, go-vet=SUCCESS, unit-tests=SUCCESS, Spark Observability=NEUTRAL; exact-head validation was not established by the pre-#132 workflow.
 - **Original intent:** Move flat docs into maintained guides, operations, planning, history and reference sections under docs/README.md.
 - **Actual changed files (9 returned):** <details><summary>show complete path list</summary>
 
@@ -948,13 +950,13 @@ recorded separately at the end of this ledger.
 </details>
 - **Important changed symbols:** None (documentation-only).
 - **Tests added or modified:** No docs structure/link validation attached beyond the current required Stint checks.
-- **Unique semantics introduced:** Documentation taxonomy and index; useful as a proposal, but all path moves require current-source reconciliation.
-- **Current-main status:** Not yet applied. Canonical grounding plan/ledger/handoff are being added first; broader docs move remains deferred until runtime/source convergence.
-- **Replacement / where it lives:** No current replacement; rework separately against current docs after implementation convergence.
+- **Unique semantics introduced:** Proposed a docs index and guide/operations/planning/history/reference groups. The taxonomy was useful, but the proposed next-step, roadmap, and architecture content was stale Cline/pre-V0 guidance and required reconciliation.
+- **Current-main status:** Selected taxonomy is on main through #133 merge `3586022bd6b2cc4565a4d94e519398222d85a443`: `docs/README.md`; guides at `docs/guides/`; preserved early-phase and pre-V0 pages under `docs/history/`; current operations, roadmap, and architecture at `docs/operations/next-stint.md`, `docs/planning/roadmap.md`, and `docs/reference/architecture.md`. The canonical plan, ledger, and handoff remain in `docs/` root.
+- **Replacement / where it lives:** Replaced by #133, head `58e3a5832dbffdcf683665598e8c0d5335c34760`, exact-head PR CI `35911740797`, synthetic merge-tree SHA `2f349cf2c57e4cdc5e9809019de963558d0b3069`, and landed-main CI `35911926414`. Old Cline-era phases, `$0.60` discovery details, pre-V0 roadmap, and early architecture were moved under `docs/history/` with a historical notice instead of being carried as current instructions.
 - **Dependencies:** Targets `main` at observed base SHA `74ef5db14e0fe4b0e8e9865baeb5a9321c5eb5fb`; compare against current main because this base ref is stale.
-- **Conflicts with current architecture:** Stale base 74ef5db and DIRTY merge state; some proposed pages/next-task recommendations no longer match current main.
-- **Associated live evidence / incidents:** No live operational evidence.
-- **Disposition:** **REWORK SEPARATELY — keep open until end-of-mission docs reconciliation decides port vs retirement.**
+- **Conflicts with current architecture:** Its base `74ef5db` is stale. Its `next-stint.md` still plans first Cline-ready compute and includes an old `$0.60/hour` discovery description; roadmap/architecture pages describe pre-V0 states. These contents were archived and marked historical, while current pages were written from verified `main`.
+- **Associated live evidence / incidents:** None. Replacement comment and closure evidence: [#93 issue comment](https://github.com/Marguelgtz/Stint/pull/93#issuecomment-5801853350); PR closed at `2026-09-23T19:51:25Z`.
+- **Disposition:** **CLOSED AFTER SELECTED REPLACEMENT LANDED — taxonomy ported by #133; no stale content was merged.**
 
 ### #110 — deep: 20260923-022052 STINT-PLAN-001
 
@@ -1043,3 +1045,19 @@ recorded separately at the end of this ledger.
 - **Conflicts with current architecture:** Stacked on #112 and must remain draft/open.
 - **Associated live evidence / incidents:** Session 20260923-022052; handoff SHA 7f7fd4344e9e470f19c1d2e95d75ec06357fbc00.
 - **Disposition:** **KEEP OPEN AS CURRENT EVIDENCE — explicit mission constraint.**
+
+## Final current open PR snapshot
+
+Checked on 2026-09-23 after PR #133 merged and #93 closed, before this final
+ledger-refresh PR was opened. GitHub reported exactly five open PRs. For every
+one, the attached legacy PR check rollup is green, but the pre-#132 workflow
+used the synthetic merge tree; **exact-head CI is not established**. Keep #85
+parked and leave #110–#113 open, unmerged, and untouched.
+
+| PR | State / merge state | Head branch @ exact SHA | Base branch @ observed SHA | Legacy PR check rollup / exact-head CI | Disposition |
+|---:|---|---|---|---|---|
+| #85 | OPEN, draft / CLEAN | `feat/deep-work-github-modes` @ `dd034898cc1c89138bfc18ddc47e7c3dfc6b34e5` | `fix/deep-work-onbox-publishing` @ `62f89ddcd0b98962f6b5f7c0d1360ac43e5ff3a6` | Five required checks green on legacy synthetic merge tree; exact-head not established; Spark Observability neutral | Parked high-authority maintenance experiment; redesign authority, pagination, and policy gates separately |
+| #110 | OPEN, draft / UNKNOWN | `stint/deep-20260923-022052-01-stint-plan-001` @ `a051c94a0f02b5d65a4e5a4fb2b7b6ee86e892f4` | `main` @ `bdd55c57b7fbdb7a2128c8ed14861cf3f527c04d` | Five required checks green on legacy synthetic merge tree; exact-head not established; Spark Observability neutral | Keep open as protected successful evidence |
+| #111 | OPEN, draft / CLEAN | `stint/deep-20260923-022052-02-phase-001` @ `f7349155788c9ec0b7a0086af9b2a8f66c704cce` | #110 branch @ `a051c94a0f02b5d65a4e5a4fb2b7b6ee86e892f4` | Five required checks green on legacy synthetic merge tree; exact-head not established; Spark Observability neutral | Keep open as protected successful evidence |
+| #112 | OPEN, draft / CLEAN | `stint/deep-20260923-022052-03-phase-002` @ `553c20c49f8c798cbd1074b03870fb63e642ee7a` | #111 branch @ `f7349155788c9ec0b7a0086af9b2a8f66c704cce` | Five required checks green on legacy synthetic merge tree; exact-head not established; Spark Observability neutral | Keep open as protected successful evidence |
+| #113 | OPEN, draft / CLEAN | `stint/deep-20260923-022052-handoff` @ `7f7fd4344e9e470f19c1d2e95d75ec06357fbc00` | #112 branch @ `553c20c49f8c798cbd1074b03870fb63e642ee7a` | Five required checks green on legacy synthetic merge tree; exact-head not established; Spark Observability neutral | Keep open as protected successful evidence |

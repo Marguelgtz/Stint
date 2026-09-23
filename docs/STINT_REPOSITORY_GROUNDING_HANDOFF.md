@@ -1,15 +1,15 @@
 # Stint repository grounding handoff
 
 **Status:** one authoritative `main` is verified through CI, source/runtime and
-historical PR semantics are grounded, and the runtime bundle is immutable and
-opt-in. The remaining external gate is fresh RTX 4090 acceptance under unchanged
-limits. The selected #93 documentation taxonomy port is in progress; merge it,
-then close #93 with its replacement recorded.
+historical PR semantics are grounded, the #93 taxonomy proposal was selectively
+ported and closed, and the runtime bundle is immutable and opt-in. The only
+remaining acceptance gate is fresh RTX 4090 runtime/Deep Work qualification
+under unchanged limits.
 
 ## Authoritative repository and verification
 
-- Current `main` before the docs closeout: `4ff7159c018c75372b31aca7627151e30fed669b`.
-- Exact landed-main push run `35909255732` passed all five required jobs.
+- Current `main` before this final ledger refresh: `3586022bd6b2cc4565a4d94e519398222d85a443`.
+- Exact landed-main push run `35911926414` passed all five required jobs.
 - PR #131 merged as `2b5f7342093c520175b608a1a64bbce0b9443f31`. Its PR run
   `35905726077` appeared green but physically tested synthetic merge tree
   `45644d2`, not its head tree. That gap is fixed by #132.
@@ -17,6 +17,14 @@ then close #93 with its replacement recorded.
   `a90b059c81d7a7bfb1fdbc17aff053e40c217429`, then reran Go/Python/shell
   coverage on synthetic merge tree `1a1b01ba429d8953df2f8519ad31b2ea7bb416cf`;
   all five required checks passed. Main push run `35909255732` passed.
+- PR #133 merged as `3586022…`. PR run `35911740797` checked exact head
+  `58e3a5832dbffdcf683665598e8c0d5335c34760` and synthetic merge tree
+  `2f349cf2c57e4cdc5e9809019de963558d0b3069`; all five required checks passed.
+  Main push run `35911926414` passed all five required jobs.
+- PR #93 closed unmerged at `2026-09-23T19:51:25Z` after #133 landed. Its
+  [replacement comment](https://github.com/Marguelgtz/Stint/pull/93#issuecomment-5801853350)
+  records the new docs index and paths. The final open PR set is #85 and
+  protected generated evidence #110–#113.
 - The original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa`
   and all its untracked user files and local binary remain untouched.
 
@@ -79,13 +87,15 @@ deployment opt-in until the complete gate passes. See the
 The successful current Deep Work session is `20260923-022052`, protected in
 open PRs #110–#113 and not merged. Older #81–#84 are successful 2026-09-08
 evidence; #86–#89 are failed 2026-09-09 attempts. All eight are closed
-unmerged with checkpoint/handoff SHAs and lessons in the ledger.
+unmerged with checkpoint/handoff SHAs and lessons in the ledger. Legacy CI
+rollups for #85 and #110–#113 were attached to PR heads but ran on synthetic
+merge trees; exact-head CI is not established, and those protected/parked
+branches were not modified to rerun them.
 
 ## Next work
 
-1. Merge the current docs taxonomy port, then comment on and close #93. Keep #85
-   parked and #110–#113 open, unmerged, and untouched.
-2. Recheck Vast under the same limits and run fresh-host RTX 4090 acceptance
+1. Recheck Vast under the same limits and run fresh-host RTX 4090 acceptance
    only when a qualifying offer is available.
-3. Select the startup default from comparable evidence; then reconcile Spark's
+2. Select the startup default from comparable evidence; then reconcile Spark's
    path-aware profile against the measured runtime/bootstrap design.
+3. Keep #85 parked and #110–#113 open, unmerged, and untouched.
