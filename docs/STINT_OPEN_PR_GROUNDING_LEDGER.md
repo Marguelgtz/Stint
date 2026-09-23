@@ -2,7 +2,7 @@
 
 **Historical inventory:** the complete detailed records below were captured on 2026-09-23 after #118 merged (38 open PRs). Their paths, symbols and exact check rollups describe that point-in-time snapshot. Base SHAs are observed PR base refs, not claims that stale branches include current `main`.
 
-**Current snapshot:** after #124 merged and before this final docs change, GitHub reports 11 open PRs. The live state is summarized in “Current open PR snapshot”; #124’s replacement semantics and exact checks are recorded below. Refresh the table after docs merge and the planned superseded-PR closures.
+**Current snapshot:** after #130 merged and before this refreshed docs PR #125, GitHub reports 12 open PRs. The current set is summarized in “Current open PR snapshot”; #124 and #126–#130 runtime semantics are recorded below. After these canonical records land, close only #48–#51 and #73, then update the final snapshot.
 
 **Purpose:** account for each open PR by semantics. Green checks alone do not make a stale/stacked PR safe to merge. Generated GPU-run artifacts remain outside product `main`.
 
@@ -17,6 +17,11 @@
 - #122 immutable bundle workflow: head `6064391838bfeaca7ce98071009451925fc330bc`; merge `cc2f259a0eb3599ec0dabdd9cafc0a5d7246e1e7`; exact landed-SHA push run `35868625724` passed.
 - #123 runner/build fixes: head `b663818948c4d9188fe91341b061f5b0ae0b6b45`; merge `b3c029553358950e2fc9369be370a470d869763c`; exact landed-SHA push run `35871556847` passed.
 - #124 deployment/provenance: head `04f0f6848b15c4b0b4fdce70561ff968c4037175`; merge `706c78ae60f996c957d5f9ae86dc10bb529b604e`; PR run `35882783534` and exact landed-SHA push run `35882955266` passed all five required jobs.
+- #126 initial archive pin: head `ddd5c0d4c9c73ad5b787f6e72b0a6d8f57c653a9`; merge `494c87a8d7e329c2e9c5e36983e74b2d01beb6c5`; PR run `35887526088` and landed-SHA run `35887717054` passed all five jobs. Its `16a1d238…` digest later failed to reproduce on retry and was replaced by #128's clean-tested `6725e60c…`.
+- #127 candidate/promotion split: head `56cede61cf62917e7546657adfd2f2afa83faff0`; merge `d3706c943540397e0e5be71a01f64b49768f1953`; PR-head run `35894208985` and landed-SHA run `35894364016` passed all five required jobs. Candidate build run `35894635094` succeeded with archive SHA `6725e60c8e3edb2982ad828898210868dd98ea1d4fe4d35f97bfa1e625414416` after clean-base smoke.
+- #128 exact candidate pin: head `0cc26d866102fe9df4c54fbed4b74e74182c7b9e`; merge `24a05e663489cd4063fcaa505fc26e3e3a9f732e`; PR run `35898993338` and landed-SHA run `35899139527` passed all five jobs.
+- #129 draft handoff / source-run API fix: head `faa0d15776cbcadaafddf633a9d654a3cff2a17a`; merge `58afa4af857cf12e5135d4e78c46b79c96313922`; PR run `35900956163` and landed-SHA run `35901071060` passed all five jobs. Initial publisher run `35899265948` failed before side effects because the workflow token could not read Actions run metadata.
+- #130 authenticated draft lookup and asset download: head `42b0440a5b82f2c80ffbaf3311d478125dcf68ed`; merge `23908fc719576376b32ce46fb0a34745c27cc9fb`; PR run `35901794930` and landed-SHA run `35901919089` passed all five jobs. Since candidate run `35894635094` predates #129's automatic draft staging, its original verified Actions artifact was locally reverified and used to create draft release `394934756` with the candidate run/SHA/archive hash in the notes. Publisher run `35902030339` validated that draft and published immutable release `ninfer-runtime-81b68a20-sm89` with the pinned `6725e60c…` archive.
 - #117 active-lane semantics: `/metrics` `requests_processing`, with `/slots` processing-lane fallback; retained/resident prompt tokens contribute to resident depth, not active count. NInfer cache ratio is prefix-cache hits / (hits + uncached prompt tokens), and NInfer prefill is marked uncached; llama.cpp cache ratio uses cached/total prompt tokens.
 - #117 event history intentionally carries no caller/client identity; `session_digest` is not a stable Stint identity.
 
@@ -26,10 +31,10 @@
 |---:|---|---|
 | #11 | PARTIALLY ABSORBED | Current-main implementations above; bounded context semantics are in current main: commits `76e2c8f` and `e1bf4e6` added configurable/shared interactive limits, while `b4f9617` added llama.cpp context validation. Retire only the Cline coupling. |
 | #36 | OBSOLETE | Hermes-on-box architecture in #107 (merge 2041498); no helper replacement is needed. |
-| #48 | CLOSE AFTER REPLACEMENT VERIFIED | #122–#124 replace the prototype with a pinned-source workflow, tested archive format and fail-closed opt-in deployment; exact-main build run `35883203990` must be recorded before closure. |
-| #49 | SUPERSEDED | #121 records best-effort phase events after lifecycle persistence; exact landed-main run `35867023267`. |
-| #50 | CLOSE AFTER REPLACEMENT VERIFIED | #122/#123 provide current immutable build/publisher workflow; #124 supplies opt-in deployment. Record exact-main build/release outcome before closure. |
-| #51 | SUPERSEDED | #124 implements opt-in fail-closed runtime deployment, provenance and source-build recovery; live GPU promotion remains gated. |
+| #48 | CLOSE AFTER REPLACEMENT VERIFIED | #122–#124 and #127–#130 replace the prototype with a selected-tuple build, clean-base smoke, exact pin, immutable release and fail-closed opt-in deployment. Candidate `35894635094` passed; archive SHA `6725e60c…` is published immutable. Close after this record lands; live startup promotion remains gated. |
+| #49 | CLOSE AFTER REPLACEMENT VERIFIED | #121 records durable best-effort phase events after lifecycle persistence (landed CI `35867023267`); startup measurement architecture is retained, while comparable source-build/release READY timing remains future work. Close after this record lands. |
+| #50 | CLOSE AFTER REPLACEMENT VERIFIED | #122/#123/#127–#130 provide the tuple-pinned candidate build, smoke, verified assets and immutable publication; #124 supplies opt-in deployment. Release `ninfer-runtime-81b68a20-sm89` is verified; close after this record lands. |
+| #51 | CLOSE AFTER REPLACEMENT VERIFIED | #124 implements fail-closed opt-in deployment and source-build recovery; #127–#130 validate and publish the exact pinned clean-base candidate. Keep live GPU qualification as the promotion gate; close after this record lands. |
 | #56 | SUPERSEDED | #116 merge ca2f24b for lifecycle safety; #117 merge 9a67234 for dashboard/telemetry; final phase view is unrelated #118 merge 6f4c81f. |
 | #57 | SUPERSEDED | #107 merge 2041498 (head 7adf523) is authoritative Hermes-on-box Deep Work; #118 merge 6f4c81f grounds Deep Dashboard evidence. |
 | #58 | SUPERSEDED | #117 merge 9a67234 (dashboard semantics and tests). |
@@ -41,7 +46,7 @@
 | #68 | SUPERSEDED | #117 merge 9a67234. |
 | #69 | PARTIALLY ABSORBED | #116 merge ca2f24b plus #117 merge 9a67234. |
 | #70 | PARTIALLY ABSORBED | #117 merge 9a67234 for event log and truthful no-identity rendering; client-tagging is deliberately retired. |
-| #73 | CLOSE AFTER REPLACEMENT VERIFIED | Unique reports were copied byte-for-byte to `docs/history/` with source PR/commit provenance; merge this docs change before closing. |
+| #73 | CLOSE AFTER REPLACEMENT VERIFIED | Unique reports were copied byte-for-byte to `docs/history/` with source PR/commit provenance and preserved by this docs PR; close only after this documentation merge. |
 | #74 | SUPERSEDED | Current-main commit 1945a5033a0db98a85aa66f75819716e7995488e (verified pin and transfer-size discovery). |
 | #76 | SUPERSEDED | #116 merge ca2f24b; exact push CI run 35851717414. |
 | #77 | SUPERSEDED | #107 merge 2041498 (head 7adf523). |
@@ -63,26 +68,27 @@
 | #112 | KEEP OPEN AS CURRENT EVIDENCE | No replacement; part of latest live evidence chain. |
 | #113 | KEEP OPEN AS CURRENT EVIDENCE | No replacement; this is the latest live evidence chain. |
 
-## Current open PR snapshot (before final docs merge)
+## Current open PR snapshot (after #130 merged, before docs closeout)
 
-These are the 11 live open PRs after #124 merged. Their original detailed
+This snapshot records the 12 live open PRs after #130 merged while docs PR #125 remains open. Their original detailed
 semantic records remain below; this table gives the current branch graph and
 check disposition. “Base” records the PR base branch and observed SHA captured
 in the full record where available. #110–#113 are protected evidence.
 
 | PR | State | Head branch @ exact SHA | Base branch @ observed SHA | Exact-head checks | Current disposition |
 |---:|---|---|---|---|---|
-| #48 | OPEN, draft | `feat/ninfer-runtime-bundle` @ `bb3eea21fcd6204d00737fdc8fba7398b6e46b74` | `fix/stale-vast-offer-retry` @ `6df14566c89b3eac143b7550563116fbede74c3c` | Stint checks green; custom bundle build/smoke failed | Close after #122–#124 and exact-main build evidence are recorded |
-| #49 | OPEN, draft | `feat/startup-timing-log` @ `441a307212e053d51e4c1c3913567e5a37d7611a` | #48 branch @ `bb3eea21fcd6204d00737fdc8fba7398b6e46b74` | Five required Stint checks green | Close as replaced by #121 |
-| #50 | OPEN, draft | `ci/ninfer-bundle-release` @ `e5e4ea798536342501e902abb6454b48e4feb2f0` | #49 branch @ `441a307212e053d51e4c1c3913567e5a37d7611a` | Five required Stint checks green | Close after modern build/publisher outcome is recorded |
-| #51 | OPEN, draft | `feat/ninfer-base-image-bundle` @ `946097fa7289cc2b4ed7764769374ec1192b8f73` | #50 branch @ `e5e4ea798536342501e902abb6454b48e4feb2f0` | Five required Stint checks green | Close as replaced by #124; keep release deployment opt-in |
-| #73 | OPEN | `docs/cp1-dryrun-records` @ `e78ceef308d85c9cac7c71e7d172bed7c66c4182` | `feat/deep-work-hermes-worker` @ `b48cc3b682444af8328da3b22a9ae9ef4a7aa020` | Five required checks green | Close after verbatim historical docs merge |
+| #48 | OPEN, draft | `feat/ninfer-runtime-bundle` @ `bb3eea21fcd6204d00737fdc8fba7398b6e46b74` | `fix/stale-vast-offer-retry` @ `6df14566c89b3eac143b7550563116fbede74c3c` | Stint checks green; custom bundle build/smoke failed | Close after this record lands; replaced by #122–#130 |
+| #49 | OPEN, draft | `feat/startup-timing-log` @ `441a307212e053d51e4c1c3913567e5a37d7611a` | #48 branch @ `bb3eea21fcd6204d00737fdc8fba7398b6e46b74` | Five required Stint checks green | Close after this record lands; event semantics live in #121 |
+| #50 | OPEN, draft | `ci/ninfer-bundle-release` @ `e5e4ea798536342501e902abb6454b48e4feb2f0` | #49 branch @ `441a307212e053d51e4c1c3913567e5a37d7611a` | Five required Stint checks green | Close after this record lands; replaced by #122–#130 |
+| #51 | OPEN, draft | `feat/ninfer-base-image-bundle` @ `946097fa7289cc2b4ed7764769374ec1192b8f73` | #50 branch @ `e5e4ea798536342501e902abb6454b48e4feb2f0` | Five required Stint checks green | Close after this record lands; runtime remains opt-in |
+| #73 | OPEN | `docs/cp1-dryrun-records` @ `e78ceef308d85c9cac7c71e7d172bed7c66c4182` | `feat/deep-work-hermes-worker` @ `b48cc3b682444af8328da3b22a9ae9ef4a7aa020` | Five required checks green | Close after the verbatim reports in this docs PR merge |
 | #85 | OPEN, draft | `feat/deep-work-github-modes` @ `dd034898cc1c89138bfc18ddc47e7c3dfc6b34e5` | `fix/deep-work-onbox-publishing` @ `62f89ddcd0b98962f6b5f7c0d1360ac43e5ff3a6` | Five required Stint checks green | Keep parked; separately redesign authority/pagination/policy gates |
 | #93 | OPEN | `docs/reorganize-documentation` @ `2fd8988ab195a05f20330b2f0d5475f4a1457f97` | `main` @ `74ef5db14e0fe4b0e8e9865baeb5a9321c5eb5fb` | Historical required checks passed where configured; base is stale | Keep open for rework against current docs paths |
 | #110 | OPEN, draft | `stint/deep-20260923-022052-01-stint-plan-001` @ `a051c94a0f02b5d65a4e5a4fb2b7b6ee86e892f4` | `main` @ `bdd55c57b7fbdb7a2128c8ed14861cf3f527c04d` | Five required checks green | Keep open and unmerged |
 | #111 | OPEN, draft | `stint/deep-20260923-022052-02-phase-001` @ `f7349155788c9ec0b7a0086af9b2a8f66c704cce` | #110 branch @ `a051c94a0f02b5d65a4e5a4fb2b7b6ee86e892f4` | Five required checks green | Keep open and unmerged |
 | #112 | OPEN, draft | `stint/deep-20260923-022052-03-phase-002` @ `553c20c49f8c798cbd1074b03870fb63e642ee7a` | #111 branch @ `f7349155788c9ec0b7a0086af9b2a8f66c704cce` | Five required checks green | Keep open and unmerged |
 | #113 | OPEN, draft | `stint/deep-20260923-022052-handoff` @ `7f7fd4344e9e470f19c1d2e95d75ec06357fbc00` | #112 branch @ `553c20c49f8c798cbd1074b03870fb63e642ee7a` | Five required checks green | Keep open and unmerged |
+| #125 | OPEN | `docs/stint-grounding-final-20260923` @ refreshed head pending | `main` @ `23908fc719576376b32ce46fb0a34745c27cc9fb` | Refreshed exact-head CI pending | Land after all five checks pass; then close #48–#51 and #73 |
 
 ### #124 — feat: add opt-in immutable NInfer runtime deployment
 
@@ -96,12 +102,101 @@ in the full record where available. #110–#113 are protected evidence.
 - **Important symbols:** `normalizeNInferDeployment`, `allowNInferLlamaFallback`, `bootstrapNInfer`, `--ninfer-deployment`, `applyResumeNInferDeploymentOverride`, `StartupEvent`, saved deployment provenance and startup phase events.
 - **Tests:** Runtime/deployment selection, release-bundle failure/recovery and provenance cases; startup event persistence; resumable start and snapshot/status telemetry cases. Local full Go tests/race/vet/build passed; Python bundle tests and clean-base extraction passed.
 - **Unique semantics introduced:** `source-build` stays default; `release-bundle` is explicit and fail-closed, cannot fall back to llama on acquisition/validation error, requires a qualifying RTX 4090 candidate, stores runtime provenance, records startup boundaries after durable lifecycle writes, overlaps model prefetch with preparation, and permits explicit source-build resume recovery.
-- **Current-main status:** Landed. The runtime release has not yet passed fresh RTX 4090 model-load, two-lane, native-context and Deep Work acceptance; keep opt-in mode unpromoted until those gates pass.
-- **Replacement / where it lives:** Replaces #49 timing prototype with #121 and #48/#50/#51 stale bundle stack with #121–#124; modern bundle workflow/build repair is in #122/#123, deployment in #124. Expected archive SHA-256: `f58ee66d05e5d1932b030a05cfd9a7e1e8570579a47b78476cf845c3abcde6e0`.
-- **Dependencies:** Built on current main after #123; exact bundle workflow run `35883203990` is on merge SHA `706c78ae...` and must finish before its same-SHA publisher.
+- **Current-main status:** Landed. Immutable release `ninfer-runtime-81b68a20-sm89` is published and matches the main SHA pin. Fresh RTX 4090 model-load, two-lane, native-context, correctness, Deep Work and teardown acceptance remains incomplete; keep opt-in mode unpromoted.
+- **Replacement / where it lives:** Replaces #49 timing prototype with #121 and #48/#50/#51 stale bundle stack with #121–#130. The initial local pin `f58ee66d…` and first main-build pin `16a1d238…` were disproved by later exact builds. Candidate `35894635094` passed clean-base smoke; #128 pinned SHA `6725e60c…`; #129–#130 fixed draft handoff/promotion; publisher run `35902030339` verified the published immutable release.
+- **Dependencies:** Runs `35883203990` and `35887934779` completed 332/332 source steps and help checks but failed before clean-base smoke/upload because archive digests differed. Candidate `35894635094` on `d3706c9` passed build, clean-base extraction/CLI/`ldd` smoke and upload. Pin merge `24a05e6` and publisher/workflow merges `58afa4a` and `23908fc` passed exact-head and landed-main CI; publisher run `35902030339` passed and reports `immutable: true`.
 - **Conflicts with current architecture:** None identified; source build remains the recovery route and release deployment remains opt-in pending live acceptance.
 - **Associated live evidence:** No new paid GPU acceptance was run for #124. Latest successful Deep Work evidence remains #110–#113, session `20260923-022052`.
 - **Disposition:** **LANDED — retain the live acceptance gate; do not claim release-bundle production promotion yet.**
+
+### #125 — docs: finalize Stint grounding ledger and history
+
+- **PR / exact head:** [#125](https://github.com/Marguelgtz/Stint/pull/125), `docs/stint-grounding-final-20260923` (refreshed head recorded after push).
+- **Base:** `main` at observed current SHA `23908fc719576376b32ce46fb0a34745c27cc9fb` before PR merge.
+- **State / mergeability:** OPEN; refreshed exact-head checks pending.
+- **Exact-head CI/checks:** The original head's run `35885441146` passed the five required jobs; the refreshed head must pass exact-head CI before merge.
+- **Original intent:** Finalize one current grounding plan, one semantic PR ledger and one concise handoff, preserving #73’s unique CP1 evidence before its PR closes.
+- **Changed paths (8):** `README.md`, `docs/INSTRUCTIONS.md`, `docs/STINT_REPOSITORY_GROUNDING_PLAN.md`, `docs/STINT_OPEN_PR_GROUNDING_LEDGER.md`, `docs/STINT_REPOSITORY_GROUNDING_HANDOFF.md`, `docs/history/CP1_DRYRUN1_INCIDENT.md`, `docs/history/CP1_DRYRUN_FINDINGS.md`, `docs/history/README.md`.
+- **Important symbols:** Documentation only; canonical execution state, semantic dispositions, release and live-acceptance gate, history provenance.
+- **Tests:** `git diff --check` passed; copied #73 reports compared byte-for-byte to source blobs and SHA-256s are recorded. Go/Python/runtime results are referenced from the landed runtime work.
+- **Unique semantics introduced:** Records #116–#130 current-main convergence, runtime tuple rationale, candidate hash and immutable release evidence, publisher API fixes, unqualified opt-in release policy, current open-PR state, and #73 incident/findings history. Corrects stale repository overview/operator instructions that said Deep Work and lifecycle safety were still only in PRs.
+- **Current-main status:** Pending final documentation refresh and merge. Does not change runtime code or enable release-bundle default.
+- **Replacement / where it lives:** Replaces the initial #119 grounding snapshot with a current post-#124 account; #73 reports are preserved under `docs/history/`.
+- **Dependencies:** Candidate `35894635094` on `d3706c9` succeeded with SHA `6725e60c…`; #128 pin, #129 staged draft/API repair, and #130 draft-asset lookup fix are merged. Publisher `35902030339` verified and published immutable release `ninfer-runtime-81b68a20-sm89`. Keep live RTX 4090 acceptance explicitly incomplete.
+- **Conflicts with current architecture:** None identified. This PR explicitly leaves #110–#113 open/unmerged and keeps #85/#93 for experiment/docs rework.
+- **Associated live evidence / incidents:** PRs #110–#113 remain protected; #73 report provenance is source PR commit `e78ceef308d85c9cac7c71e7d172bed7c66c4182`.
+- **Disposition:** **LAND after refreshed exact-head CI passes; then close #48–#51 and #73, preserving #110–#113.**
+
+### #126 — fix: pin exact NInfer runtime bundle hash
+
+- **PR / exact head:** [#126](https://github.com/Marguelgtz/Stint/pull/126), `fix/ninfer-bundle-hash-pin-20260923` at `ddd5c0d4c9c73ad5b787f6e72b0a6d8f57c653a9`.
+- **Base:** `main` at observed base SHA `706c78ae60f996c957d5f9ae86dc10bb529b604e`.
+- **State / mergeability:** MERGED; ready for review at merge.
+- **Exact-head CI/checks:** PR run `35887526088`; all five required jobs passed; Spark Observability was neutral.
+- **Exact landed-main CI:** push run `35887717054`; all five required jobs passed on merge SHA `494c87a8d7e329c2e9c5e36983e74b2d01beb6c5`.
+- **Original intent:** Correct Stint's pinned archive SHA after exact-main CI produced a different clean-build archive than the earlier local candidate.
+- **Changed paths (3):** `cmd/stint/runtime.go`, `cmd/stint/runtime_test.go`, `internal/session/startup_events_test.go`.
+- **Important symbols:** `ninferRuntimeBundleSHA256` and its pin assertions/serialization fixture.
+- **Tests:** Full `go test -count=1 ./...`, race tests, `go vet ./...`, binary build and `git diff --check` passed locally.
+- **Unique semantics introduced:** Changed the Stint archive pin from local candidate `f58ee66d05e5d1932b030a05cfd9a7e1e8570579a47b78476cf845c3abcde6e0` to the first exact-main candidate SHA `16a1d238defe0d14eac6a354a541023074da741d9ee1aee0c736bb3ed74ed1c8`. Retry `35887934779` emitted a different digest, `ce0fa3aea7b2e7f6b575e3176dfa8fe0d206987bdd5ccb9446adbff9423ec2a5`; neither archive passed clean-base smoke or was uploaded.
+- **Current-main status:** Its `16a1d238…` pin was provisional and later replaced by #128 with SHA `6725e60c…`, the archive from the successful uploaded, clean-base-smoke-tested candidate.
+- **Replacement / where it lives:** #127 moved hard-pin enforcement to the publisher; #128 binds `ninferRuntimeBundleSHA256` to candidate `35894635094`. Publisher `35902030339` verified the actual release asset against that current-main constant.
+- **Dependencies:** Candidate run `35894635094` on `d3706c9` passed clean-base smoke/upload. #128, #129 and #130 merged with green exact-head and landed-main CI; immutable release publication passed.
+- **Conflicts with current architecture:** None identified; source-build remains default and bundle deployment remains opt-in.
+- **Associated evidence:** Run `35883203990` compiled 332/332 steps and passed binary help checks, then failed its hash gate before clean-base extraction/upload; no release was created.
+- **Disposition:** **LANDED as `494c87a8`; its digest was disproved by run `35887934779` and superseded by #128's verified `6725e60c…` pin.**
+
+### #127 — fix: separate NInfer candidate build and promotion
+
+- **PR / exact head:** [#127](https://github.com/Marguelgtz/Stint/pull/127), `fix/ninfer-candidate-build-flow-20260923` at `56cede61cf62917e7546657adfd2f2afa83faff0`.
+- **Base:** `main` at `494c87a8d7e329c2e9c5e36983e74b2d01beb6c5`.
+- **State / mergeability:** MERGED as `d3706c943540397e0e5be71a01f64b49768f1953`.
+- **Exact-head CI/checks:** PR run `35894208985`; build, unit, race, vet and Spark profile checks all passed; Spark Observability was skipped/neutral.
+- **Exact landed-main CI:** push run `35894364016`; all five required jobs passed on the merge SHA.
+- **Original intent:** Let a candidate finish clean-base smoke and upload while keeping release publication bound to a hard-coded Stint archive SHA.
+- **Changed paths (6):** `.github/workflows/ninfer-runtime-bundle.yml`, `.github/workflows/publish-ninfer-runtime-release.yml`, `README.md`, `scripts/build_ninfer_runtime_bundle.sh`, `scripts/ninfer_runtime_bundle.py`, `scripts/test_ninfer_runtime_bundle.py`.
+- **Important symbols:** `verify(..., expected_archive_sha256=...)`; optional CLI `--expected-sha256`; candidate archive summary and publisher ancestry/pin gate.
+- **Tests:** Five bundle tests; Python byte-compilation; `bash -n`; PyYAML and all embedded workflow `bash -n` blocks; `git diff --check`; exact-head and exact-landed CI all green.
+- **Unique semantics introduced:** Candidate generation and release promotion are separate. The candidate workflow completes archive safety, extraction, CLI and dependency smoke, then uploads the exact output. The publisher requires a successful `main` candidate run that is an ancestor of current main, allows only runtime pin/test-fixture commits after it, verifies the actual archive against Stint's merged SHA, and only then creates the immutable release. Runtime bundle remains opt-in.
+- **Current-main status:** Landed. Candidate run `35894635094` succeeded on merge SHA `d3706c9`, passed clean-base smoke, and its artifact was pinned by #128 and published immutably after #129–#130.
+- **Replacement / where it lives:** Replaces #126's assumption that a clean NInfer rebuild will reproduce a previously observed archive digest. Publisher validates the exact release asset against the current-main SHA pin and its originating build-run metadata.
+- **Dependencies:** Resolved by candidate run `35894635094`, pin PR #128, workflow PRs #129–#130, and successful publisher run `35902030339`.
+- **Conflicts with current architecture:** None identified; `source-build` remains default and release deployment stays explicit/fail-closed.
+- **Associated live evidence:** No paid RTX 4090 run; #110–#113 remain the latest successful Deep Work evidence and stay open/unmerged.
+- **Disposition:** **LANDED — candidate build and immutable publication verified; keep release-bundle startup opt-in until fresh RTX 4090 acceptance passes.**
+
+### #128 — fix: pin clean-tested NInfer runtime bundle
+
+- **PR / exact head:** [#128](https://github.com/Marguelgtz/Stint/pull/128), `fix/ninfer-runtime-bundle-sha-20260923` at `0cc26d866102fe9df4c54fbed4b74e74182c7b9e`; merged as `24a05e663489cd4063fcaa505fc26e3e3a9f732e`.
+- **Base:** `main` at observed base `d3706c943540397e0e5be71a01f64b49768f1953`.
+- **State / CI:** MERGED. PR run `35898993338` and landed-main run `35899139527` passed all five required jobs.
+- **Original intent:** Bind opt-in runtime acquisition to the actual archive emitted by the successful clean-base-smoke candidate workflow.
+- **Changed paths:** `cmd/stint/runtime.go`, `cmd/stint/runtime_test.go`, `internal/session/startup_events_test.go`.
+- **Important symbols/tests:** `ninferRuntimeBundleSHA256`; release provenance and startup-event fixture assertions.
+- **Unique semantics introduced:** Replaced provisional `16a1d238…` with archive SHA-256 `6725e60c8e3edb2982ad828898210868dd98ea1d4fe4d35f97bfa1e625414416`; the candidate archive was 939,381,613 bytes.
+- **Current-main / evidence:** The pinned bytes were built from NInfer `81b68a20…`, smoke-tested on the recorded clean base by run `35894635094`, and published as immutable release `ninfer-runtime-81b68a20-sm89` by run `35902030339`.
+- **Disposition:** **LANDED — exact release archive verified against the current-main pin; runtime remains opt-in pending live GPU acceptance.**
+
+### #129 — fix: stage NInfer release candidates before promotion
+
+- **PR / exact head:** [#129](https://github.com/Marguelgtz/Stint/pull/129), `fix/ninfer-release-promotion-workflow-20260923` at `faa0d15776cbcadaafddf633a9d654a3cff2a17a`; merged as `58afa4af857cf12e5135d4e78c46b79c96313922`.
+- **Base:** `main` at observed `24a05e663489cd4063fcaa505fc26e3e3a9f732e`.
+- **State / CI:** MERGED. PR run `35900956163` and landed-main run `35901071060` passed all five required jobs.
+- **Original intent:** Repair publication after run `35899265948` stopped at Actions-run metadata with `Resource not accessible by integration` and before creating a release.
+- **Changed paths:** `.github/workflows/ninfer-runtime-bundle.yml`, `.github/workflows/publish-ninfer-runtime-release.yml`.
+- **Unique semantics introduced:** Successful candidate builds stage all three verified files as a draft with run/source/digest notes. Publisher validates public source-run metadata without Actions API permission, requires explicit immutable-setting confirmation, and verifies immutable publication as a postcondition. Source-build remains default.
+- **Disposition:** **LANDED — draft handoff and least-privilege publisher; draft lookup/download was subsequently corrected by #130.**
+
+### #130 — fix: resolve NInfer draft releases by asset id
+
+- **PR / exact head:** [#130](https://github.com/Marguelgtz/Stint/pull/130), `fix/ninfer-release-promotion-workflow-20260923` at `42b0440a5b82f2c80ffbaf3311d478125dcf68ed`; merged as `23908fc719576376b32ce46fb0a34745c27cc9fb`.
+- **Base:** `main` at observed `58afa4af857cf12e5135d4e78c46b79c96313922`.
+- **State / CI:** MERGED. PR run `35901794930` and landed-main run `35901919089` passed all five required jobs.
+- **Original intent:** Fix the draft handoff after GitHub's release-by-tag endpoint returned 404 for draft tag `ninfer-runtime-81b68a20-sm89`.
+- **Changed paths:** `.github/workflows/ninfer-runtime-bundle.yml`, `.github/workflows/publish-ninfer-runtime-release.yml`.
+- **Unique semantics introduced:** The build and publisher find drafts through the authenticated release list; the publisher fetches each exact asset by authenticated release-asset ID, validates the bytes, then publishes and verifies by immutable release ID.
+- **Verification:** Publisher run `35902030339` passed source-run/lineage, draft provenance, three-asset, archive SHA, sidecar, manifest tuple and immutable postcondition checks. The published archive digest is `sha256:6725e60c8e3edb2982ad828898210868dd98ea1d4fe4d35f97bfa1e625414416`.
+- **Disposition:** **LANDED — release `ninfer-runtime-81b68a20-sm89` is immutable and matches the Stint pin.**
 
 ## Complete open-PR records
 
@@ -164,12 +259,12 @@ in the full record where available. #110–#113 are protected evidence.
 - **Important changed symbols:** Bundle.Dockerfile build stages; ninfer-bundle workflow clean-base and compressed-artifact smoke.
 - **Tests added or modified:** GitHub Actions clean-base and compressed-artifact smoke in .github/workflows/ninfer-bundle.yml; no Go unit tests.
 - **Unique semantics introduced:** Establishes bundle build/export and pristine-base validation as an alternative to compiling NInfer on each rental. The historical run produced a large bundle and checksum but failed while checking the exported artifact from the wrong working directory.
-- **Current-main status:** #122 added the current tuple/build workflow, #123 repaired pinned-source build packaging, and #124 added fail-closed opt-in deployment. Release qualification remains gated on exact-main bundle build and live RTX 4090 acceptance.
-- **Replacement / where it lives:** #122 merge `cc2f259`, #123 merge `b3c0295`, #124 merge `706c78a`; clean-base fixture is in the current runtime bundle workflow. Expected bundle SHA-256 is `f58ee66d05e5d1932b030a05cfd9a7e1e8570579a47b78476cf845c3abcde6e0`.
+- **Current-main status:** #122–#130 replace this prototype with a tuple-pinned build, clean-base smoke, immutable release and explicit opt-in deployment. Live RTX 4090 qualification remains incomplete.
+- **Replacement / where it lives:** #122 `cc2f259`, #123 `b3c0295`, #124 `706c78a`, #127 `d3706c9`, #128 `24a05e6`, #129 `58afa4a`, and #130 `23908fc`; release tag `ninfer-runtime-81b68a20-sm89` carries the clean-tested `6725e60c…` artifact.
 - **Dependencies:** Stacks on branch `fix/stale-vast-offer-retry` at observed base SHA `6df14566c89b3eac143b7550563116fbede74c3c`; that branch is not one of this snapshot's open PR heads, so its merged/closed ancestry must be checked before merge.
 - **Conflicts with current architecture:** Old bundle targets runtime 981b685e and historical CUDA/base assumptions; exact NInfer/artifact tuple audit must precede any productionization.
 - **Associated live evidence / incidents:** Historical CI: build/build-smoke succeeded; final artifact checksum verification failed due wrong working directory (per PR record).
-- **Disposition:** **CLOSE AFTER REPLACEMENT VERIFIED — modern workflow and opt-in deployment have landed; finish exact-main build/release outcome first.**
+- **Disposition:** **CLOSE AFTER REPLACEMENT VERIFIED — modern exact-pin release is immutable; close after this canonical record lands. Keep startup opt-in pending live GPU acceptance.**
 
 ### #49 — Record startup lifecycle timing events
 
@@ -208,12 +303,12 @@ in the full record where available. #110–#113 are protected evidence.
 - **Important changed symbols:** ninfer-bundle-release workflow.
 - **Tests added or modified:** Workflow/release validation only; no application unit tests.
 - **Unique semantics introduced:** Adds release publication for versioned runtime bundles without changing paid startup.
-- **Current-main status:** #122/#123 provide tuple-pinned bundle construction, clean-base smoke and immutable publisher workflow; #124 consumes it as an opt-in deployment. Exact-main build/publish outcome remains in progress.
-- **Replacement / where it lives:** #122 merge `cc2f259`, #123 merge `b3c0295`, #124 merge `706c78a`; intended tag `ninfer-runtime-81b68a20-sm89`.
+- **Current-main status:** #122/#123/#127–#130 provide tuple-pinned bundle construction, clean-base smoke, asset handoff and immutable publication; #124 consumes it as opt-in deployment. Exact release asset verifies against current `main`.
+- **Replacement / where it lives:** #122 `cc2f259`, #123 `b3c0295`, #124 `706c78a`, #127 `d3706c9`, #128 `24a05e6`, #129 `58afa4a`, #130 `23908fc`; verified tag `ninfer-runtime-81b68a20-sm89`.
 - **Dependencies:** Stacks directly on open PR #49 branch `feat/startup-timing-log` at observed base SHA `441a307212e053d51e4c1c3913567e5a37d7611a`. Its upstream PR must be semantically replaced before treating this branch as independent.
 - **Conflicts with current architecture:** Old workflow/tag schema depends on #48/#51 and previous runtime tuple; do not run as production publisher unchanged.
-- **Associated live evidence / incidents:** No current release asset validated against a pristine production base.
-- **Disposition:** **CLOSE AFTER REPLACEMENT VERIFIED — modern workflow landed; record exact-main build and immutable release outcome first.**
+- **Associated live evidence / incidents:** Candidate `35894635094` passed clean pinned-base smoke; publisher `35902030339` verified and published all three assets with archive SHA `6725e60c…`.
+- **Disposition:** **CLOSE AFTER REPLACEMENT VERIFIED — exact-main build and immutable release are recorded; close after this canonical record lands.**
 
 ### #51 — Start NInfer from Vast base image plus runtime bundle
 
@@ -231,11 +326,11 @@ in the full record where available. #110–#113 are protected evidence.
 - **Tests added or modified:** TestNInferDefaultRemainsPinnedPrebuiltImage; TestNInferBundleDeploymentUsesPlainVastBase; TestNInferUnknownDeploymentFallsBackToControlImage; TestNInferBundleOnStartWritesLazyRuntimeBridge; TestNInferBootstrapOverlapsModelPrefetchWithBundleResolution.
 - **Unique semantics introduced:** Demonstrates runtime acquisition/verification can run after SSH while model transfer overlaps; production default remains control path.
 - **Current-main status:** #124 has an explicit fail-closed release-bundle mode, saved provenance and source-build resume recovery. Source-build remains the default; the bundle path has not cleared fresh RTX 4090/Deep Work acceptance.
-- **Replacement / where it lives:** #124 merge `706c78a`; the expected pinned bundle SHA is `f58ee66d05e5d1932b030a05cfd9a7e1e8570579a47b78476cf845c3abcde6e0`.
+- **Replacement / where it lives:** #124 merge `706c78a`; #128 replaced provisional `16a1d238…` with tested archive SHA `6725e60c…`, published in `ninfer-runtime-81b68a20-sm89`.
 - **Dependencies:** Stacks directly on open PR #50 branch `ci/ninfer-bundle-release` at observed base SHA `e5e4ea798536342501e902abb6454b48e4feb2f0`. Its upstream PR must be semantically replaced before treating this branch as independent.
 - **Conflicts with current architecture:** This opt-in path relies on #48/#50 old release format and bundle SHA scheme; runtime tuple not freshly re-evaluated.
 - **Associated live evidence / incidents:** No current RTX 4090 bundle-vs-source READY comparison.
-- **Disposition:** **CLOSE AFTER REPLACEMENT VERIFIED — #124 supersedes this implementation; retain opt-in/live-acceptance gate.**
+- **Disposition:** **CLOSE AFTER REPLACEMENT VERIFIED — #124 and #127–#130 replace this implementation; close after this canonical record lands and retain the live-acceptance gate.**
 
 ### #56 — Show resident NInfer context by lane in dashboard
 
