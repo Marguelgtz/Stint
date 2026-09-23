@@ -183,9 +183,9 @@ func printSessionSnapshotHuman(snapshot sessionSnapshot, refreshed bool) {
 	} else {
 		agents := snapshot.Inference.Agents
 		if agents == 0 {
-			fmt.Println("Agents             0 active (engine idle)")
+			fmt.Println("Requests processing 0 (engine idle)")
 		} else {
-			fmt.Printf("Agents             %d active\n", agents)
+			fmt.Printf("Requests processing %d active\n", agents)
 		}
 		fmt.Printf("Live prompt depth  %d tokens", snapshot.Inference.ResidentDepth)
 		if snapshot.Inference.Deferred > 0 {
@@ -196,7 +196,11 @@ func printSessionSnapshotHuman(snapshot sessionSnapshot, refreshed bool) {
 			fmt.Printf("Decode             %.1f tok/s\n", *snapshot.Inference.DecodeTokensSec)
 		}
 		if snapshot.Inference.PrefillTokensSec != nil {
-			fmt.Printf("Prefill            %.1f tok/s\n", *snapshot.Inference.PrefillTokensSec)
+			if snapshot.Inference.PrefillTokensKind == "uncached" {
+				fmt.Printf("Prefill (uncached)  %.1f tok/s\n", *snapshot.Inference.PrefillTokensSec)
+			} else {
+				fmt.Printf("Prefill            %.1f tok/s\n", *snapshot.Inference.PrefillTokensSec)
+			}
 		}
 		if snapshot.Inference.CacheReuseRatio != nil {
 			fmt.Printf("Cache reuse        %.0f%% of prompt\n", *snapshot.Inference.CacheReuseRatio*100)
@@ -235,6 +239,9 @@ func printSessionSnapshotHuman(snapshot sessionSnapshot, refreshed bool) {
 		fmt.Println("Next action        use Cline; stint down when finished")
 	default:
 		fmt.Println("Next action        wait for stint start")
+	}
+	if snapshot.Freshness.Warning != "" {
+		fmt.Printf("State freshness    warning · %s; use stint doctor and verify Vast before acting\n", snapshot.Freshness.Warning)
 	}
 }
 
@@ -291,6 +298,11 @@ func snapshotJSON(snapshot sessionSnapshot) map[string]any {
 			"expired":                  snapshot.Time.Expired,
 		},
 		"cost": snapshot.Cost,
+		"staleness": map[string]any{
+			"stateAgeSeconds": float64(snapshot.Freshness.Age) / float64(time.Second),
+			"deadlineStale":   snapshot.Freshness.DeadlineStale,
+			"warning":         snapshot.Freshness.Warning,
+		},
 		"health": map[string]any{
 			"tunnel":   snapshot.Health.Tunnel,
 			"watchdog": snapshot.Health.Watchdog,
@@ -315,6 +327,7 @@ func snapshotJSON(snapshot sessionSnapshot) map[string]any {
 			"residentDepth":     snapshot.Inference.ResidentDepth,
 			"decodeTokensSec":   snapshot.Inference.DecodeTokensSec,
 			"prefillTokensSec":  snapshot.Inference.PrefillTokensSec,
+			"prefillTokensKind": snapshot.Inference.PrefillTokensKind,
 			"cacheReuseRatio":   snapshot.Inference.CacheReuseRatio,
 			"specAcceptRatio":   snapshot.Inference.SpecAcceptRatio,
 			"lanes":             snapshot.Inference.Lanes,

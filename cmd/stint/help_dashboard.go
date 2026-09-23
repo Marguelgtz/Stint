@@ -16,7 +16,7 @@ var cmdDash = cliCommand{
 		"Interactive mode requires a TTY; when stdout/stdin are piped, dash falls back to a static refreshed status snapshot.",
 		"Keys: 1 Home, 2 Performance, 3 Config, 4 Logs, arrows navigate, r refresh (resume when RECOVERABLE), b benchmark, + extend, - shorten, d down, q exit.",
 		"RECOVERABLE is authoritative persisted session state; DEGRADED is an observational dashboard state derived from refreshed endpoint/runtime health and never mutates session.json.",
-		"Home shows a LIVE strip and Performance shows a LIVE TRAFFIC section: observed inference activity (agents, resident prompt depth, rates, lanes) polled from /metrics and /slots — observation, never benchmarked; the benchmarked sample still comes only from `b`.",
+		"Home shows a LIVE strip and Performance shows a LIVE TRAFFIC section: observed processing requests, resident prompt depth, rates and lanes polled from /metrics and /slots — observation, never benchmarked; the benchmarked sample still comes only from `b`.",
 		"The dashboard never benchmarks automatically and never owns lifecycle authority.",
 		"q and Ctrl+C close only the dashboard; paid compute remains active until its deadline or an explicit down action.",
 	},

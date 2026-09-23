@@ -176,7 +176,7 @@ func TestRenderHomeShowsLiveInferenceStrip(t *testing.T) {
 		Decode: "63.2 tok/s", Queue: "1 queued", CacheReuse: "87%",
 	}
 	out := stripANSI(Render(model))
-	for _, want := range []string{"LIVE", "2 agents active", "depth 45000 tok", "decode 63.2 tok/s", "1 queued", "cache 87%"} {
+	for _, want := range []string{"LIVE", "2 requests processing", "depth 45000 tok", "decode 63.2 tok/s", "1 queued", "cache 87%"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("home view missing %q:\n%s", want, out)
 		}
@@ -204,15 +204,16 @@ func TestRenderPerformanceShowsLiveTraffic(t *testing.T) {
 	model.View = Performance
 	model.Inference = Inference{
 		Refreshed: true, Available: true,
-		Agents: 1, Depth: 34210,
+		Agents: 1, Depth: 34210, ContextCapacity: 131072,
 		Decode: "63.2 tok/s", Prefill: "1204.5 tok/s",
 		CacheReuse: "87%", Speculative: "71% accepted",
-		Lanes: "0: 34210 tok",
+		Lanes:    "0: 34210 tok",
+		LaneRows: []Lane{{ID: 0, Depth: 34210, Status: "processing", Cache: "87%", Decode: "63.2 tok/s", DecodeScope: "engine"}},
 	}
 	out := stripANSI(Render(model))
 	for _, want := range []string{
 		"PERFORMANCE", "LIVE TRAFFIC",
-		"1 active", "34210 tokens", "63.2 tok/s", "1204.5 tok/s",
+		"Requests processing 1 active", "34210 tokens", "63.2 tok/s", "1204.5 tok/s", "CONTEXT", "lane 0", "caller identity is unavailable",
 		"87%", "71% accepted", "0: 34210 tok",
 		"Live traffic is observed, never benchmarked",
 	} {

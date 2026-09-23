@@ -31,7 +31,8 @@ type remoteTelemetrySample struct {
 // lane). It is parsed from the runtime's /slots endpoint, so the field names
 // mirror both JSON schemas: llama.cpp publishes id/n_ctx/speculative/
 // is_processing plus n_prompt_tokens* while a task runs, and NInfer adds
-// retained and session_digest to identify the agent owning the lane.
+// retained and session_digest runtime metadata. session_digest is not a
+// stable caller identity and is never used to attribute a lane.
 type inferenceLane struct {
 	ID          int    `json:"id"`
 	NCTX        int    `json:"n_ctx,omitempty"`
@@ -55,11 +56,18 @@ type inferenceTelemetry struct {
 	ResidentDepth     int
 	DecodeTokensSec   *float64
 	PrefillTokensSec  *float64
+	PrefillTokensKind string
 	CacheReuseRatio   *float64
 	SpecAcceptRatio   *float64
 	Lanes             []inferenceLane
 	UnavailableReason string
 	Meta              sampleMeta
+}
+
+type stateFreshnessSnapshot struct {
+	Age           time.Duration
+	DeadlineStale bool
+	Warning       string
 }
 
 type snapshotProbeDeps struct {
@@ -89,6 +97,7 @@ func collectSessionSnapshot(ctx context.Context, paths config.Paths, state sessi
 	snapshot := buildSessionSnapshot(state, now)
 	snapshot.Health.Tunnel.Running = deps.processRunning(state.TunnelPID)
 	snapshot.Health.Watchdog.Running = deps.processRunning(state.WatchdogPID)
+	snapshot.Freshness = sessionStateFreshness(paths, state, snapshot.Health.Tunnel.Running, now)
 	snapshot.Performance = deps.performance(paths, state, now)
 	if !refresh {
 		return snapshot

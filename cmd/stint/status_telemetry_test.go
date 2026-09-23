@@ -52,6 +52,7 @@ func TestSnapshotJSONUsesExplicitTimeUnits(t *testing.T) {
 
 func TestSnapshotJSONInferenceContract(t *testing.T) {
 	snapshot := refreshedInferenceSnapshot()
+	snapshot.Freshness = stateFreshnessSnapshot{Age: 3 * time.Minute, DeadlineStale: true, Warning: "stale deadline"}
 	encoded, err := json.Marshal(snapshotJSON(snapshot))
 	if err != nil {
 		t.Fatal(err)
@@ -64,14 +65,21 @@ func TestSnapshotJSONInferenceContract(t *testing.T) {
 	if inference["refreshed"] != true || inference["available"] != true {
 		t.Fatalf("inference refresh/availability = %v / %v", inference["refreshed"], inference["available"])
 	}
-	if inference["agents"] != float64(2) || inference["residentDepth"] != float64(45000) {
+	if inference["agents"] != float64(1) || inference["residentDepth"] != float64(57000) {
 		t.Fatalf("inference agents/depth = %v / %v", inference["agents"], inference["residentDepth"])
+	}
+	if inference["prefillTokensKind"] != "uncached" {
+		t.Fatalf("prefill token meaning = %v, want uncached", inference["prefillTokensKind"])
 	}
 	if inference["decodeTokensSec"] != float64(63.25) {
 		t.Fatalf("inference.decodeTokensSec = %v, want 63.25", inference["decodeTokensSec"])
 	}
 	if inference["cacheReuseRatio"] != float64(0.87) {
 		t.Fatalf("inference.cacheReuseRatio = %v, want 0.87", inference["cacheReuseRatio"])
+	}
+	staleness := payload["staleness"].(map[string]any)
+	if staleness["stateAgeSeconds"] != float64(180) || staleness["deadlineStale"] != true {
+		t.Fatalf("staleness domain = %+v", staleness)
 	}
 	performance := payload["performance"].(map[string]any)
 	// The cached benchmark domain keeps its own decodeTokensSec (zero when no
@@ -145,8 +153,8 @@ func refreshedInferenceSnapshot() sessionSnapshot {
 	return sessionSnapshot{
 		Session: sessionInfo{InstanceID: 42, Status: "READY", Runtime: runtimeNInfer, Model: "qwen3.8-27b", GPUModel: "RTX 4090", ContextTokens: 172032},
 		Inference: inferenceTelemetry{
-			Refreshed: true, Available: true, Processing: 1, Deferred: 2, Agents: 2, ResidentDepth: 45000,
-			DecodeTokensSec: &decode, PrefillTokensSec: &prefill, CacheReuseRatio: &reuse, SpecAcceptRatio: &spec,
+			Refreshed: true, Available: true, Processing: 1, Deferred: 2, Agents: 1, ResidentDepth: 57000,
+			DecodeTokensSec: &decode, PrefillTokensSec: &prefill, PrefillTokensKind: "uncached", CacheReuseRatio: &reuse, SpecAcceptRatio: &spec,
 			Lanes: []inferenceLane{
 				{ID: 0, NCTX: 172032, Processing: true, NPrompt: 45000},
 				{ID: 1, NCTX: 172032, Retained: true, NPrompt: 12000},
@@ -157,8 +165,9 @@ func refreshedInferenceSnapshot() sessionSnapshot {
 
 func TestStatusHumanOutputShowsInferenceLiveSection(t *testing.T) {
 	snapshot := refreshedInferenceSnapshot()
+	snapshot.Freshness = stateFreshnessSnapshot{DeadlineStale: true, Warning: "local state may be stale"}
 	out := captureStdout(t, func() { printSessionSnapshotHuman(snapshot, true) })
-	for _, want := range []string{"INFERENCE LIVE", "Agents             2 active", "Live prompt depth  45000 tokens · 2 queued", "Decode             63.2 tok/s", "Prefill            1204.5 tok/s", "Cache reuse        87% of prompt", "Speculative        71% accepted", "Lanes              0: 45000 tok · 1: 12000 tok (resident)"} {
+	for _, want := range []string{"INFERENCE LIVE", "Requests processing 1 active", "Live prompt depth  57000 tokens · 2 queued", "Decode             63.2 tok/s", "Prefill (uncached)  1204.5 tok/s", "Cache reuse        87% of prompt", "Speculative        71% accepted", "Lanes              0: 45000 tok · 1: 12000 tok (resident)", "State freshness    warning"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("status output missing %q:\n%s", want, out)
 		}

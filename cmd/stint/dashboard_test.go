@@ -173,27 +173,112 @@ func TestDashboardProjectionProjectsInferenceDomain(t *testing.T) {
 	decode, prefill, reuse, spec := 63.25, 1204.5, 0.87, 0.71
 	controller := dashboardController{
 		snapshot: sessionSnapshot{
-			Session: sessionInfo{InstanceID: 42, Status: "READY", Runtime: "ninfer"},
+			Session: sessionInfo{InstanceID: 42, Status: "READY", Runtime: "ninfer", ContextTokens: 172032},
 			Inference: inferenceTelemetry{
-				Refreshed: true, Available: true, Processing: 1, Deferred: 2, Agents: 2, ResidentDepth: 45000,
-				DecodeTokensSec: &decode, PrefillTokensSec: &prefill, CacheReuseRatio: &reuse, SpecAcceptRatio: &spec,
-				Lanes: []inferenceLane{{ID: 0, NCTX: 172032, Processing: true, NPrompt: 45000}},
+				Refreshed: true, Available: true, Processing: 1, Deferred: 2, Agents: 1, ResidentDepth: 57000,
+				DecodeTokensSec: &decode, PrefillTokensSec: &prefill, PrefillTokensKind: "uncached", CacheReuseRatio: &reuse, SpecAcceptRatio: &spec,
+				Meta: sampleMeta{SampledAt: time.Now().Add(-5 * time.Second)},
+				Lanes: []inferenceLane{
+					{ID: 0, NCTX: 172032, Processing: true, NPrompt: 45000, NCached: 41000},
+					{ID: 1, NCTX: 172032, Retained: true, NPrompt: 12000, NCached: 11160},
+					{ID: 2, NCTX: 172032},
+				},
 			},
 		},
 	}
 	controller.projectSnapshot()
 	got := controller.model.Inference
-	if !got.Refreshed || !got.Available || got.Agents != 2 || got.Depth != 45000 {
+	if !got.Refreshed || !got.Available || got.Agents != 1 || got.Depth != 57000 {
 		t.Fatalf("inference projection = %+v", got)
 	}
-	if got.Decode != "63.2 tok/s" || got.Prefill != "1204.5 tok/s" || got.Queue != "2 queued" {
+	if got.Decode != "63.2 tok/s" || got.Prefill != "1204.5 tok/s" || got.PrefillLabel != "Prefill (uncached)" || got.Queue != "2 queued" {
 		t.Fatalf("inference strings = %+v", got)
 	}
 	if got.CacheReuse != "87%" || got.Speculative != "71% accepted" {
 		t.Fatalf("inference ratios = %+v", got)
 	}
-	if got.Lanes != "0: 45000 tok" {
+	// Summary includes all resident lanes while preserving per-lane detail below.
+	if got.Lanes != "0: 45000 tok · 1: 12000 tok (resident) · 2: idle" {
 		t.Fatalf("inference lanes = %q", got.Lanes)
+	}
+	if got.ContextCapacity != 172032 || len(got.LaneRows) != 3 || got.LaneRows[0].DecodeScope != "engine" || got.LaneRows[0].Cache != "91%" {
+		t.Fatalf("lane/context detail = %+v", got)
+	}
+	if got.LaneRows[1].Status != "idle retained" || got.LaneRows[1].Decode != "" || got.LaneRows[2].Status != "idle" {
+		t.Fatalf("idle and retained lane detail = %+v", got.LaneRows)
+	}
+}
+
+func TestDashboardLabelsDecodeAsSharedForConcurrentLanes(t *testing.T) {
+	decode := 120.0
+	projected := dashboardInference(inferenceTelemetry{Available: true, Agents: 2, DecodeTokensSec: &decode, Lanes: []inferenceLane{
+		{ID: 0, Processing: true}, {ID: 1, Processing: true},
+	}}, 262144, time.Now())
+	if len(projected.LaneRows) != 2 || projected.LaneRows[0].DecodeScope != "shared" || projected.LaneRows[1].DecodeScope != "shared" {
+		t.Fatalf("engine-wide decode should be labeled shared on both active lanes: %+v", projected.LaneRows)
+	}
+}
+
+func TestDashboardRetainsLastGoodInferenceOnlyForSameInstance(t *testing.T) {
+	now := time.Now().UTC()
+	decode := 84.0
+	controller := dashboardController{model: dash.Model{View: dash.Performance}}
+	controller.applyRefresh(dashboardLoadResult{Snapshot: sessionSnapshot{
+		CollectedAt: now,
+		Session:     sessionInfo{InstanceID: 42, Status: "READY", ContextTokens: 131072},
+		Inference:   inferenceTelemetry{Refreshed: true, Available: true, Agents: 1, Processing: 1, ResidentDepth: 4096, DecodeTokensSec: &decode, Meta: sampleMeta{SampledAt: now}},
+	}})
+	controller.applyRefresh(dashboardLoadResult{Snapshot: sessionSnapshot{
+		CollectedAt: now.Add(10 * time.Second),
+		Session:     sessionInfo{InstanceID: 42, Status: "READY", ContextTokens: 131072},
+		Inference:   inferenceTelemetry{Refreshed: true, UnavailableReason: "tunnel probe timed out"},
+	}})
+	if !controller.model.Inference.Available || !controller.model.Inference.Stale || controller.model.Inference.Error != "tunnel probe timed out" {
+		t.Fatalf("same-instance failure should retain and mark the last good sample: %+v", controller.model.Inference)
+	}
+	if controller.model.Inference.Decode != "84.0 tok/s" || controller.model.Inference.SampleAge == "" {
+		t.Fatalf("retained sample lost values or age: %+v", controller.model.Inference)
+	}
+
+	decode = 92.0
+	recoveredAt := now.Add(15 * time.Second)
+	controller.applyRefresh(dashboardLoadResult{Snapshot: sessionSnapshot{
+		CollectedAt: recoveredAt,
+		Session:     sessionInfo{InstanceID: 42, Status: "READY", ContextTokens: 131072},
+		Inference:   inferenceTelemetry{Refreshed: true, Available: true, Agents: 1, Processing: 1, ResidentDepth: 8192, DecodeTokensSec: &decode, Meta: sampleMeta{SampledAt: recoveredAt}},
+	}})
+	if controller.model.Inference.Stale || controller.model.Inference.Decode != "92.0 tok/s" || controller.model.Inference.Depth != 8192 {
+		t.Fatalf("successful refresh should replace the stale sample: %+v", controller.model.Inference)
+	}
+
+	controller.applyRefresh(dashboardLoadResult{Snapshot: sessionSnapshot{
+		CollectedAt: now.Add(20 * time.Second),
+		Session:     sessionInfo{InstanceID: 43, Status: "READY", ContextTokens: 131072},
+		Inference:   inferenceTelemetry{Refreshed: true, UnavailableReason: "not reachable"},
+	}})
+	if controller.model.Inference.Available || controller.model.Inference.Stale || controller.lastGoodInstance != 43 || len(controller.laneEvents) != 0 {
+		t.Fatalf("new instance must not inherit old telemetry or lane history: inference=%+v instance=%d events=%v", controller.model.Inference, controller.lastGoodInstance, controller.laneEvents)
+	}
+}
+
+func TestDashboardLaneEventsAreBoundedAndObserveTransitions(t *testing.T) {
+	controller := dashboardController{}
+	now := time.Now().UTC()
+	controller.observeLaneEvents([]inferenceLane{{ID: 0, Processing: true, NPrompt: 100, NCached: 90}, {ID: 1, Retained: true, NPrompt: 25, NCached: 20}}, now)
+	controller.observeLaneEvents([]inferenceLane{{ID: 0, Retained: true, NPrompt: 100, NCached: 80}}, now.Add(time.Second))
+	if len(controller.laneEvents) != 4 || !strings.Contains(controller.laneEvents[0], "no longer reported") || !strings.Contains(controller.laneEvents[1], "processing → idle retained") {
+		t.Fatalf("lane observations did not record transitions/removal: %v", controller.laneEvents)
+	}
+	if !strings.Contains(controller.laneEvents[1], "cache 80%") {
+		t.Fatalf("lane transition event lacks its current cache ratio: %v", controller.laneEvents[1])
+	}
+	lanes := make([]inferenceLane, 205)
+	for i := range lanes {
+		lanes[i] = inferenceLane{ID: i}
+	}
+	controller.observeLaneEvents(lanes, now.Add(2*time.Second))
+	if len(controller.laneEvents) != 200 {
+		t.Fatalf("lane event history length = %d, want bounded 200", len(controller.laneEvents))
 	}
 }
 

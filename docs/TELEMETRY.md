@@ -66,23 +66,23 @@ A previous-session, previous-runtime, or previous-context sample is treated as u
 
 Independent from the cached benchmark sample, `--refresh` (and the dashboard) observe live engine activity by polling two read-only surfaces through the local tunnel:
 
-- `/metrics` — Prometheus counters. Both runtimes publish the shared `llamacpp:*` series (`prompt_tokens_total`, `prompt_tokens_cached_total`, `tokens_predicted_total`, `requests_processing`, `requests_deferred`); NInfer additionally publishes `ninfer:prefix_cache_hit_tokens_total` and draft/speculative counters.
-- `/slots` — one lane object per concurrent runtime lane (llama.cpp slot or NInfer lane), including per-lane prompt token depth, processing state, and — on NInfer — `retained`/`session_digest` so a lane can be attributed to the agent that owns it.
+- `/metrics` — Prometheus counters. Both runtimes publish the shared `llamacpp:*` series (`prompt_tokens_total`, `prompt_tokens_cached_total`, `tokens_predicted_total`, `requests_processing`, `requests_deferred`); NInfer additionally publishes `ninfer:prefix_cache_hit_tokens_total` and draft/speculative counters. On NInfer, `prompt_tokens_total` is uncached prompt work and prefix-cache hits are reported separately; llama.cpp's prompt total includes its cached portion.
+- `/slots` — one lane object per concurrent runtime lane (llama.cpp slot or NInfer lane), including per-lane prompt token depth and processing state. NInfer `retained` and `session_digest` are runtime metadata only; `session_digest` does not identify a Stint client or agent, and Stint does not attribute lanes to callers.
 
 From two epochs separated by a 1.2s gap the snapshot derives:
 
-- active agents: lanes that are processing or hold a resident prompt
+- active processing count: `requests_processing` from `/metrics` when present, otherwise the count of `/slots` lanes marked `is_processing`. Retained/resident context does not count as active work, and this value does not identify external clients.
 - deferred/queued requests from the engine
-- resident prompt depth: the deepest per-lane prompt token count
-- decode and prefill token rates from counter deltas
-- cache reuse ratio (cached prompt tokens ÷ prompt tokens, clamped at 100%)
+- resident prompt depth: the sum of nonnegative `n_prompt_tokens` across reported lanes
+- decode and prefill token rates from engine-wide counter deltas. The NInfer `prompt_tokens_total` counter represents uncached prompt work, so its displayed prefill rate is labeled `uncached`; llama.cpp's counter represents total prompt work.
+- cache reuse share: llama.cpp cached prompt tokens ÷ total prompt tokens; NInfer prefix-cache hits ÷ (prefix-cache hits + uncached prompt tokens). Both are clamped to 100%.
 - speculative accept ratio (accepted draft tokens ÷ draft tokens)
 
 The domain degrades by surface: missing `/metrics` still yields lane-level activity from `/slots`; missing both yields an unavailable reason (for llama.cpp: launch with `--metrics --slots`; NInfer serves both by default). Live observation never sends an inference request and never mutates the remote session; it is also never mixed with the cached `performance` benchmark domain.
 
 ## Snapshot domains
 
-The snapshot is organized into seven domains:
+The status snapshot is organized into eight domains:
 
 ```text
 session       identity, runtime, model, context, lifecycle status
@@ -90,11 +90,12 @@ session       identity, runtime, model, context, lifecycle status
  cost          hourly rate, estimated spend, scheduled exposure
  health        tunnel, watchdog, endpoint, remote runtime
  gpu           utilization, VRAM, power, temperature
- inference     live agents, resident prompt depth, token rates, lanes
+ inference     live processing count, resident prompt depth, token rates, lanes
  performance   cached TTFT/decode sample, its measured prompt depth, and its age
+ staleness     local state age and a deadline freshness warning
 ```
 
-The future terminal dashboard should consume these domains rather than reading `session.json` or probing SSH directly.
+The terminal dashboard consumes these domains rather than reading `session.json` or probing SSH directly.
 
 ## JSON contract
 
@@ -138,7 +139,9 @@ Durations use explicit units rather than Go's raw `time.Duration` nanoseconds:
 
 Remote observation objects contain a `refreshed` indicator plus sample time/error metadata so consumers can distinguish **not sampled** from **sampled and unhealthy**.
 
-The `inference` block uses: `refreshed`, `available`, `processing`, `deferred`, `agents`, `residentDepth` (tokens), `decodeTokensSec` / `prefillTokensSec` (null when the runtime does not publish the counter or only one epoch is usable), `cacheReuseRatio` / `specAcceptRatio` (0–1, null when not applicable), per-lane objects under `lanes`, and `unavailableReason` when the probe could not observe the engine.
+The `staleness` block contains `stateAgeSeconds`, `deadlineStale`, and `warning`. State age uses `updatedAt`, falling back to the state file modification time for older files. The deadline warning requires state older than two minutes and a deadline within fifteen minutes (or already passed); it also requires either a running tunnel or a tunnel-down state that still claims `READY` or `RECOVERABLE`. `status --refresh` refreshes health telemetry only; it does not rewrite or reconcile the saved lifecycle deadline. Use `stint doctor` and verify the provider state before acting on a stale deadline.
+
+The `inference` block uses: `refreshed`, `available`, `processing`, `deferred`, `agents` (compatibility field equal to the current processing count, not caller identity), `residentDepth` (sum of per-lane resident prompt tokens), `decodeTokensSec` / `prefillTokensSec` (null when the runtime does not publish the counter or only one epoch is usable), `prefillTokensKind` (`uncached` for NInfer's noncached prompt counter, `total` for llama.cpp), `cacheReuseRatio` / `specAcceptRatio` (0–1, null when not applicable), per-lane objects under `lanes`, and `unavailableReason` when the probe could not observe the engine. Decode/prefill counters are engine-wide; Stint does not assign them to a lane or client.
 
 ## Intended dashboard cadence
 
@@ -157,7 +160,7 @@ The telemetry API is designed for a later live TUI with different refresh classe
   VRAM
   temperature
   power
-  live inference: agents, resident prompt depth, token rates, lanes
+  live inference: processing count, resident prompt depth, token rates, lanes
 
 manual / explicit
   TTFT
