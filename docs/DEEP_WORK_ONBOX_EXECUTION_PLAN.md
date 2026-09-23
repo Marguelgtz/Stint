@@ -54,7 +54,9 @@ not the target design.
   (https://github.com/Marguelgtz/Stint/pull/105), branch
   `integrate/deep-work-smoke-cli-preflight-20260923`, stacks on #104 with commit
   `d497ce1` to align the live-smoke rental command with the current CLI; commit
-  `ad422e0` adds a lower-only session cap and a true parser-only preflight.
+  `ad422e0` adds a lower-only session cap and a true parser-only preflight, and
+  `e658c09` adds the session-capped hourly offer ceiling required by current
+  NInfer-compatible marketplace pricing.
 - All historical Deep Work feature PRs remain open. Their source heads share an
   old base (`d34cb2b...`) and are not safe merge units against current `main`.
   Use their code and evidence selectively on this clean integration branch.
@@ -187,7 +189,7 @@ not the target design.
   candidates were $0.496-$0.614/hour and rejected by the $0.40/hour cap. No
   rental or session creation occurred, and `stint status` reported no active
   compute. Since the authorized smoke is capped at $2 over 1.5 hours, PR #105
-  is adding an explicit per-run $1.33/hour ceiling; raising the profile hourly
+  adds an explicit per-run $1.33/hour ceiling; raising the profile hourly
   limit requires the explicit `$2` session cap, and every candidate remains
   subject to the existing full-session check immediately before rental. This
   bounds estimated exposure to at most $2 for the requested duration. No fresh
@@ -352,13 +354,13 @@ not the target design.
 - PR #102 implementation commit `04151f5`: `go test -count=1 ./...` — PASS; `python3 scripts/test_onbox_github_publish.py` — PASS (7 tests); Python byte-compilation — PASS; Bash syntax for launcher, smoke, supervisor, and provisioner — PASS; embedded resume-preflight Python compilation — PASS; `git diff --check` — PASS. Draft PR #102 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. No live GPU smoke was run.
 - PR #103 commit `8aea2bd`: `bash -n scripts/onbox-deep-supervisor.sh scripts/test_onbox_supervisor.sh`, `bash scripts/test_onbox_supervisor.sh`, and `git diff --check` — PASS. Draft PR #103 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `ad55713` is pushed. No live GPU smoke was run.
 - PR #104 commit `d971d24`: `go test -count=1 ./...` — PASS, including the five-case local NInfer artifact fixture; publisher safety tests (7) and supervisor completion fixture — PASS; shell syntax and `git diff --check` — PASS. Draft PR #104 is open; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` — PASS. Plan/evidence commit `19e712a` is pushed. No live GPU smoke was run.
-- PR #105 commit `d497ce1` removed the stale tunnel flag; its exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed. Commit `ad422e0` added a lower-only `--max-cost-usd` and `--validate-only`, replacing the ineffective `--help` preflight. `go test -count=1 ./...`, publisher fixtures (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check` passed; exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` also passed. A no-rental live attempt reached Vast search but no NInfer-compatible 4090 passed the built-in $0.40/hour profile cap; read-only plan evidence showed qualifying 3090s and displayed 4090 examples from $0.496-$0.614/hour. No provider rental was issued and no session was recorded. A follow-up explicit `--max-hourly-usd 1.33` is being added, gated on an explicit $2 per-session cap; the existing candidate-by-candidate full-session spend check remains the final pre-rental guard. Exact-head CI for that follow-up and the fresh-GPU run remain pending.
+- PR #105 commit `d497ce1` removed the stale tunnel flag; its exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` passed. Commit `ad422e0` added a lower-only `--max-cost-usd` and `--validate-only`, replacing the ineffective `--help` preflight. Commit `e658c09` added `--max-hourly-usd`; increasing the profile's $0.40/hour limit requires an explicit session cap and the per-candidate full-session check still guards each rental. `go test -count=1 ./...`, publisher fixtures (7), supervisor fixture, smoke preflight fixture, shell syntax, and `git diff --check` pass. PR #105 exact-head GitHub `build-check`, `go-vet`, `unit-tests`, `race-tests`, and `spark-profile` pass on `e658c09`. A no-rental live attempt reached Vast search but no NInfer-compatible 4090 passed the original hourly profile cap; read-only plan evidence showed qualifying 3090s and displayed 4090 examples from $0.496-$0.614/hour. No provider rental was issued and no session was recorded. The updated $1.33/hour/$2 session-cap path passes local validation but the fresh-GPU run has not yet started.
 
 ## Next action
 
-Verify the explicit hourly-ceiling/cost-cap regression, push the follow-up to PR
-#105, and wait for its exact-head CI. Rebuild the binary from that checked head,
-then retry the authorized $2-capped fresh-GPU smoke through
+Record this plan update as a follow-up commit and wait for its exact-head CI.
+Build the binary from that checked head, then retry the authorized $2-capped
+fresh-GPU smoke through
 `scripts/run-onbox-deep-smoke.sh`. Record whether it reaches RUNNING, disconnect
 survival, xhigh/medium work, independent verification, publication, final R2
 archive, handoff, and teardown. Check required local credentials/artifacts by
