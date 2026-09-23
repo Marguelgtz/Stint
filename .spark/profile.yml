@@ -76,6 +76,7 @@ areas:
   - id: release-and-automation
     paths:
       - ".github/workflows/**"
+      - ".github/actionlint.yaml"
       - ".spark/profile.yml"
       - "scripts/**"
       - "go.mod"

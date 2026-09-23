@@ -39,6 +39,7 @@ docker run --rm --pull=never \
 set -x
 src=/work/source
 build=/work/build
+git config --global --add safe.directory /work/source
 test "$(git -C "$src" rev-parse HEAD)" = "'"$source_commit"'"
 CC=/usr/bin/gcc-13 \
 CXX=/usr/bin/g++-13 \
@@ -81,9 +82,7 @@ python3 /repo/scripts/ninfer_runtime_bundle.py extract \
   --destination /extract
 test -x /extract/ninfer-serve
 "/extract/ninfer-serve" --help >/dev/null
-if ldd /extract/ninfer-serve | grep -q "not found"; then
-  ldd /extract/ninfer-serve >&2
-  exit 1
-fi
+ldd_output="$(ldd /extract/ninfer-serve)"
+if grep -q "not found" <<<"$ldd_output"; then printf '%s\n' "$ldd_output" >&2; exit 1; fi
 '
 done
