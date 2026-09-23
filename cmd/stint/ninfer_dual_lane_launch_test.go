@@ -13,6 +13,7 @@ func TestNInferTwoClientsUsesTwoLanesAndSharedKV(t *testing.T) {
 	for _, required := range []string{
 		"--max-context 262144",
 		"--kv-capacity 262144",
+		"--default-max-tokens 262144",
 		"--max-concurrency 2",
 	} {
 		if !strings.Contains(command, required) {

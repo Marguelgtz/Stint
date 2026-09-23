@@ -151,10 +151,14 @@ func localProcessRunning(pid int) bool {
 }
 
 func probeEndpointHealth(ctx context.Context) endpointHealth {
+	return probeEndpointHealthAtPort(ctx, clinePort)
+}
+
+func probeEndpointHealthAtPort(ctx context.Context, port int) endpointHealth {
 	sampledAt := time.Now().UTC()
 	result := endpointHealth{Refreshed: true, Meta: sampleMeta{SampledAt: sampledAt}}
 	client := &http.Client{Timeout: endpointTelemetryTimeout}
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/v1/models", clinePort)
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/v1/models", port)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		result.Meta.Error = err.Error()

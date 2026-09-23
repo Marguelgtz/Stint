@@ -161,6 +161,9 @@ var (
 			{name: "--min-network-mbps", argument: "<float>", defaultVal: "500", purpose: "minimum Vast advertised download bandwidth in Mbps; 0 disables the prefilter"},
 			{name: "--min-measured-download-mbps", argument: "<float>", defaultVal: "40", purpose: "minimum measured post-SSH model-transfer throughput in MB/s; 0 disables"},
 			{name: "--network-candidate-attempts", argument: "<int>", defaultVal: "3", purpose: "maximum distinct Vast machines to try during provider startup and network qualification"},
+			{name: "--max-hourly-usd", argument: "<float>", defaultVal: "profile ceiling", purpose: "set per-run offer price ceiling; raising it requires --max-cost-usd"},
+			{name: "--max-cost-usd", argument: "<float>", defaultVal: "profile ceiling", purpose: "lower, but never raise, the requested-session cost ceiling"},
+			{name: "--validate-only", defaultVal: "false", purpose: "validate start options without reading credentials or contacting a provider"},
 		},
 		examples: []string{
 			"stint start interactive --hours 2",
@@ -168,11 +171,15 @@ var (
 			"stint start interactive --runtime ninfer --ninfer-config native --clients 2",
 			"stint start interactive --location germany --min-measured-download-mbps 50",
 			"stint start interactive --runtime llama.cpp --context 32768",
+			"stint start interactive --hours 1.5 --max-hourly-usd 1.33 --max-cost-usd 2 --validate-only",
 		},
 		notes: []string{
 			"Requires `stint auth vast`, a free local port 8409, and the Stint SSH key (`stint setup ssh`).",
 			"NInfer is qualified for RTX 4090 hosts with CUDA >= 12.8 only; with --runtime auto, a 4090 uses NInfer and any other qualifying GPU falls back to llama.cpp (auto also falls back if the NInfer bootstrap is unavailable).",
 			"--clients 2 is NInfer-only. It maps to two generation lanes over one shared dynamic KV pool; Stint does not split the configured context in half. Auto mode will not silently fall back to llama.cpp when two clients were requested.",
+			"--max-cost-usd can only lower the interactive profile's $2.50 requested-session ceiling; candidate rentals are checked against the resulting limit.",
+			"--max-hourly-usd can raise the profile's $0.40 hourly limit only when an explicit --max-cost-usd session cap is also supplied; every candidate must still fit that total cap.",
+			"--validate-only parses and validates start settings, then exits before reading credentials, changing local session state, or contacting Vast.",
 			"Provider or SSH startup failures reject the host and try the next candidate. Failures after SSH is ready preserve the paid instance: run `stint resume` to continue.",
 			"The endpoint is OpenAI-compatible: base URL http://127.0.0.1:8409/v1, model qwen3.8-27b.",
 		},
@@ -228,6 +235,51 @@ var (
 		},
 	}
 
+	cmdDeep = cliCommand{
+		name:    "deep",
+		section: "deepwork",
+		summary: "run a bounded Hermes engineering mission",
+		detail: `Deep Work runs bounded repository tasks through Hermes. The production path is ` + "`scripts/launch-onbox-deep.sh`" + `: Stint rents and qualifies compute, bootstraps the box, starts a detached on-box supervisor, and returns after the durable RUNNING handshake. Hermes, verification, checkpoints, and landing then continue on the box.
+
+Use ` + "`stint deep status`" + ` to inspect durable state and ` + "`stint deep resume`" + ` after an interruption. ` + "`stint deep onbox`" + ` is the box-side supervisor entry point; it is not a replacement for the launcher bootstrap.
+
+Subcommands:
+  start   local development/fixture coordinator
+  status  show durable session phase and task evidence
+  dash    open the Deep Work execution cockpit
+  stop    request a graceful landing
+  resume  resume a recoverable coordinator
+  onbox   run or resume the on-box Hermes coordinator`,
+		usage: "stint deep <start|status|dash|stop|resume|onbox> [flags]",
+		args:  []cliArg{{name: "<subcommand>", purpose: "start, status, dash, stop, resume, or onbox"}},
+		flags: []cliFlag{
+			{name: "--mission", argument: "<file>", purpose: "mission Markdown file"},
+			{name: "--repo", argument: "<path>", purpose: "target git repository"},
+			{name: "--hours", argument: "<float>", defaultVal: "session deadline", purpose: "bounded session duration"},
+			{name: "--task-timeout", argument: "<dur>", defaultVal: "10m", purpose: "maximum wall time per Hermes invocation"},
+			{name: "--max-attempts", argument: "<int>", defaultVal: "3", purpose: "maximum attempts per task"},
+			{name: "--reasoning", argument: "<none|low|medium|xhigh>", defaultVal: "medium", purpose: "Hermes reasoning effort; task metadata may override it"},
+			{name: "--action-plan", argument: "<path>", purpose: "worktree-relative living action plan"},
+			{name: "--provider", argument: "<id>", defaultVal: "custom:qwen-stint-{reasoning}", purpose: "configured Hermes provider or reasoning template"},
+			{name: "--model", argument: "<id>", purpose: "Hermes model id"},
+			{name: "--allow-command", argument: "<prefix>", purpose: "advisory command guidance; Hermes does not enforce it"},
+			{name: "--json", defaultVal: "false", purpose: "status: print machine-readable state"},
+			{name: "--session", argument: "<id>", defaultVal: "latest", purpose: "status/dashboard: session to inspect"},
+			{name: "--ready-file", argument: "<path>", purpose: "onbox: write RUNNING only after preflight and durable state"},
+			{name: "--resume", defaultVal: "false", purpose: "onbox: resume persisted execution settings"},
+		},
+		examples: []string{
+			"scripts/launch-onbox-deep.sh --mission mission.md --repo /path/to/repo",
+			"stint deep status --json",
+			"stint deep dash",
+		},
+		notes: []string{
+			"The on-box coordinator uses a Stint-owned worktree and persists session state under the configured Stint state directory.",
+			"Independent verification and checkpoint persistence are coordinator decisions; a Hermes completion response alone is not VERIFIED.",
+			"Command prefixes are advisory prompt guidance; Stint does not enforce Hermes tool execution.",
+		},
+	}
+
 	cmdVersion = cliCommand{
 		name:     "version",
 		aliases:  []string{"--version", "-v"},
@@ -249,13 +301,14 @@ var (
 	}
 )
 
-var cliCommands = []cliCommand{cmdAuth, cmdSetup, cmdDoctor, cmdStatus, cmdOnboard, cmdPlan, cmdStart, cmdResume, cmdDown, cmdPerf, cmdVersion, cmdHelp}
+var cliCommands = []cliCommand{cmdAuth, cmdSetup, cmdDoctor, cmdStatus, cmdOnboard, cmdPlan, cmdStart, cmdResume, cmdDown, cmdPerf, cmdDeep, cmdVersion, cmdHelp}
 
 var helpSections = []helpSection{
 	{title: "Setup & checks", commands: []cliCommand{cmdAuth, cmdSetup, cmdDoctor, cmdStatus, cmdOnboard}},
 	{title: "Planning (read-only)", commands: []cliCommand{cmdPlan}},
 	{title: "Compute (paid)", commands: []cliCommand{cmdStart, cmdResume, cmdDown}},
 	{title: "Diagnostics", commands: []cliCommand{cmdPerf}},
+	{title: "Deep Work", commands: []cliCommand{cmdDeep}},
 	{title: "Reference", commands: []cliCommand{cmdVersion, cmdHelp}},
 }
 

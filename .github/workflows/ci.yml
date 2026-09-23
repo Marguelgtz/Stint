@@ -45,6 +45,12 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go test ./...
+      - name: Test on-box GitHub publisher safety gates
+        run: python3 scripts/test_onbox_github_publish.py
+      - name: Test on-box supervisor completion archive gate
+        run: bash scripts/test_onbox_supervisor.sh
+      - name: Test fresh-box smoke CLI preflight without provider mutation
+        run: bash scripts/test_onbox_smoke_preflight.sh
 
   race-tests:
     name: race-tests

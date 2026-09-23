@@ -61,7 +61,11 @@ func (e inferenceEpoch) slotsOK() bool { return e.SlotsErr == "" && e.SlotsStatu
 func (e inferenceEpoch) usable() bool  { return e.metricsOK() || e.slotsOK() }
 
 func probeInference(ctx context.Context) inferenceTelemetry {
-	return probeInferenceBase(ctx, fmt.Sprintf("http://127.0.0.1:%d", clinePort))
+	return probeInferenceAtPort(ctx, clinePort)
+}
+
+func probeInferenceAtPort(ctx context.Context, port int) inferenceTelemetry {
+	return probeInferenceBase(ctx, fmt.Sprintf("http://127.0.0.1:%d", port))
 }
 
 // probeInferenceBase runs the two-epoch observation against any base URL so
