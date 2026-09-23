@@ -1,0 +1,42 @@
+name: Build NInfer Runtime Bundle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    name: Build pinned SM89 bundle and smoke on clean Vast image
+    # The exact Vast base image occupies more than 23 GiB unpacked. The job is
+    # intentionally routed to a trusted, disposable runner with adequate disk.
+    runs-on: [self-hosted, linux, x64, stint-ninfer-runtime-build]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Require main and sufficient runner space
+        shell: bash
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          available_gib="$(df -BG --output=avail "$RUNNER_TEMP" | tail -n 1 | tr -dc '0-9')"
+          test "$available_gib" -ge 35 || { echo "need at least 35 GiB free, got ${available_gib} GiB" >&2; exit 1; }
+          df -h "$RUNNER_TEMP"
+
+      - name: Test bundle packaging and unsafe-archive rejection
+        run: python3 scripts/test_ninfer_runtime_bundle.py
+
+      - name: Build, package, and clean-image smoke
+        run: bash scripts/build_ninfer_runtime_bundle.sh "$RUNNER_TEMP/ninfer-runtime"
+
+      - name: Upload immutable-release candidate assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: ninfer-runtime-bundle-81b68a20-sm89
+          path: ${{ runner.temp }}/ninfer-runtime/*
+          if-no-files-found: error
+          retention-days: 30
