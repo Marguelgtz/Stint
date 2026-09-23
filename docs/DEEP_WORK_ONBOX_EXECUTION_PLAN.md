@@ -64,6 +64,13 @@ not the target design.
   (https://github.com/Marguelgtz/Stint/pull/106), branch
   `integrate/deep-work-ninfer-default-token-budget-20260923`, stacks on #105 to
   fix the fresh-box NInfer launch contract discovered by the live test.
+- PR #107 (https://github.com/Marguelgtz/Stint/pull/107) is the cumulative
+  current-main integration PR, based on `main` and carrying the complete #96–106
+  commit stack. It is open and not draft; the repository's recent landing
+  convention is a merge commit. Exact-head CI passed at `b629871` before this
+  plan update; wait for checks on the new head before merging.
+  The PR explicitly leaves fresh-GPU acceptance unverified after the latest
+  provider host failed authenticated SSH before `READY`.
 - All historical Deep Work feature PRs remain open. Their source heads share an
   old base (`d34cb2b...`) and are not safe merge units against current `main`.
   Use their code and evidence selectively on this clean integration branch.
@@ -411,15 +418,17 @@ not the target design.
 
 ## Next action
 
-PR #106's token-limit fix is committed and exact-head CI passes. Fresh-box
-validation remains blocked before `READY`: the latest provider host failed the
-authenticated SSH probe and was destroyed. Preserve that result as a provider
-startup failure, not as evidence for or against the corrected NInfer launch.
-Before claiming Deep Work live readiness, retry from a new bounded host and
-record whether the normal launcher reaches `RUNNING`, survives operator
-disconnect, completes xhigh/medium work, verifies and publishes checkpoints,
-archives final R2 evidence, writes handoff, and tears down. Check required local
-credentials/artifacts by presence only; do not expose their contents. PR #101's
-explicit compute-resume gate does not restore state volumes, so replacement-
-compute recovery remains unproven until a durable-volume restore is exercised or
-recorded as an external dependency.
+PR #107 carries the complete integration stack against the unchanged starting
+`main` SHA `c4322e3`; the cumulative code and its exact-head checks pass. Merge it
+using the repository's merge-commit convention, then record and verify the
+resulting `main` SHA. Fresh-box validation remains blocked before `READY`: the
+latest provider host failed the authenticated SSH probe and was destroyed.
+Preserve that result as a provider startup failure, not as evidence for or
+against the corrected NInfer launch. Before claiming Deep Work live readiness,
+retry from a new bounded host and record whether the normal launcher reaches
+`RUNNING`, survives operator disconnect, completes xhigh/medium work, verifies
+and publishes checkpoints, archives final R2 evidence, writes handoff, and tears
+down. Check required local credentials/artifacts by presence only; do not expose
+their contents. PR #101's explicit compute-resume gate does not restore state
+volumes, so replacement-compute recovery remains unproven until a durable-volume
+restore is exercised or recorded as an external dependency.
