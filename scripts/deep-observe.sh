@@ -62,7 +62,14 @@ ninfer = {
     'defaultMaxTokens': arg_value(args, '--default-max-tokens'),
 }
 
-routes = {'xhighRequests': 0, 'mediumRequests': 0, 'latestPhase': '', 'latestAt': ''}
+routes = {
+    'xhighRequests': 0,
+    'xhighFailures': 0,
+    'mediumRequests': 0,
+    'mediumFailures': 0,
+    'latestPhase': '',
+    'latestAt': '',
+}
 latest_route_at = None
 for level, key in (('xhigh', 'xhighRequests'), ('medium', 'mediumRequests')):
     path = os.path.join(phasing_dir, f'wire-{level}.jsonl')
@@ -77,6 +84,12 @@ for level, key in (('xhigh', 'xhighRequests'), ('medium', 'mediumRequests')):
                 if not after_start(timestamp):
                     continue
                 routes[key] += 1
+                try:
+                    status = int(record.get('response_status', 0))
+                except (TypeError, ValueError):
+                    status = 0
+                if status < 200 or status >= 300:
+                    routes[f'{level}Failures'] += 1
                 parsed = parse_time(timestamp)
                 if parsed and (latest_route_at is None or parsed >= latest_route_at):
                     latest_route_at = parsed

@@ -60,7 +60,7 @@ The live smoke calls this exact launcher, rather than maintaining a separate pro
 scripts/run-onbox-deep-smoke.sh
 ```
 
-The smoke uses an isolated Stint state/config root, an RTX 4090 session capped at $2, two clients, and the phase-lane mission. It requires the local Vast credentials and R2 environment files plus GitHub publication settings. It tears down the paid compute session on exit.
+The smoke uses an isolated Stint state/config root, a single-candidate RTX 4090 session capped at $0.48 for one hour, two clients, and the phase-lane mission. It requires the local Vast credentials and R2 environment files plus GitHub publication settings. It tears down the paid compute session on exit.
 
 ## Recovery and inspection
 
