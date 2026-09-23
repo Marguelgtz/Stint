@@ -77,12 +77,12 @@ cp "$HOME/.config/stint-dryrun/stint/credentials.json" "$CONFIG_ROOT/stint/crede
 chmod 600 "$CONFIG_ROOT/stint/credentials.json"
 
 START_ARGS=(--hours 1.5 --runtime ninfer --ninfer-config native --clients 2
-  --min-measured-download-mbps 30 --min-network-mbps 300
-  --network-candidate-attempts 1 --max-hourly-usd 1.33 --max-cost-usd 2 --yes)
+  --min-measured-download-mbps 30 --min-network-mbps 500
+  --network-candidate-attempts 1 --max-hourly-usd 1.0 --max-cost-usd 1.5 --yes)
 "$STINT_BIN" start interactive "${START_ARGS[@]}" --validate-only >/dev/null 2>&1 || \
 	die "smoke rental arguments failed current Stint CLI validation"
 
-say "renting isolated RTX 4090 session for on-box supervisor smoke (maximum cost \$2; maximum rate \$1.33/hour)"
+say "renting isolated RTX 4090 session for on-box supervisor smoke (maximum rental estimate \$1.50; maximum rate \$1.00/hour)"
 setsid "$STINT_BIN" start interactive "${START_ARGS[@]}" >>"$LOG" 2>&1 < /dev/null &
 START_PID=$!
 LOCAL_READY=1

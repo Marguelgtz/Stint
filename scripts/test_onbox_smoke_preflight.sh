@@ -58,14 +58,17 @@ if [ "$result" -eq 0 ]; then
   echo "smoke fixture unexpectedly passed its deliberately blocked rental" >&2
   exit 1
 fi
-grep -Fq 'maximum cost $2' "$TMP/artifacts/launcher.log"
+grep -Fq 'maximum rental estimate $1.50' "$TMP/artifacts/launcher.log"
 grep -Fq 'FAKE_RENT_BLOCKED' "$TMP/artifacts/launcher.log"
 grep -Fxq -- '--validate-only' "$TMP/preflight-args"
 grep -Fxq -- '--network-candidate-attempts' "$TMP/preflight-args"
 grep -Fxq -- '1' "$TMP/preflight-args"
 grep -Fxq -- '--max-hourly-usd' "$TMP/preflight-args"
-grep -Fxq -- '1.33' "$TMP/preflight-args"
+grep -Fxq -- '1.0' "$TMP/preflight-args"
 grep -Fxq -- '--max-cost-usd' "$TMP/preflight-args"
+grep -Fxq -- '1.5' "$TMP/preflight-args"
+grep -Fxq -- '--min-network-mbps' "$TMP/preflight-args"
+grep -Fxq -- '500' "$TMP/preflight-args"
 grep -Fxq -- '2' "$TMP/preflight-args"
 if [ -e "$TMP/run/stint/session.json" ]; then
   echo "smoke preflight fixture created local compute session state" >&2
