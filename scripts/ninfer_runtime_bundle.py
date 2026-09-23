@@ -149,7 +149,12 @@ def _read_manifest_member(archive: tarfile.TarFile) -> tuple[dict[str, object], 
     return manifest, data
 
 
-def verify(archive_path: Path, manifest_path: Path, checksum_path: Path) -> dict[str, object]:
+def verify(
+    archive_path: Path,
+    manifest_path: Path,
+    checksum_path: Path,
+    expected_archive_sha256: str | None = None,
+) -> dict[str, object]:
     archive_name = archive_path.name
     fields = checksum_path.read_text(encoding="ascii").strip().split()
     if len(fields) != 2 or fields[1] != archive_name or len(fields[0]) != 64:
@@ -157,6 +162,8 @@ def verify(archive_path: Path, manifest_path: Path, checksum_path: Path) -> dict
     actual_archive_hash = sha256_file(archive_path)
     if fields[0] != actual_archive_hash:
         raise ValueError("archive SHA-256 does not match checksum sidecar")
+    if expected_archive_sha256 is not None and actual_archive_hash != expected_archive_sha256:
+        raise ValueError("archive SHA-256 does not match Stint's pinned runtime bundle")
     with tarfile.open(archive_path, mode="r:gz") as archive:
         manifest, manifest_data = _read_manifest_member(archive)
         if manifest_data != manifest_path.read_bytes():
@@ -204,6 +211,8 @@ def main() -> None:
             sub.add_argument("--archive", required=True, type=Path)
             sub.add_argument("--manifest", required=True, type=Path)
             sub.add_argument("--checksum", required=True, type=Path)
+            if command == "verify":
+                sub.add_argument("--expected-sha256")
             if command == "extract":
                 sub.add_argument("--destination", required=True, type=Path)
     args = parser.parse_args()
@@ -211,7 +220,7 @@ def main() -> None:
         for path in package({"ninfer": args.ninfer, "ninfer-serve": args.ninfer_serve}, args.output_dir):
             print(path)
     elif args.command == "verify":
-        verify(args.archive, args.manifest, args.checksum)
+        verify(args.archive, args.manifest, args.checksum, args.expected_sha256)
         print("runtime bundle verified")
     else:
         extract(args.archive, args.manifest, args.checksum, args.destination)

@@ -162,13 +162,16 @@ verification error; it does not silently compile after a bad or missing
 release. Use `stint resume --ninfer-deployment source-build` to explicitly
 recover a paid session after a bundle failure. Status snapshots record the
 deployment method, runtime and model pins, acquisition/verification durations,
-and rental-to-READY time. The release tag is created from the exact merged
-`main` build; until that immutable release exists, the opt-in path intentionally
-cannot start.
+and rental-to-READY time. A successful `main` candidate build must pass the
+clean-base smoke; the release publisher then requires the merged `main` SHA pin
+to match the candidate archive and allows only the runtime hash pin and its
+test fixture updates since that build. The immutable release is attached to
+the pinning `main` commit. Until that release exists, the opt-in path
+intentionally cannot start.
 
-The bundle remains opt-in until its exact-`main` pinned-base build passes and a
-fresh RTX 4090 model-load, two-lane, native-context and Deep Work acceptance
-run is recorded.
+The bundle remains opt-in until a `main` candidate build and clean-base smoke
+pass, its exact SHA pin is merged, and a fresh RTX 4090 model-load, two-lane,
+native-context and Deep Work acceptance run is recorded.
 
 | Config | Context | KV | Typical use |
 | --- | ---: | --- | --- |
