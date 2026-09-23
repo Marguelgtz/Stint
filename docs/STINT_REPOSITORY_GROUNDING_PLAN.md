@@ -9,7 +9,7 @@ the concise recovery point.
 
 - Repository: `Marguelgtz/Stint`, default branch `main`.
 - Starting main: `9634bf762a2dc9021747eb786db7fd23ccab84e9`.
-- Current main before this PR-state and README refresh: `25eea6fcc4fdbc9d24588599f849a5afe5b4e613` (after #134; exact-main CI run `35912925386` passed all five required jobs).
+- Current main before this final landing-record refresh: `270caea33fec1b08493312c45b2ced19b21e07d1` (after #135; exact-main CI run `35916137793` passed all five required jobs).
 - The user's original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa` and its untracked files/local binary remain untouched. Work used isolated `/tmp` worktrees.
 - Current main preserves Hermes-on-box Deep Work, both dashboards, NInfer lane semantics, paid-session/provider safety, exact-head CI, and Spark path observation. See the ledger for historical source comparisons.
 
@@ -38,6 +38,7 @@ Grounding and runtime slices merged after the starting point:
 | #132 | `4ff7159c018c75372b31aca7627151e30fed669b` | check exact PR heads and synthetic merge trees in CI | `35909255732` |
 | #133 | `3586022bd6b2cc4565a4d94e519398222d85a443` | port selected docs taxonomy; refresh canonical runtime/PR grounding | `35911926414` |
 | #134 | `25eea6fcc4fdbc9d24588599f849a5afe5b4e613` | final PR/evidence snapshot refresh | `35912925386` |
+| #135 | `270caea33fec1b08493312c45b2ced19b21e07d1` | correct stale PR snapshot; constrain Deep Work smoke to RTX 4090 and $0.40/hour | `35916137793` |
 
 Each listed exact landed-main run completed all five required Stint jobs. #124
 Pull-request runs `35882783534`, `35894208985`, `35898993338`, `35900956163`,
@@ -219,7 +220,7 @@ deployment opt-in and recheck later under the same limits.
 - #73 was closed on 2026-09-23 after #125 merged. Its two unique CP1 reports are preserved verbatim under `docs/history/`; provenance points to source commit `e78ceef308d85c9cac7c71e7d172bed7c66c4182`.
 - Successful generated Deep Work evidence #81–#84 (session `20260908-194552`) and failed attempts #86–#89 (sessions `20260909-012307` and `20260909-014522`) were closed unmerged on 2026-09-23 after checkpoint/handoff SHAs and accurate lessons were recorded in the ledger.
 - Keep #85 parked as a separate high-authority maintenance experiment. PR #93 was closed after selected taxonomy and current pages landed in #133; its replacement and closure comment are recorded in the ledger.
-- Keep #110–#113 open, unmerged and untouched as protected generated Deep Work evidence. GitHub's post-#134 snapshot contained exactly five open PRs: #85 and #110–#113. Their legacy CI rollups were on synthetic merge trees; exact-head CI is not established. The refreshed refs and check runs are recorded in the ledger.
+- Keep #110–#113 open, unmerged and untouched as protected generated Deep Work evidence. GitHub's post-#135 snapshot contained exactly five open PRs: #85 and #110–#113. Their legacy CI rollups were on synthetic merge trees; exact-head CI is not established. The refreshed refs and check runs are recorded in the ledger.
 
 ## Checkpoints
 
@@ -241,6 +242,7 @@ deployment opt-in and recheck later under the same limits.
 - [x] Close old generated PRs #81–#84 (successful) and #86–#89 (failed) after preserving their session IDs, checkpoint/handoff SHAs, and outcomes.
 - [x] Port selected #93 taxonomy to current docs; archive superseded content; add current index, operations, roadmap and architecture pages in #133.
 - [x] After #133's exact-head, synthetic merge-tree and main push CI passed, comment on and close #93; verify the resulting five-PR open snapshot and record its refs/check evidence.
+- [x] Merge #135 after exact-head and synthetic merge-tree verification; explicitly filter the live Deep Work smoke to RTX 4090 at the existing $0.40/hour cap, then verify landed-main CI. No GPU was rented.
 
 ## Final-state rules
 
@@ -250,7 +252,12 @@ The #132 exact-head and synthetic-merge CI repair is green on PR head
 `4ff7159c018c75372b31aca7627151e30fed669b`. Fresh RTX 4090 acceptance remains
 blocked by current offer pricing/reliability under the unchanged limits, so
 leave release-bundle startup opt-in and source-build as the default. The docs
-taxonomy review, #93 disposition, and final five-PR snapshot are recorded. The
-remaining gate is live RTX 4090 acceptance; its exact-host model-load,
-two-lane, native-context, correctness, Deep Work, teardown, and comparable
-READY-time evidence is unavailable under current offer pricing/reliability.
+taxonomy review, #93 disposition, and final five-PR snapshot are recorded.
+PR #135 (`e601f169349f37794ffd0c8007b1ed9d734daf3a`) passed exact-head CI run
+`35915946946` and its synthetic merge-tree test before merging as
+`270caea33fec1b08493312c45b2ced19b21e07d1`; exact-main run `35916137793`
+passed all five required jobs. The live smoke now sets `--runtime ninfer`,
+uses the unchanged $0.40/hour cap, and has no 3090 fallback. The remaining
+gate is live RTX 4090 acceptance; its exact-host model-load, two-lane,
+native-context, correctness, Deep Work, teardown, and comparable READY-time
+evidence is unavailable under current offer pricing/reliability.
