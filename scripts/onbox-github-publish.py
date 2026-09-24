@@ -27,6 +27,10 @@ SAFE_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SAFE_AUTHOR = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 
 
+class PermanentPublicationError(RuntimeError):
+    """A policy or immutable identity conflict that retries cannot fix."""
+
+
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -145,7 +149,7 @@ def api_paginated(cfg: dict, path: str, *, per_page: int = 100, max_pages: int =
 def assert_session_github_policy(cfg: dict, state: dict) -> None:
     saved = state.get("github")
     if not isinstance(saved, dict):
-        raise RuntimeError("deep.json has no persisted GitHub policy")
+        raise PermanentPublicationError("deep.json has no persisted GitHub policy")
     saved_authors = sorted(str(author).strip().lower() for author in saved.get("allowedAuthors", []))
     configured_authors = sorted(str(author).strip().lower() for author in cfg.get("allowed_authors", []))
     expected = (
@@ -157,9 +161,9 @@ def assert_session_github_policy(cfg: dict, state: dict) -> None:
     )
     actual = (cfg["mode"], cfg["repository"], cfg["base"], configured_authors, cfg["approval"])
     if expected != actual:
-        raise RuntimeError("publisher GitHub configuration differs from persisted mission policy (mode, repository, base, allowed authors, approval)")
+        raise PermanentPublicationError("publisher GitHub configuration differs from persisted mission policy (mode, repository, base, allowed authors, approval)")
     if cfg["mode"] != "engineering":
-        raise RuntimeError(f"on-box checkpoint publisher does not implement GitHub mode {cfg['mode']!r}")
+        raise PermanentPublicationError(f"on-box checkpoint publisher does not implement GitHub mode {cfg['mode']!r}")
 
 
 def git(repo: str, *args: str, env=None) -> str:
@@ -270,7 +274,7 @@ def askpass_env(cfg: dict):
 def push_commit(cfg: dict, worktree: str, commit: str, branch: str, session: str) -> None:
     if branch == cfg["base"] or branch in {"main", "master", "develop", "default"}:
         raise RuntimeError("publisher cannot push the configured base or a default branch")
-    match = re.fullmatch(r"stint/deep-([A-Za-z0-9_-]+)-(?:[0-9]{2,}-[a-z0-9._-]{1,40}|handoff)", branch)
+    match = re.fullmatch(r"stint/deep-([A-Za-z0-9_-]+)-(?:[0-9]{2,}-[a-z0-9._-]{1,40}|handoff(?:-[0-9a-f]{12})?)", branch)
     if not match:
         raise RuntimeError("publisher push is restricted to generated session checkpoint/handoff branches")
     if match.group(1) != session:
@@ -318,9 +322,9 @@ def ensure_pr(cfg: dict, *, session: str, branch: str, base: str, title: str, bo
     actual_head = str((pr.get("head") or {}).get("sha", ""))
     actual_repository = str(((pr.get("head") or {}).get("repo") or {}).get("full_name", ""))
     if actual_base != base:
-        raise RuntimeError(f"existing PR #{pr.get('number')} base {actual_base!r} differs from {base!r}")
+        raise PermanentPublicationError(f"existing PR #{pr.get('number')} base {actual_base!r} differs from {base!r}")
     if actual_repository != cfg["repository"] or actual_branch != branch or actual_head != expected_head:
-        raise RuntimeError(f"existing PR #{pr.get('number')} head identity differs from checkpoint {branch}@{expected_head}")
+        raise PermanentPublicationError(f"existing PR #{pr.get('number')} head identity differs from checkpoint {branch}@{expected_head}")
     return {
         "number": pr.get("number"),
         "url": pr.get("html_url", ""),
@@ -339,30 +343,30 @@ def validate_published_pr(cfg: dict, entry: dict, *, branch: str, base: str, com
     actual_base = str((pr.get("base") or {}).get("ref", ""))
     actual_repository = str((head.get("repo") or {}).get("full_name", ""))
     if actual_repository != cfg["repository"] or str(head.get("ref", "")) != branch or str(head.get("sha", "")) != commit or actual_base != base:
-        raise RuntimeError(f"published PR #{number} no longer matches durable identity {branch}@{commit} -> {base}")
+        raise PermanentPublicationError(f"published PR #{number} no longer matches durable identity {branch}@{commit} -> {base}")
     if entry.get("prUrl") and entry["prUrl"] != pr.get("html_url", ""):
-        raise RuntimeError(f"published PR URL for {branch} differs from GitHub's record")
+        raise PermanentPublicationError(f"published PR URL for {branch} differs from GitHub's record")
 
 
 def exact_landing_commit(state: dict, worktree: str) -> str:
     if state.get("phase") != "landed":
-        raise RuntimeError("final handoff publication requires landed durable state")
+        raise PermanentPublicationError("final handoff publication requires landed durable state")
     if state.get("landingVerifyDone") is not True or not str(state.get("landingHandoff", "")).strip():
-        raise RuntimeError("landed state has no completed final verification/handoff record")
+        raise PermanentPublicationError("landed state has no completed final verification/handoff record")
     commit = str(state.get("landingCommit", ""))
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
-        raise RuntimeError("landed state has no valid durable landingCommit SHA")
+        raise PermanentPublicationError("landed state has no valid durable landingCommit SHA")
     head = git(worktree, "rev-parse", "HEAD")
     if head != commit:
-        raise RuntimeError(f"worktree HEAD {head} differs from durable landingCommit {commit}")
+        raise PermanentPublicationError(f"worktree HEAD {head} differs from durable landingCommit {commit}")
     git(worktree, "cat-file", "-e", commit + "^{commit}")
     if git(worktree, "status", "--porcelain"):
-        raise RuntimeError("landed worktree has uncommitted changes")
+        raise PermanentPublicationError("landed worktree has uncommitted changes")
     handoff_path = str(state.get("handoffPath", ""))
     if not handoff_path or not os.path.isfile(handoff_path):
-        raise RuntimeError("durable handoff file is missing")
+        raise PermanentPublicationError("durable handoff file is missing")
     if Path(handoff_path).read_text(encoding="utf-8") != state["landingHandoff"]:
-        raise RuntimeError("durable handoff file differs from persisted landingHandoff")
+        raise PermanentPublicationError("durable handoff file differs from persisted landingHandoff")
     return commit
 
 
@@ -380,6 +384,8 @@ def initial_publication(cfg: dict, state: dict) -> dict:
         "hostname": socket.gethostname(),
         "checkpoints": [],
         "handoff": None,
+        "handoffHistory": [],
+        "handoffDrifts": [],
         "lastError": "",
         "updatedAt": utc_now(),
     }
@@ -389,17 +395,17 @@ def load_publication(path: Path, cfg: dict, state: dict) -> dict:
     if path.is_file():
         payload = json.loads(path.read_text(encoding="utf-8"))
         if payload.get("version") != 2:
-            raise RuntimeError("publication.json lacks the persisted GitHub policy schema; refusing an implicit authority upgrade")
+            raise PermanentPublicationError("publication.json lacks the persisted GitHub policy schema; refusing an implicit authority upgrade")
         if payload.get("session") != state.get("sessionId"):
-            raise RuntimeError("publication.json session does not match deep.json")
+            raise PermanentPublicationError("publication.json session does not match deep.json")
         if payload.get("repository") != cfg["repository"] or payload.get("base") != cfg["base"]:
-            raise RuntimeError("publication.json GitHub repository/base differs from launch configuration")
+            raise PermanentPublicationError("publication.json GitHub repository/base differs from launch configuration")
         if payload.get("mode") != cfg["mode"] or payload.get("approval", "internal") != cfg["approval"]:
-            raise RuntimeError("publication.json GitHub mode/approval differs from launch configuration")
+            raise PermanentPublicationError("publication.json GitHub mode/approval differs from launch configuration")
         saved_authors = sorted(payload.get("allowedAuthors", []), key=str.lower)
         configured_authors = sorted(cfg["allowed_authors"], key=str.lower)
         if saved_authors != configured_authors:
-            raise RuntimeError("publication.json allowed authors differ from launch configuration")
+            raise PermanentPublicationError("publication.json allowed authors differ from launch configuration")
         return payload
     return initial_publication(cfg, state)
 
@@ -456,7 +462,7 @@ def sync(state_dir: str) -> None:
         entry = existing.get(task_id)
         if entry is not None:
             if entry.get("commit") != commit or entry.get("branch") != branch or entry.get("base") != previous_branch:
-                raise RuntimeError(f"published checkpoint identity changed for {task_id}")
+                raise PermanentPublicationError(f"published checkpoint identity changed for {task_id}")
             validate_published_pr(cfg, entry, branch=branch, base=previous_branch, commit=commit)
         else:
             push_commit(cfg, worktree, commit, branch, session)
@@ -496,11 +502,45 @@ def sync(state_dir: str) -> None:
 
     if state.get("phase") == "landed":
         head = exact_landing_commit(state, worktree)
-        handoff_branch = f"stint/deep-{session}-handoff"
         handoff = publication.get("handoff")
+        handoff_branch = f"stint/deep-{session}-handoff"
+        versioned_handoff_branch = f"stint/deep-{session}-handoff-{head[:12]}"
+        if handoff is not None and handoff.get("commit") == head and handoff.get("branch") == versioned_handoff_branch:
+            # A resumed landing keeps its versioned final identity on every
+            # subsequent heartbeat/publication sync.
+            handoff_branch = versioned_handoff_branch
+        if handoff is not None and (
+            handoff.get("commit") != head
+            or handoff.get("branch") != handoff_branch
+            or handoff.get("base") != previous_branch
+        ):
+            handoff_branch = versioned_handoff_branch
+            history = publication.setdefault("handoffHistory", [])
+            old_key = (handoff.get("branch"), handoff.get("commit"), handoff.get("prNumber"))
+            old_record = next((entry for entry in history if (entry.get("branch"), entry.get("commit"), entry.get("prNumber")) == old_key), None)
+            if old_record is None:
+                old_record = dict(handoff)
+                old_record.update({"status": "superseding", "supersededAt": utc_now()})
+                history.append(old_record)
+            new_identity = {"commit": head, "branch": handoff_branch, "base": previous_branch}
+            if not any(
+                drift.get("previous", {}).get("branch") == handoff.get("branch")
+                and drift.get("previous", {}).get("commit") == handoff.get("commit")
+                and drift.get("next") == new_identity
+                for drift in publication.setdefault("handoffDrifts", [])
+            ):
+                publication["handoffDrifts"].append({
+                    "previous": {"commit": handoff.get("commit", ""), "branch": handoff.get("branch", ""), "base": handoff.get("base", "")},
+                    "next": new_identity,
+                    "detectedAt": utc_now(),
+                })
+            old_record["supersededBy"] = new_identity
+            publication["updatedAt"] = utc_now()
+            atomic_json(publication_path, publication)
+            handoff = None
         if handoff is not None:
             if handoff.get("commit") != head or handoff.get("branch") != handoff_branch or handoff.get("base") != previous_branch:
-                raise RuntimeError("published handoff identity differs from durable landing state")
+                raise PermanentPublicationError("published handoff identity differs from durable landing state")
             validate_published_pr(cfg, handoff, branch=handoff_branch, base=previous_branch, commit=head)
         else:
             push_commit(cfg, worktree, head, handoff_branch, session)
@@ -527,6 +567,25 @@ def sync(state_dir: str) -> None:
             }
             publication["handoff"] = handoff
 
+        # Close superseded draft handoffs only after the replacement PR exists.
+        # A pending close is retried on later syncs without losing the old identity.
+        for old_record in publication.get("handoffHistory", []):
+            if old_record.get("status") not in {"superseding", "close_pending"}:
+                continue
+            old_record["status"] = "close_pending"
+            try:
+                supersede_pr(cfg, old_record, handoff)
+            except Exception:
+                old_record["lastCloseError"] = utc_now()
+                publication["updatedAt"] = utc_now()
+                atomic_json(publication_path, publication)
+                raise
+            old_record["status"] = "superseded"
+            old_record["supersededAt"] = old_record.get("supersededAt") or utc_now()
+            old_record.pop("lastCloseError", None)
+            publication["updatedAt"] = utc_now()
+            atomic_json(publication_path, publication)
+
     publication["lastError"] = ""
     publication["updatedAt"] = utc_now()
     atomic_json(publication_path, publication)
@@ -535,6 +594,30 @@ def sync(state_dir: str) -> None:
     if handoff.get("prUrl"):
         urls.append(handoff["prUrl"])
     print(f"GITHUB_PUBLISH_OK session={session} prs={len(urls)}")
+
+
+def supersede_pr(cfg: dict, old: dict, replacement: dict) -> None:
+    """Close an earlier handoff PR after validating its immutable identity."""
+    number = int(old.get("prNumber", 0))
+    if number <= 0:
+        raise PermanentPublicationError("superseded handoff has no valid PR number")
+    pr = api_request(cfg, "GET", f"/repos/{cfg['repository']}/pulls/{number}") or {}
+    head = pr.get("head") or {}
+    if (
+        str((pr.get("base") or {}).get("ref", "")) != str(old.get("base", ""))
+        or str(head.get("ref", "")) != str(old.get("branch", ""))
+        or str(head.get("sha", "")) != str(old.get("commit", ""))
+        or str(((head.get("repo") or {}).get("full_name", ""))) != cfg["repository"]
+    ):
+        raise PermanentPublicationError(f"superseded PR #{number} no longer matches its recorded handoff identity")
+    if pr.get("state") == "closed":
+        return
+    if pr.get("state") != "open":
+        raise PermanentPublicationError(f"superseded PR #{number} has unexpected state {pr.get('state')!r}")
+    old_body = str(pr.get("body", "")).rstrip()
+    marker = f"Superseded by [{replacement.get('branch')}@{replacement.get('commit')}]({replacement.get('prUrl', '')})."
+    body = old_body if marker in old_body else (old_body + "\n\n" + marker).strip()
+    api_request(cfg, "PATCH", f"/repos/{cfg['repository']}/pulls/{number}", {"state": "closed", "body": body})
 
 
 def main() -> int:
@@ -563,7 +646,7 @@ def main() -> int:
                 raise
     except Exception as exc:
         print(f"GITHUB_PUBLISH_FAIL {exc}", file=sys.stderr)
-        return 1
+        return 3 if isinstance(exc, PermanentPublicationError) else 1
     return 0
 
 

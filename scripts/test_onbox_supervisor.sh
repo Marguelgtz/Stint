@@ -81,4 +81,43 @@ run_supervisor archive-disabled 0 "" success
 run_supervisor archive-missing 0 "$TMP/missing-archive" failure
 run_supervisor nonterminal-success 0 "$TMP/archive" failure executing
 
+cat >"$TMP/permanent-publisher" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' call >>"$PUBLISH_CALLS"
+exit 3
+EOF
+chmod 0700 "$TMP/permanent-publisher"
+: >"$TMP/publisher-calls"
+printf 'fixture-token\n' >"$TMP/github-token"
+set +e
+env \
+  STINT_ONBOX_BIN="$TMP/stint" \
+  STINT_ONBOX_ROOT="$TMP/permanent-publish-root" \
+  STINT_ONBOX_INSTANCE_ID=4242 \
+  STINT_ONBOX_DEADLINE=2099-01-01T00:00:00Z \
+  STINT_ONBOX_SKIP_WATCHDOG=1 \
+  STINT_ONBOX_SKIP_GITHUB=0 \
+  STINT_ONBOX_GITHUB_PUBLISH="$TMP/permanent-publisher" \
+  STINT_GITHUB_TOKEN_FILE="$TMP/github-token" \
+  STINT_GITHUB_REPOSITORY=owner/repository \
+  STINT_GITHUB_BASE=main \
+  STINT_ONBOX_PUBLISH_RETRIES=12 \
+  STINT_ONBOX_PUBLISH_RETRY_SECONDS=0 \
+  PUBLISH_CALLS="$TMP/publisher-calls" \
+  EVENTS="$TMP/permanent-events" \
+  bash "$SUPERVISOR" run --mission "$TMP/mission.md" \
+  >"$TMP/permanent-out" 2>"$TMP/permanent-err"
+permanent_status=$?
+set -e
+if [ "$permanent_status" -eq 0 ]; then
+  cat "$TMP/permanent-out" "$TMP/permanent-err" >&2
+  echo "supervisor treated a permanent publication identity failure as success" >&2
+  exit 1
+fi
+grep -Fq 'stopped after permanent identity/policy failure' "$TMP/permanent-publish-root/supervisor.log"
+if grep -Fq 'attempt 1/12 failed; retrying' "$TMP/permanent-publish-root/supervisor.log"; then
+  echo "supervisor retried a permanent publication identity failure" >&2
+  exit 1
+fi
+
 printf 'on-box supervisor final archive fixtures passed\n'

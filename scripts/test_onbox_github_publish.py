@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import sys
 import subprocess
 import tempfile
 import unittest
@@ -173,6 +174,104 @@ class PublisherAuthorityTests(unittest.TestCase):
             handoff_path.write_text("changed\n", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "differs from persisted landingHandoff"):
                 PUBLISH.exact_landing_commit(state, str(repo))
+
+    def test_first_landing_then_resume_publishes_versioned_handoff_and_preserves_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            repo = root / "repo"
+            repo.mkdir()
+
+            def git(*args):
+                return subprocess.run(["git", "-C", str(repo), *args], check=True, text=True, capture_output=True).stdout.strip()
+
+            git("init", "-q", "-b", "main")
+            git("config", "user.name", "Fixture")
+            git("config", "user.email", "fixture@example.test")
+            (repo / "README.md").write_text("first landing\n", encoding="utf-8")
+            git("add", "README.md")
+            git("commit", "-qm", "first landing")
+            first_head = git("rev-parse", "HEAD")
+            handoff_path = root / "handoff.md"
+            handoff_path.write_text("First landing\n", encoding="utf-8")
+            state_path = root / "deep.json"
+            publication_path = root / "publication.json"
+            state = {
+                "sessionId": "20260924-120000",
+                "worktreePath": str(repo),
+                "phase": "landed",
+                "landingVerifyDone": True,
+                "landingHandoff": "First landing\n",
+                "landingCommit": first_head,
+                "handoffPath": str(handoff_path),
+                "tasks": [],
+                "github": self.state["github"],
+            }
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            ensured = []
+
+            def ensure(_cfg, *, session, branch, base, title, body, expected_head):
+                number = len(ensured) + 10
+                record = {"number": number, "branch": branch, "base": base, "head": expected_head, "url": f"https://github.com/owner/repository/pull/{number}"}
+                ensured.append(record)
+                return {"number": number, "url": record["url"]}
+
+            api_calls = []
+
+            def api(_cfg, method, path, payload=None):
+                api_calls.append((method, path, payload))
+                if method == "GET" and "/pulls/" in path:
+                    number = int(path.rsplit("/", 1)[1])
+                    record = next((item for item in ensured if item["number"] == number), None)
+                    if record is not None:
+                        return {
+                            "number": record["number"], "state": "open", "body": "Original handoff",
+                            "html_url": record["url"], "base": {"ref": record["base"]},
+                            "head": {"ref": record["branch"], "sha": record["head"], "repo": {"full_name": "owner/repository"}},
+                        }
+                return None
+
+            cfg = {**self.cfg, "token": "fixture", "token_file": "/fixture"}
+            with mock.patch.object(PUBLISH, "config", return_value=cfg), \
+                 mock.patch.object(PUBLISH, "push_commit"), \
+                 mock.patch.object(PUBLISH, "ensure_pr", side_effect=ensure), \
+                 mock.patch.object(PUBLISH, "api_request", side_effect=api):
+                PUBLISH.sync(str(root))
+                first = json.loads(publication_path.read_text(encoding="utf-8"))
+                self.assertEqual(first["handoff"]["branch"], "stint/deep-20260924-120000-handoff")
+
+                (repo / "README.md").write_text("resumed landing\n", encoding="utf-8")
+                git("add", "README.md")
+                git("commit", "-qm", "resumed landing")
+                second_head = git("rev-parse", "HEAD")
+                handoff_path.write_text("Second landing\n", encoding="utf-8")
+                state.update({"landingCommit": second_head, "landingHandoff": "Second landing\n"})
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+                PUBLISH.sync(str(root))
+                # Periodic publication on an unchanged resumed landing is
+                # idempotent; it must not supersede its own active handoff.
+                PUBLISH.sync(str(root))
+
+            final = json.loads(publication_path.read_text(encoding="utf-8"))
+            self.assertEqual(final["handoff"]["commit"], second_head)
+            self.assertEqual(final["handoff"]["branch"], f"stint/deep-20260924-120000-handoff-{second_head[:12]}")
+            self.assertEqual(final["handoffHistory"][0]["commit"], first_head)
+            self.assertEqual(final["handoffHistory"][0]["status"], "superseded")
+            self.assertEqual(final["handoffDrifts"][0]["previous"]["commit"], first_head)
+            self.assertEqual(final["handoffDrifts"][0]["next"]["commit"], second_head)
+            close = next((call for call in api_calls if call[0] == "PATCH"), None)
+            self.assertIsNotNone(close, "old handoff PR should be closed after replacement publication")
+            self.assertEqual(close[1], "/repos/owner/repository/pulls/10")
+            self.assertEqual(close[2]["state"], "closed")
+            self.assertIn("Superseded by", close[2]["body"])
+            self.assertEqual(len([call for call in api_calls if call[0] == "PATCH"]), 1)
+            self.assertEqual(len(ensured), 2, "repeat sync must reuse the active versioned handoff PR")
+
+    def test_permanent_publication_error_returns_nonretryable_exit_code(self):
+        with mock.patch.object(sys, "argv", ["publisher", "sync", "/unused"]), \
+             mock.patch.object(PUBLISH, "sync", side_effect=PUBLISH.PermanentPublicationError("identity conflict")), \
+             mock.patch.object(PUBLISH, "config", return_value=self.cfg), \
+             mock.patch.object(PUBLISH, "record_error"):
+            self.assertEqual(PUBLISH.main(), 3)
 
 
 if __name__ == "__main__":
