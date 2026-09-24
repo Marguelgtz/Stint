@@ -40,6 +40,7 @@ func TestPerformanceSampleRoundTrip(t *testing.T) {
 		PromptTokens:     100,
 		CompletionTokens: 256,
 		DecodeTokensSec:  137.2,
+		DecodeAvailable:  true,
 	}
 	if err := savePerformanceSample(paths, state, sample, sampledAt); err != nil {
 		t.Fatal(err)
@@ -58,8 +59,40 @@ func TestPerformanceSampleRoundTrip(t *testing.T) {
 	if snapshot.TTFT != 1800*time.Millisecond || snapshot.TotalLatency != 4*time.Second {
 		t.Fatalf("latencies = %s / %s", snapshot.TTFT, snapshot.TotalLatency)
 	}
-	if snapshot.DecodeTokensSec != 137.2 || snapshot.Age != 3*time.Minute {
+	if snapshot.DecodeTokensSec != 137.2 || !snapshot.DecodeAvailable || snapshot.Age != 3*time.Minute {
 		t.Fatalf("decode/age = %.1f / %s", snapshot.DecodeTokensSec, snapshot.Age)
+	}
+}
+
+func TestPerformanceSampleKeepsDecodeUnavailableReason(t *testing.T) {
+	paths := telemetryTestPaths(t)
+	state := telemetryPerfState()
+	gotReason := "stream exposed 1 generation updates for 45 completion tokens"
+	if err := savePerformanceSample(paths, state, perfSample{
+		TTFT: 3 * time.Second, Total: 4 * time.Second,
+		DecodeUnavailableReason: gotReason,
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := loadPerformanceSnapshot(paths, state, time.Now().UTC())
+	if !snapshot.Available || snapshot.DecodeAvailable || snapshot.DecodeUnavailableReason != gotReason {
+		t.Fatalf("unavailable decode snapshot = %+v", snapshot)
+	}
+}
+
+func TestLegacyPerformanceSampleDoesNotExposeUnverifiedDecodeRate(t *testing.T) {
+	paths := telemetryTestPaths(t)
+	state := telemetryPerfState()
+	if err := os.MkdirAll(paths.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"version":1,"instanceId":42,"runtime":"ninfer","contextTokens":172032,"sampledAt":"2026-08-31T08:10:00Z","ttftMilliseconds":6050,"totalMilliseconds":6050,"completionTokens":45,"decodeTokensSec":706044.7}`
+	if err := os.WriteFile(performanceSamplePath(paths), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := loadPerformanceSnapshot(paths, state, time.Now().UTC())
+	if !snapshot.Available || snapshot.DecodeAvailable || snapshot.DecodeTokensSec != 0 || snapshot.DecodeUnavailableReason == "" {
+		t.Fatalf("legacy performance snapshot = %+v, want latency only with decode unavailable", snapshot)
 	}
 }
 

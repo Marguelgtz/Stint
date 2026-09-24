@@ -12,8 +12,8 @@ import (
 
 func TestAveragePerf(t *testing.T) {
 	samples := []perfSample{
-		{TTFT: time.Second, Total: 5 * time.Second, PromptTokens: 100, CompletionTokens: 200, DecodeTokensSec: 50},
-		{TTFT: 3 * time.Second, Total: 9 * time.Second, PromptTokens: 300, CompletionTokens: 400, DecodeTokensSec: 70},
+		{TTFT: time.Second, Total: 5 * time.Second, PromptTokens: 100, CompletionTokens: 200, DecodeTokensSec: 50, DecodeAvailable: true},
+		{TTFT: 3 * time.Second, Total: 9 * time.Second, PromptTokens: 300, CompletionTokens: 400, DecodeTokensSec: 70, DecodeAvailable: true},
 	}
 	got := averagePerf(samples)
 	if got.TTFT != 2*time.Second {
@@ -28,6 +28,9 @@ func TestAveragePerf(t *testing.T) {
 	if math.Abs(got.DecodeTokensSec-60) > 0.001 {
 		t.Fatalf("decode = %.3f, want 60", got.DecodeTokensSec)
 	}
+	if !got.DecodeAvailable {
+		t.Fatal("decode should be available when all runs have verified timing")
+	}
 }
 
 func TestAveragePerfEmpty(t *testing.T) {
@@ -36,9 +39,19 @@ func TestAveragePerfEmpty(t *testing.T) {
 	}
 }
 
+func TestAveragePerfHidesRateWhenAnyRunLacksVerifiedTiming(t *testing.T) {
+	got := averagePerf([]perfSample{
+		{DecodeTokensSec: 100, DecodeAvailable: true},
+		{DecodeUnavailableReason: "stream did not expose all completion tokens"},
+	})
+	if got.DecodeAvailable || got.DecodeTokensSec != 0 || got.DecodeUnavailableReason == "" {
+		t.Fatalf("mixed decode average = %+v, want unavailable", got)
+	}
+}
+
 func TestBenchmarkCompletionWithRetryRecovers(t *testing.T) {
 	calls := 0
-	want := perfSample{TTFT: time.Second, Total: 2 * time.Second, CompletionTokens: 10, DecodeTokensSec: 9}
+	want := perfSample{TTFT: time.Second, Total: 2 * time.Second, CompletionTokens: 10, DecodeTokensSec: 9, DecodeAvailable: true}
 	benchmark := func(context.Context, *http.Client, string, int) (perfSample, error) {
 		calls++
 		if calls < 3 {
@@ -56,6 +69,72 @@ func TestBenchmarkCompletionWithRetryRecovers(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("sample = %#v, want %#v", got, want)
+	}
+}
+
+func TestReadPerfStreamMeasuresTokenUpdates(t *testing.T) {
+	started := time.Unix(0, 0)
+	stream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"R"}}]}`,
+		`data: {"choices":[{"delta":{"content":"E"}}]}`,
+		`data: {"choices":[{"delta":{"content":"A"}}]}`,
+		`data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}`,
+		`data: [DONE]`,
+	}, "\n") + "\n"
+	clock := steppedPerfClock(started, 100*time.Millisecond)
+	sample, err := readPerfStreamAt(strings.NewReader(stream), started, clock)
+	if err != nil {
+		t.Fatalf("readPerfStreamAt() error = %v", err)
+	}
+	if sample.TTFT != 100*time.Millisecond || sample.Total != 400*time.Millisecond {
+		t.Fatalf("TTFT/total = %s/%s, want 100ms/400ms", sample.TTFT, sample.Total)
+	}
+	if !sample.DecodeAvailable || math.Abs(sample.DecodeTokensSec-10) > 0.001 {
+		t.Fatalf("decode = %.3f available=%t, want 10 tok/s and available", sample.DecodeTokensSec, sample.DecodeAvailable)
+	}
+}
+
+func TestReadPerfStreamDoesNotInventRateForFinalBufferedText(t *testing.T) {
+	started := time.Unix(0, 0)
+	stream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"READY"}}]}`,
+		`data: {"choices":[],"usage":{"prompt_tokens":7413,"completion_tokens":45,"total_tokens":7458}}`,
+		`data: [DONE]`,
+	}, "\n") + "\n"
+	clock := steppedPerfClock(started, 100*time.Millisecond)
+	sample, err := readPerfStreamAt(strings.NewReader(stream), started, clock)
+	if err != nil {
+		t.Fatalf("readPerfStreamAt() error = %v", err)
+	}
+	if sample.DecodeAvailable || sample.DecodeTokensSec != 0 {
+		t.Fatalf("decode = %.3f available=%t, want unavailable", sample.DecodeTokensSec, sample.DecodeAvailable)
+	}
+	if !strings.Contains(sample.DecodeUnavailableReason, "1 generation updates for 45 completion tokens") {
+		t.Fatalf("decode unavailable reason = %q", sample.DecodeUnavailableReason)
+	}
+	if sample.TTFT != 100*time.Millisecond || sample.Total != 200*time.Millisecond {
+		t.Fatalf("TTFT/total = %s/%s, want 100ms/200ms", sample.TTFT, sample.Total)
+	}
+}
+
+func TestReadPerfStreamRejectsReasoningOnlyCompletion(t *testing.T) {
+	started := time.Unix(0, 0)
+	stream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"reasoning_content":"think"}}]}`,
+		`data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}`,
+		`data: [DONE]`,
+	}, "\n") + "\n"
+	_, err := readPerfStreamAt(strings.NewReader(stream), started, steppedPerfClock(started, 100*time.Millisecond))
+	if err == nil || !strings.Contains(err.Error(), "without user-visible content") {
+		t.Fatalf("error = %v, want no-user-visible-content error", err)
+	}
+}
+
+func steppedPerfClock(start time.Time, step time.Duration) func() time.Time {
+	var n time.Duration
+	return func() time.Time {
+		n += step
+		return start.Add(n)
 	}
 }
 
