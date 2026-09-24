@@ -138,4 +138,20 @@ if [ "$result" -eq 0 ] || [ -e "$STINT_TEST_PREFLIGHT_MARKER" ]; then
   exit 1
 fi
 grep -Fq 'concurrent lane smoke requires STINT_SMOKE_CLIENTS=2' "$TMP/artifacts/launcher.log"
+
+LAUNCHER="$SCRIPT_DIR/run-deep-compression-smoke.sh"
+fixture_line="$(grep -nF 'SMOKE_REPO=/root/stint-deep-dashboard-smoke bash -s' "$LAUNCHER" | head -n 1 | cut -d: -f1)"
+provision_line="$(grep -nF 'STINT_TARGET_REPO=/root/stint-deep-dashboard-smoke' "$LAUNCHER" | head -n 1 | cut -d: -f1)"
+if [ -z "$fixture_line" ] || [ -z "$provision_line" ] || [ "$fixture_line" -ge "$provision_line" ]; then
+  echo "compression fixture must be created before provisioning validates STINT_TARGET_REPO" >&2
+  exit 1
+fi
+grep -Fq 'down --yes' "$LAUNCHER" || {
+  echo "unattended smoke cleanup must confirm teardown with --yes" >&2
+  exit 1
+}
+if grep -Fq -- '--worker hermes' "$LAUNCHER"; then
+  echo "Deep Work start must not pass the removed --worker flag" >&2
+  exit 1
+fi
 echo "deep-compression smoke preflight passed without provider mutation"
