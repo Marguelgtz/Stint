@@ -219,12 +219,15 @@ class PublisherAuthorityTests(unittest.TestCase):
 
             def api(_cfg, method, path, payload=None):
                 api_calls.append((method, path, payload))
-                if method == "GET" and path.endswith("/pulls/10"):
-                    old = ensured[0]
-                    return {
-                        "number": old["number"], "state": "open", "body": "Original handoff",
-                        "base": {"ref": old["base"]}, "head": {"ref": old["branch"], "sha": old["head"], "repo": {"full_name": "owner/repository"}},
-                    }
+                if method == "GET" and "/pulls/" in path:
+                    number = int(path.rsplit("/", 1)[1])
+                    record = next((item for item in ensured if item["number"] == number), None)
+                    if record is not None:
+                        return {
+                            "number": record["number"], "state": "open", "body": "Original handoff",
+                            "html_url": record["url"], "base": {"ref": record["base"]},
+                            "head": {"ref": record["branch"], "sha": record["head"], "repo": {"full_name": "owner/repository"}},
+                        }
                 return None
 
             cfg = {**self.cfg, "token": "fixture", "token_file": "/fixture"}
@@ -244,6 +247,9 @@ class PublisherAuthorityTests(unittest.TestCase):
                 state.update({"landingCommit": second_head, "landingHandoff": "Second landing\n"})
                 state_path.write_text(json.dumps(state), encoding="utf-8")
                 PUBLISH.sync(str(root))
+                # Periodic publication on an unchanged resumed landing is
+                # idempotent; it must not supersede its own active handoff.
+                PUBLISH.sync(str(root))
 
             final = json.loads(publication_path.read_text(encoding="utf-8"))
             self.assertEqual(final["handoff"]["commit"], second_head)
@@ -257,6 +263,8 @@ class PublisherAuthorityTests(unittest.TestCase):
             self.assertEqual(close[1], "/repos/owner/repository/pulls/10")
             self.assertEqual(close[2]["state"], "closed")
             self.assertIn("Superseded by", close[2]["body"])
+            self.assertEqual(len([call for call in api_calls if call[0] == "PATCH"]), 1)
+            self.assertEqual(len(ensured), 2, "repeat sync must reuse the active versioned handoff PR")
 
     def test_permanent_publication_error_returns_nonretryable_exit_code(self):
         with mock.patch.object(sys, "argv", ["publisher", "sync", "/unused"]), \

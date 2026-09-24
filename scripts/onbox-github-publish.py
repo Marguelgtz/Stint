@@ -504,12 +504,17 @@ def sync(state_dir: str) -> None:
         head = exact_landing_commit(state, worktree)
         handoff = publication.get("handoff")
         handoff_branch = f"stint/deep-{session}-handoff"
+        versioned_handoff_branch = f"stint/deep-{session}-handoff-{head[:12]}"
+        if handoff is not None and handoff.get("commit") == head and handoff.get("branch") == versioned_handoff_branch:
+            # A resumed landing keeps its versioned final identity on every
+            # subsequent heartbeat/publication sync.
+            handoff_branch = versioned_handoff_branch
         if handoff is not None and (
             handoff.get("commit") != head
             or handoff.get("branch") != handoff_branch
             or handoff.get("base") != previous_branch
         ):
-            handoff_branch = f"stint/deep-{session}-handoff-{head[:12]}"
+            handoff_branch = versioned_handoff_branch
             history = publication.setdefault("handoffHistory", [])
             old_key = (handoff.get("branch"), handoff.get("commit"), handoff.get("prNumber"))
             old_record = next((entry for entry in history if (entry.get("branch"), entry.get("commit"), entry.get("prNumber")) == old_key), None)
