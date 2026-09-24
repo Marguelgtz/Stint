@@ -89,10 +89,6 @@ func runDeepStart(args []string) error {
 	if err != nil {
 		return err
 	}
-	launcher, err := findDeepProductionLauncher()
-	if err != nil {
-		return err
-	}
 	stintBinary, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve running Stint binary: %w", err)
@@ -101,7 +97,7 @@ func runDeepStart(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve running Stint binary path: %w", err)
 	}
-	return runDeepStartWith(args, paths, launcher, stintBinary, runDeepProductionLauncher, os.Stdout, os.Stderr, time.Now().UTC())
+	return runDeepStartWith(args, paths, "", stintBinary, runDeepProductionLauncher, os.Stdout, os.Stderr, time.Now().UTC())
 }
 
 func runDeepStartWith(args []string, paths config.Paths, launcher, stintBinary string, runner deepProductionLauncher, stdout, stderr io.Writer, now time.Time) error {
@@ -119,8 +115,15 @@ func runDeepStartWith(args []string, paths config.Paths, launcher, stintBinary s
 	fs.StringVar(&f.actionPlan, "action-plan", "", "optional local or repository-relative action-plan seed")
 	fs.StringVar(&f.githubToken, "github-token-file", "", "GitHub token file (default: ~/.config/stint/github-token)")
 	fs.StringVar(&f.r2Env, "r2-env-file", "", "optional R2 environment file (default: ~/.config/vanta-r2.env when present)")
+	showHelp := false
+	fs.BoolVar(&showHelp, "help", false, "show Deep Work command help")
+	fs.BoolVar(&showHelp, "h", false, "show Deep Work command help")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if showHelp {
+		printCommandHelp("deep")
+		return nil
 	}
 	if fs.NArg() != 0 {
 		return errors.New("deep start does not accept positional arguments")
@@ -155,6 +158,11 @@ func runDeepStartWith(args []string, paths config.Paths, launcher, stintBinary s
 	}
 	if f.reasoning == "" {
 		return errors.New("--reasoning cannot be empty")
+	}
+	if launcher == "" {
+		if launcher, err = findDeepProductionLauncher(); err != nil {
+			return err
+		}
 	}
 	plan, err := prepareDeepProductionLaunch(f, paths, launcher, stintBinary, now)
 	if err != nil {

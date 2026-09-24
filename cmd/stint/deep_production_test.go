@@ -210,6 +210,23 @@ func TestDeepProductionStartBuildsIdentityContractAndWaitsForDurableRunning(t *t
 	}
 }
 
+func TestDeepStartHelpDoesNotRequireProductionLauncher(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"-h"}} {
+		var runErr error
+		output := captureOutput(t, func() {
+			runErr = runDeepStartWith(args, config.Paths{}, "", "/tmp/stint", nil, io.Discard, io.Discard, time.Now().UTC())
+		})
+		if runErr != nil {
+			t.Fatalf("runDeepStartWith(%v) error = %v", args, runErr)
+		}
+		for _, want := range []string{"STINT DEEP", "--repo", "--mission", "--task-timeout"} {
+			if !strings.Contains(output, want) {
+				t.Errorf("help for %v missing %q:\n%s", args, want, output)
+			}
+		}
+	}
+}
+
 func TestDeepProductionStartRejectsInvalidLocalStateBeforeLauncher(t *testing.T) {
 	tests := []struct {
 		name  string
