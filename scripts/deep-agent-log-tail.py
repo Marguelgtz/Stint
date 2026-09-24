@@ -9,6 +9,7 @@ from pathlib import Path
 DEFAULT_PATH = "/root/.hermes/logs/agent.log"
 MAX_LINES = 80
 MAX_BYTES = 16 * 1024
+SECRET_FIELD = r"(?:[A-Z0-9]+[_-])*(?:api[_-]?key|access[_-]?key(?:[_-]?id)?|access[_-]?token|refresh[_-]?token|secret(?:[_-]?access)?(?:[_-]?key)?|private[_-]?key|signing[_-]?key|encryption[_-]?key|token|password|authorization|credentials?)"
 SECRET_PATTERNS = (
     (re.compile(r"(?i)(\bBearer\s+)[A-Za-z0-9._~+/-]+=*"), r"\1[REDACTED]"),
     (re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,})\b"), "[REDACTED_GITHUB_TOKEN]"),
@@ -16,8 +17,9 @@ SECRET_PATTERNS = (
     (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "[REDACTED_SLACK_TOKEN]"),
     (re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b"), "[REDACTED_GOOGLE_API_KEY]"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"), "[REDACTED_API_KEY]"),
-    (re.compile(r'''(?i)("(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization)"\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;\]}]+)'''), r'\1"[REDACTED]"'),
-    (re.compile(r'''(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization)\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;\]}]+)'''), r'\1"[REDACTED]"'),
+    (re.compile(rf'''(?i)(\bAuthorization\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,;\]\x7d]+)'''), r'\1"[REDACTED]"'),
+    (re.compile(rf'''(?i)("{SECRET_FIELD}"\s*:\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;\]\x7d]+)'''), r'\1"[REDACTED]"'),
+    (re.compile(rf'''(?i)(\b{SECRET_FIELD}\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;\]\x7d]+)'''), r'\1"[REDACTED]"'),
 )
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 
