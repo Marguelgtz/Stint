@@ -1,9 +1,11 @@
 # Stint repository grounding handoff
 
-**Status:** authoritative main is `db993e40da21ab0a4bf0895bde7e0969fa293785`
-after docs-only PR #144; landed-main CI run `35939026936` passed all five
-required jobs. The latest product-code change is PR #143 at
-`089607965715bd9435cc0e3b671b4f34c594e446`; #144 changed only grounding docs.
+**Status:** authoritative main at this grounding checkpoint is
+`b0295dac85fc4ef620feddcab9118f803c8fe123` after docs-only PR #145;
+landed-main CI run `35940170909` passed all five required jobs. The latest
+product-code change is PR #143 at
+`089607965715bd9435cc0e3b671b4f34c594e446`; #144 and #145 changed only
+grounding docs.
 The live parallel-range run on one RTX 4090 completed the immutable bundle
 transfer, SHA verification, installation, model load, READY and teardown. PR
 #143 fixed Stint's invalid decode-rate reporting. Full release-bundle
@@ -13,7 +15,7 @@ release-bundle stays opt-in.
 ## Authoritative repository and verification
 
 - Product code main after #143: `089607965715bd9435cc0e3b671b4f34c594e446`.
-- Current main after docs-only #144: `db993e40da21ab0a4bf0895bde7e0969fa293785`; landed-main CI `35939026936` passed all five required jobs.
+- Grounding checkpoint main after docs-only #145: `b0295dac85fc4ef620feddcab9118f803c8fe123`; landed-main CI `35940170909` passed all five required jobs.
 - PR #139 exact-head run 35924946874 and landed-main run 35925100519 passed all five required jobs; it records the source-build RTX 4090 performance baseline.
 - PR #140 exact-head run `35928576565` and landed-main run `35928870944`
   passed all five required CI jobs. PR #140 records the incomplete RTX 4090
@@ -22,6 +24,7 @@ release-bundle stays opt-in.
 - PR #142 records that live result and its limitations; exact-head run `35936860289` and landed-main run `35937034112` passed all five required jobs. Merge SHA: `59130984deb751034921fac262cdacc073e3d75b`.
 - PR #143 fixes invalid decode-rate reporting for buffered/reasoning-only output; exact-head run `35938070090` and landed-main run `35938220186` passed all five required jobs. Merge SHA: `089607965715bd9435cc0e3b671b4f34c594e446`.
 - PR #144 refreshed the canonical plan, handoff and ledger; head `4cce22805fc909e986d188557d9d446e8b9a137f`, base `089607965715bd9435cc0e3b671b4f34c594e446`, merge `db993e40da21ab0a4bf0895bde7e0969fa293785`. Exact-head run `35938902247` and landed-main run `35939026936` passed all five required jobs.
+- PR #145 refreshed the runtime/model compatibility review and canonical open-PR snapshot; head `47846331212e50f88d9c6ec680b09dfb21407f09`, base `db993e40da21ab0a4bf0895bde7e0969fa293785`, merge `b0295dac85fc4ef620feddcab9118f803c8fe123`. Exact-head run `35940051705` and landed-main run `35940170909` passed all five required jobs.
 - Exact landed-main push run `35916137793` passed all five required jobs.
 - PR #131 merged as `2b5f7342093c520175b608a1a64bbce0b9443f31`. Its PR run
   `35905726077` appeared green but physically tested synthetic merge tree
@@ -52,7 +55,7 @@ release-bundle stays opt-in.
   [replacement comment](https://github.com/Marguelgtz/Stint/pull/93#issuecomment-5801853350)
   records the new docs index and paths. The final open PR set is #85 and
   protected generated evidence #110–#113.
-- The current open PR set after #144 remains #85 and protected evidence
+- The open PR set verified after #145 remains #85 and protected evidence
   #110–#113; their exact heads and observed base SHAs are recorded in the
   refreshed ledger snapshot.
 - The original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa`
