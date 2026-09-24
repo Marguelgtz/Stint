@@ -22,7 +22,7 @@ func TestSnapshotJSONUsesExplicitTimeUnits(t *testing.T) {
 			ScheduledDuration: time.Hour,
 		},
 		Health:      sessionHealth{Endpoint: endpointHealth{Refreshed: true, Healthy: true, Latency: 42 * time.Millisecond}},
-		Performance: performanceSnapshot{Available: true, TTFT: 1500 * time.Millisecond, TotalLatency: 4 * time.Second, DecodeTokensSec: 123.4, Age: 90 * time.Second},
+		Performance: performanceSnapshot{Available: true, TTFT: 1500 * time.Millisecond, TotalLatency: 4 * time.Second, DecodeTokensSec: 123.4, DecodeAvailable: true, Age: 90 * time.Second},
 	}
 	encoded, err := json.Marshal(snapshotJSON(snapshot))
 	if err != nil {

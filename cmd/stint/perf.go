@@ -47,18 +47,21 @@ type perfUsage struct {
 type perfChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"delta"`
 	} `json:"choices"`
 	Usage *perfUsage `json:"usage,omitempty"`
 }
 
 type perfSample struct {
-	TTFT             time.Duration
-	Total            time.Duration
-	PromptTokens     int
-	CompletionTokens int
-	DecodeTokensSec  float64
+	TTFT                    time.Duration
+	Total                   time.Duration
+	PromptTokens            int
+	CompletionTokens        int
+	DecodeTokensSec         float64
+	DecodeAvailable         bool
+	DecodeUnavailableReason string
 }
 
 type perfBenchmarkFunc func(context.Context, *http.Client, string, int) (perfSample, error)
@@ -124,8 +127,12 @@ func runPerf(args []string) error {
 			fmt.Printf("Run %-2d          recovered after %d attempts\n", i+1, attempts)
 		}
 		samples = append(samples, sample)
-		fmt.Printf("Run %-2d          TTFT %6.2fs   total %6.2fs   decode %6.1f tok/s\n",
-			i+1, sample.TTFT.Seconds(), sample.Total.Seconds(), sample.DecodeTokensSec)
+		decode := fmt.Sprintf("%.1f tok/s", sample.DecodeTokensSec)
+		if !sample.DecodeAvailable {
+			decode = "unavailable"
+		}
+		fmt.Printf("Run %-2d          TTFT %6.2fs   total %6.2fs   decode %s\n",
+			i+1, sample.TTFT.Seconds(), sample.Total.Seconds(), decode)
 	}
 
 	avg := averagePerf(samples)
@@ -139,7 +146,11 @@ func runPerf(args []string) error {
 	if avg.CompletionTokens > 0 {
 		fmt.Printf("Output tokens   %d\n", avg.CompletionTokens)
 	}
-	fmt.Printf("Decode speed    %.1f tok/s\n", avg.DecodeTokensSec)
+	if avg.DecodeAvailable {
+		fmt.Printf("Decode speed    %.1f tok/s\n", avg.DecodeTokensSec)
+	} else {
+		fmt.Printf("Decode speed    unavailable · %s\n", avg.DecodeUnavailableReason)
+	}
 	if gpu, err := samplePerfGPU(context.Background(), paths, state); err == nil && gpu.MemoryUsedMiB != nil && gpu.MemoryTotalMiB != nil {
 		extra := ""
 		if gpu.UtilizationPercent != nil {
@@ -211,9 +222,18 @@ func benchmarkCompletion(ctx context.Context, client *http.Client, prompt string
 		return perfSample{}, fmt.Errorf("endpoint returned %s: %s", resp.Status, strings.TrimSpace(string(message)))
 	}
 
+	return readPerfStream(resp.Body, started)
+}
+
+func readPerfStream(body io.Reader, started time.Time) (perfSample, error) {
+	return readPerfStreamAt(body, started, time.Now)
+}
+
+func readPerfStreamAt(body io.Reader, started time.Time, now func() time.Time) (perfSample, error) {
 	sample := perfSample{}
-	var firstToken time.Time
-	scanner := bufio.NewScanner(resp.Body)
+	var firstVisible, firstGenerated, lastGenerated time.Time
+	generationUpdates := 0
+	scanner := bufio.NewScanner(body)
 	buffer := make([]byte, 64*1024)
 	scanner.Buffer(buffer, 2*1024*1024)
 	for scanner.Scan() {
@@ -230,8 +250,19 @@ func benchmarkCompletion(ctx context.Context, client *http.Client, prompt string
 			continue
 		}
 		for _, choice := range chunk.Choices {
-			if choice.Delta.Content != "" && firstToken.IsZero() {
-				firstToken = time.Now()
+			content := choice.Delta.Content
+			reasoning := choice.Delta.ReasoningContent
+			var at time.Time
+			if content != "" || reasoning != "" {
+				at = now()
+				generationUpdates++
+				if firstGenerated.IsZero() {
+					firstGenerated = at
+				}
+				lastGenerated = at
+			}
+			if content != "" && firstVisible.IsZero() {
+				firstVisible = at
 			}
 		}
 		if chunk.Usage != nil {
@@ -242,14 +273,21 @@ func benchmarkCompletion(ctx context.Context, client *http.Client, prompt string
 	if err := scanner.Err(); err != nil {
 		return perfSample{}, fmt.Errorf("stream interrupted: %w", err)
 	}
-	sample.Total = time.Since(started)
-	if firstToken.IsZero() {
-		return perfSample{}, errors.New("stream completed without a generated token")
+	sample.Total = now().Sub(started)
+	if firstVisible.IsZero() {
+		return perfSample{}, errors.New("stream completed without user-visible content")
 	}
-	sample.TTFT = firstToken.Sub(started)
-	decodeDuration := sample.Total - sample.TTFT
-	if sample.CompletionTokens > 1 && decodeDuration > 0 {
-		sample.DecodeTokensSec = float64(sample.CompletionTokens-1) / decodeDuration.Seconds()
+	sample.TTFT = firstVisible.Sub(started)
+	switch {
+	case sample.CompletionTokens <= 1:
+		sample.DecodeUnavailableReason = "endpoint did not report multiple completion tokens"
+	case generationUpdates != sample.CompletionTokens:
+		sample.DecodeUnavailableReason = fmt.Sprintf("stream exposed %d generation updates for %d completion tokens", generationUpdates, sample.CompletionTokens)
+	case lastGenerated.Sub(firstGenerated) <= 0:
+		sample.DecodeUnavailableReason = "stream did not expose a measurable token interval"
+	default:
+		sample.DecodeTokensSec = float64(sample.CompletionTokens-1) / lastGenerated.Sub(firstGenerated).Seconds()
+		sample.DecodeAvailable = true
 	}
 	return sample, nil
 }
@@ -259,18 +297,33 @@ func averagePerf(samples []perfSample) perfSample {
 		return perfSample{}
 	}
 	var result perfSample
+	result.DecodeAvailable = true
 	for _, sample := range samples {
 		result.TTFT += sample.TTFT
 		result.Total += sample.Total
 		result.PromptTokens += sample.PromptTokens
 		result.CompletionTokens += sample.CompletionTokens
-		result.DecodeTokensSec += sample.DecodeTokensSec
+		if !sample.DecodeAvailable {
+			result.DecodeAvailable = false
+			if result.DecodeUnavailableReason == "" {
+				result.DecodeUnavailableReason = sample.DecodeUnavailableReason
+			}
+		} else {
+			result.DecodeTokensSec += sample.DecodeTokensSec
+		}
 	}
 	n := len(samples)
 	result.TTFT /= time.Duration(n)
 	result.Total /= time.Duration(n)
 	result.PromptTokens /= n
 	result.CompletionTokens /= n
-	result.DecodeTokensSec /= float64(n)
+	if result.DecodeAvailable {
+		result.DecodeTokensSec /= float64(n)
+	} else {
+		result.DecodeTokensSec = 0
+		if result.DecodeUnavailableReason == "" {
+			result.DecodeUnavailableReason = "one or more runs lacked complete token-level stream data"
+		}
+	}
 	return result
 }

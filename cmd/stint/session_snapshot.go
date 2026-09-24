@@ -94,15 +94,17 @@ type gpuTelemetry struct {
 }
 
 type performanceSnapshot struct {
-	Available         bool          `json:"available"`
-	TTFT              time.Duration `json:"-"`
-	TotalLatency      time.Duration `json:"-"`
-	PromptTokens      int           `json:"promptTokens,omitempty"`
-	CompletionTokens  int           `json:"completionTokens,omitempty"`
-	DecodeTokensSec   float64       `json:"decodeTokensSec,omitempty"`
-	SampledAt         time.Time     `json:"sampledAt,omitempty"`
-	Age               time.Duration `json:"-"`
-	UnavailableReason string        `json:"unavailableReason,omitempty"`
+	Available               bool          `json:"available"`
+	TTFT                    time.Duration `json:"-"`
+	TotalLatency            time.Duration `json:"-"`
+	PromptTokens            int           `json:"promptTokens,omitempty"`
+	CompletionTokens        int           `json:"completionTokens,omitempty"`
+	DecodeTokensSec         float64       `json:"decodeTokensSec,omitempty"`
+	DecodeAvailable         bool          `json:"decodeAvailable"`
+	DecodeUnavailableReason string        `json:"decodeUnavailableReason,omitempty"`
+	SampledAt               time.Time     `json:"sampledAt,omitempty"`
+	Age                     time.Duration `json:"-"`
+	UnavailableReason       string        `json:"unavailableReason,omitempty"`
 }
 
 type sessionSnapshot struct {

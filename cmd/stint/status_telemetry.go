@@ -232,7 +232,11 @@ func printSessionSnapshotHuman(snapshot sessionSnapshot, refreshed bool) {
 	fmt.Println("\nPERFORMANCE")
 	if snapshot.Performance.Available {
 		fmt.Printf("TTFT               %.2fs\n", snapshot.Performance.TTFT.Seconds())
-		fmt.Printf("Decode             %.1f tok/s\n", snapshot.Performance.DecodeTokensSec)
+		if snapshot.Performance.DecodeAvailable {
+			fmt.Printf("Decode             %.1f tok/s\n", snapshot.Performance.DecodeTokensSec)
+		} else {
+			fmt.Printf("Decode             unavailable · %s\n", snapshot.Performance.DecodeUnavailableReason)
+		}
 		if snapshot.Performance.PromptTokens > 0 {
 			fmt.Printf("Sample prompt    %d tokens\n", snapshot.Performance.PromptTokens)
 		}
@@ -354,15 +358,17 @@ func snapshotJSON(snapshot sessionSnapshot) map[string]any {
 			"error":             snapshot.Inference.Meta.Error,
 		},
 		"performance": map[string]any{
-			"available":         snapshot.Performance.Available,
-			"ttftMilliseconds":  float64(snapshot.Performance.TTFT) / float64(time.Millisecond),
-			"totalMilliseconds": float64(snapshot.Performance.TotalLatency) / float64(time.Millisecond),
-			"promptTokens":      snapshot.Performance.PromptTokens,
-			"completionTokens":  snapshot.Performance.CompletionTokens,
-			"decodeTokensSec":   snapshot.Performance.DecodeTokensSec,
-			"sampledAt":         snapshot.Performance.SampledAt,
-			"ageSeconds":        snapshot.Performance.Age.Seconds(),
-			"unavailableReason": snapshot.Performance.UnavailableReason,
+			"available":               snapshot.Performance.Available,
+			"ttftMilliseconds":        float64(snapshot.Performance.TTFT) / float64(time.Millisecond),
+			"totalMilliseconds":       float64(snapshot.Performance.TotalLatency) / float64(time.Millisecond),
+			"promptTokens":            snapshot.Performance.PromptTokens,
+			"completionTokens":        snapshot.Performance.CompletionTokens,
+			"decodeTokensSec":         snapshot.Performance.DecodeTokensSec,
+			"decodeAvailable":         snapshot.Performance.DecodeAvailable,
+			"decodeUnavailableReason": snapshot.Performance.DecodeUnavailableReason,
+			"sampledAt":               snapshot.Performance.SampledAt,
+			"ageSeconds":              snapshot.Performance.Age.Seconds(),
+			"unavailableReason":       snapshot.Performance.UnavailableReason,
 		},
 	}
 }

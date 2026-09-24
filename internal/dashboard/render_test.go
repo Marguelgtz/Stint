@@ -223,6 +223,22 @@ func TestRenderPerformanceShowsLiveTraffic(t *testing.T) {
 	}
 }
 
+func TestRenderPerformanceExplainsUnavailableDecodeRate(t *testing.T) {
+	model := fixtureModel(120)
+	model.Height = 48
+	model.View = Performance
+	model.Perf = Perf{
+		Available: true, Decode: "unavailable", TTFT: "6.05s", Total: "6.05s",
+		Error: "stream exposed 1 generation updates for 45 completion tokens",
+	}
+	out := stripANSI(Render(model))
+	for _, want := range []string{"Decode             unavailable", "Decode unavailable: stream exposed 1 generation updates for 45 completion tokens"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("performance view missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRenderPerformanceLiveTrafficUnavailable(t *testing.T) {
 	model := fixtureModel(120)
 	model.Height = 48

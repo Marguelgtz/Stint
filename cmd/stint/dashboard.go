@@ -851,13 +851,18 @@ func dashboardGPU(value gpuTelemetry) dash.GPU {
 }
 
 func dashboardPerf(value performanceSnapshot) dash.Perf {
-	result := dash.Perf{Available: value.Available, Error: value.UnavailableReason}
+	result := dash.Perf{Available: value.Available, Error: value.DecodeUnavailableReason}
 	if !value.Available {
+		result.Error = value.UnavailableReason
 		return result
 	}
 	result.TTFT = fmt.Sprintf("%.2fs", value.TTFT.Seconds())
 	result.Total = fmt.Sprintf("%.2fs", value.TotalLatency.Seconds())
-	result.Decode = fmt.Sprintf("%.1f tok/s", value.DecodeTokensSec)
+	if value.DecodeAvailable {
+		result.Decode = fmt.Sprintf("%.1f tok/s", value.DecodeTokensSec)
+	} else {
+		result.Decode = "unavailable"
+	}
 	result.PromptTokens = value.PromptTokens
 	result.CompletionTokens = value.CompletionTokens
 	result.Age = formatSessionDuration(value.Age)

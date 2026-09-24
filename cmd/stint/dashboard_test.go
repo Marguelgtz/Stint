@@ -10,6 +10,17 @@ import (
 	dash "github.com/Marguelgtz/Stint/internal/dashboard"
 )
 
+func TestDashboardPerformanceMarksUnverifiedDecodeUnavailable(t *testing.T) {
+	reason := "stream exposed 1 generation updates for 45 completion tokens"
+	got := dashboardPerf(performanceSnapshot{
+		Available: true, TTFT: 6 * time.Second, TotalLatency: 6 * time.Second,
+		DecodeUnavailableReason: reason,
+	})
+	if got.Decode != "unavailable" || got.Error != reason || got.TTFT != "6.00s" {
+		t.Fatalf("dashboard performance = %+v, want visible latencies and unavailable decode reason", got)
+	}
+}
+
 func TestDashboardTickUpdatesOnlyDerivedValues(t *testing.T) {
 	started := time.Date(2026, 8, 31, 8, 0, 0, 0, time.UTC)
 	controller := dashboardController{

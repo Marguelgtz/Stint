@@ -15,16 +15,18 @@ import (
 const performanceSampleFileName = "performance.json"
 
 type performanceRecord struct {
-	Version           int       `json:"version"`
-	InstanceID        int64     `json:"instanceId"`
-	Runtime           string    `json:"runtime"`
-	ContextTokens     int       `json:"contextTokens"`
-	SampledAt         time.Time `json:"sampledAt"`
-	TTFTMilliseconds  float64   `json:"ttftMilliseconds"`
-	TotalMilliseconds float64   `json:"totalMilliseconds"`
-	PromptTokens      int       `json:"promptTokens,omitempty"`
-	CompletionTokens  int       `json:"completionTokens,omitempty"`
-	DecodeTokensSec   float64   `json:"decodeTokensSec"`
+	Version                 int       `json:"version"`
+	InstanceID              int64     `json:"instanceId"`
+	Runtime                 string    `json:"runtime"`
+	ContextTokens           int       `json:"contextTokens"`
+	SampledAt               time.Time `json:"sampledAt"`
+	TTFTMilliseconds        float64   `json:"ttftMilliseconds"`
+	TotalMilliseconds       float64   `json:"totalMilliseconds"`
+	PromptTokens            int       `json:"promptTokens,omitempty"`
+	CompletionTokens        int       `json:"completionTokens,omitempty"`
+	DecodeTokensSec         float64   `json:"decodeTokensSec"`
+	DecodeAvailable         bool      `json:"decodeAvailable"`
+	DecodeUnavailableReason string    `json:"decodeUnavailableReason,omitempty"`
 }
 
 func performanceSamplePath(paths config.Paths) string {
@@ -39,16 +41,18 @@ func savePerformanceSample(paths config.Paths, state sessionstate.State, sample 
 		return err
 	}
 	record := performanceRecord{
-		Version:           1,
-		InstanceID:        state.InstanceID,
-		Runtime:           runtimeForState(state),
-		ContextTokens:     contextForState(state),
-		SampledAt:         sampledAt.UTC(),
-		TTFTMilliseconds:  float64(sample.TTFT) / float64(time.Millisecond),
-		TotalMilliseconds: float64(sample.Total) / float64(time.Millisecond),
-		PromptTokens:      sample.PromptTokens,
-		CompletionTokens:  sample.CompletionTokens,
-		DecodeTokensSec:   sample.DecodeTokensSec,
+		Version:                 1,
+		InstanceID:              state.InstanceID,
+		Runtime:                 runtimeForState(state),
+		ContextTokens:           contextForState(state),
+		SampledAt:               sampledAt.UTC(),
+		TTFTMilliseconds:        float64(sample.TTFT) / float64(time.Millisecond),
+		TotalMilliseconds:       float64(sample.Total) / float64(time.Millisecond),
+		PromptTokens:            sample.PromptTokens,
+		CompletionTokens:        sample.CompletionTokens,
+		DecodeTokensSec:         sample.DecodeTokensSec,
+		DecodeAvailable:         sample.DecodeAvailable,
+		DecodeUnavailableReason: sample.DecodeUnavailableReason,
 	}
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
@@ -102,18 +106,28 @@ func loadPerformanceSnapshot(paths config.Paths, state sessionstate.State, now t
 	if record.ContextTokens != contextForState(state) {
 		return performanceSnapshot{UnavailableReason: "benchmark sample belongs to a different context size"}
 	}
+	decodeUnavailableReason := record.DecodeUnavailableReason
+	decodeTokensSec := record.DecodeTokensSec
+	if !record.DecodeAvailable && decodeUnavailableReason == "" {
+		decodeUnavailableReason = "cached sample has no verified token-level stream timing"
+	}
+	if !record.DecodeAvailable {
+		decodeTokensSec = 0
+	}
 	age := now.Sub(record.SampledAt)
 	if age < 0 {
 		age = 0
 	}
 	return performanceSnapshot{
-		Available:        true,
-		TTFT:             time.Duration(record.TTFTMilliseconds * float64(time.Millisecond)),
-		TotalLatency:     time.Duration(record.TotalMilliseconds * float64(time.Millisecond)),
-		PromptTokens:     record.PromptTokens,
-		CompletionTokens: record.CompletionTokens,
-		DecodeTokensSec:  record.DecodeTokensSec,
-		SampledAt:        record.SampledAt,
-		Age:              age,
+		Available:               true,
+		TTFT:                    time.Duration(record.TTFTMilliseconds * float64(time.Millisecond)),
+		TotalLatency:            time.Duration(record.TotalMilliseconds * float64(time.Millisecond)),
+		PromptTokens:            record.PromptTokens,
+		CompletionTokens:        record.CompletionTokens,
+		DecodeTokensSec:         decodeTokensSec,
+		DecodeAvailable:         record.DecodeAvailable,
+		DecodeUnavailableReason: decodeUnavailableReason,
+		SampledAt:               record.SampledAt,
+		Age:                     age,
 	}
 }

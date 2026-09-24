@@ -264,6 +264,9 @@ func performanceView(m Model, p palette) string {
 		for _, x := range rows {
 			fmt.Fprintf(&b, "%-18s %s\n", x[0], x[1])
 		}
+		if m.Perf.Error != "" {
+			b.WriteString(p.muted("Decode unavailable: " + m.Perf.Error + "\n"))
+		}
 		b.WriteString("\n" + p.muted("Benchmarks are never automatic. Press b to replace this sample.") + "\n\n")
 	}
 	b.WriteString(p.bold("LIVE TRAFFIC") + "\n")

@@ -66,7 +66,7 @@ func TestCollectSessionSnapshotLocalModeDoesNotRunRemoteProbes(t *testing.T) {
 			return inferenceTelemetry{}
 		},
 		performance: func(config.Paths, sessionstate.State, time.Time) performanceSnapshot {
-			return performanceSnapshot{Available: true, DecodeTokensSec: 123}
+			return performanceSnapshot{Available: true, DecodeTokensSec: 123, DecodeAvailable: true}
 		},
 	}
 	snapshot := collectSessionSnapshot(context.Background(), config.Paths{}, state, now, false, deps)
