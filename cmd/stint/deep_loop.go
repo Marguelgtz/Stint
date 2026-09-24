@@ -160,6 +160,10 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		return fmt.Errorf("task %s has no useful executor window: %s", t.ID, timeoutDecision)
 	}
 	t.Status = deep.StatusActive
+	// A previous timeout-window deferral is no longer the current blocker once
+	// a new invocation starts. If this attempt fails at the attempt cap, its
+	// own executor/verification evidence must determine the final blocker.
+	t.Blocker = ""
 	t.Attempts++
 	t.ConfiguredTimeoutSec = int(c.taskTimeout.Seconds())
 	t.EffectiveTimeoutSec = int(effectiveTimeout.Seconds())

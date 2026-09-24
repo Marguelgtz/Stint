@@ -315,6 +315,31 @@ func TestDeepLoopLandsOnClock(t *testing.T) {
 	}
 }
 
+func TestDeepLoopRetryUsesCurrentFailureAfterPriorDeferral(t *testing.T) {
+	env := newTestEnv(t, map[int]execResult{1: failedResult()}, 1)
+	task := &env.state.Tasks[0]
+	task.Status = deep.StatusIncomplete
+	task.Blocker = "deferred: configured timeout did not fit before landing"
+	env.fake.scriptErr = map[int]error{1: errors.New("context deadline exceeded")}
+	if err := env.state.SaveDir(env.coord.stateDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	got := env.state.Tasks[0]
+	if got.Status != deep.StatusBlocked {
+		t.Fatalf("task status = %s, want blocked", got.Status)
+	}
+	if !strings.Contains(got.Blocker, "executor failed: context deadline exceeded") {
+		t.Fatalf("task blocker = %q, want current executor failure", got.Blocker)
+	}
+	if strings.Contains(got.Blocker, "deferred:") {
+		t.Fatalf("task blocker retained stale deferral reason: %q", got.Blocker)
+	}
+}
+
 // Time-budget parking: with a task timeout that would overrun the landing
 // window, a queued task is parked instead of started.
 func TestDeepLoopParksWhenBudgetExhausted(t *testing.T) {
