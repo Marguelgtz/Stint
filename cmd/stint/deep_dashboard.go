@@ -21,6 +21,7 @@ import (
 	dash "github.com/Marguelgtz/Stint/internal/dashboard"
 	"github.com/Marguelgtz/Stint/internal/deep"
 	deepdash "github.com/Marguelgtz/Stint/internal/deepdashboard"
+	localenv "github.com/Marguelgtz/Stint/internal/local"
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
@@ -110,6 +111,9 @@ func runDeepDashboard(args []string) error {
 		refreshCh: make(chan deepDashboardRemoteResult, 1),
 	}
 	controller.loadLocal()
+	if binding, bindErr := loadDeepProductionBinding(paths); bindErr == nil && shouldRouteDeepDashboardRemote(controller, binding, *sessionID) {
+		return runRemoteDeepDashboard(paths, binding, *noColor, *refresh)
+	}
 	if !dash.IsTTY(os.Stdin) || !dash.IsTTY(os.Stdout) {
 		if *refresh && controller.model.Error == "" {
 			controller.refreshBlocking()
@@ -196,6 +200,61 @@ func runDeepDashboard(args []string) error {
 			}
 		}
 	}
+}
+
+func shouldRouteDeepDashboardRemote(controller *deepDashboardController, binding deepProductionRunBinding, requestedSession string) bool {
+	if requestedSession != "" {
+		return requestedSession == binding.DeepSessionID &&
+			(controller.model.Error != "" || controller.snapshot.State.SessionID != requestedSession)
+	}
+	if controller.model.Error != "" {
+		return true
+	}
+	if controller.snapshot.State.SessionID == binding.DeepSessionID {
+		return false
+	}
+	return binding.LaunchedAt.After(controller.snapshot.State.StartedAt)
+}
+
+func deepProductionDashboardCommand(binding deepProductionRunBinding, sessionID string, noColor, refresh bool) string {
+	if sessionID == "" {
+		sessionID = binding.DeepSessionID
+	}
+	bin := filepath.Join(binding.RemoteRoot, "bin", "stint")
+	stateHome := filepath.Join(binding.RemoteRoot, "state")
+	parts := []string{
+		"env",
+		"XDG_STATE_HOME=" + shellQuote(stateHome),
+		shellQuote(bin), "deep", "dash", "--session", shellQuote(sessionID),
+	}
+	if noColor {
+		parts = append(parts, "--no-color")
+	}
+	if refresh {
+		parts = append(parts, "--refresh")
+	}
+	return strings.Join(parts, " ")
+}
+
+func runRemoteDeepDashboard(paths config.Paths, binding deepProductionRunBinding, noColor, refresh bool) error {
+	ssh, err := localenv.SSHExecutable()
+	if err != nil {
+		return err
+	}
+	state := sessionstate.State{InstanceID: binding.InstanceID, SSHHost: binding.SSHHost, SSHPort: binding.SSHPort}
+	remoteCommand := deepProductionDashboardCommand(binding, binding.DeepSessionID, noColor, refresh)
+	args := sshArgs(paths, state, filepath.Join(paths.StateDir, "known_hosts"), remoteCommand)
+	if dash.IsTTY(os.Stdin) && dash.IsTTY(os.Stdout) {
+		args = append([]string{"-t", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"}, args...)
+	}
+	command := exec.Command(ssh, args...)
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("connect to the on-box Deep Dashboard over the READY session SSH identity: %w", err)
+	}
+	return nil
 }
 
 func (c *deepDashboardController) handleKey(key byte) (quit, changed, land bool) {

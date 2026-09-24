@@ -119,6 +119,12 @@ if [ "$RESUME" = 0 ]; then
   SOURCE_HEAD="$(git -C "$REPO_LOCAL" rev-parse HEAD)"
   SOURCE_ORIGIN="$(git -C "$REPO_LOCAL" remote get-url origin 2>/dev/null || true)"
   [ -n "$SOURCE_ORIGIN" ] || die "STINT_REPO must have an origin remote"
+  if [ -n "${STINT_SOURCE_HEAD:-}" ] && [ "$SOURCE_HEAD" != "$STINT_SOURCE_HEAD" ]; then
+    die "repository HEAD changed after the run contract was prepared"
+  fi
+  if [ -n "${STINT_SOURCE_ORIGIN:-}" ] && [ "$SOURCE_ORIGIN" != "$STINT_SOURCE_ORIGIN" ]; then
+    die "repository origin changed after the run contract was prepared"
+  fi
 fi
 if [ -n "$ACTION_PLAN_LOCAL" ]; then
   case "$ACTION_PLAN_LOCAL" in
@@ -246,6 +252,23 @@ PY
 fi
 [ -n "${STINT_INSTANCE_ID:-}" ] && [ -n "${STINT_DEADLINE:-}" ] || \
   die "set STINT_INSTANCE_ID and STINT_DEADLINE or provide a READY session file at $session_json"
+
+# Refuse to replace a remote run before the staging/provisioning steps below.
+set +e
+"${SSH[@]}" "test -x '$ROOT/onbox-deep-supervisor.sh'"
+supervisor_script_status=$?
+set -e
+case "$supervisor_script_status" in
+  0)
+    existing_status="$("${SSH[@]}" "env STINT_ONBOX_ROOT='$ROOT' STINT_ONBOX_BIN='$ROOT/bin/stint' '$ROOT/onbox-deep-supervisor.sh' status")" || \
+      die "could not verify the existing on-box supervisor state; refusing to stage over it"
+    if printf '%s\n' "$existing_status" | grep -q '^ONBOX_SUPERVISOR_RUNNING'; then
+      die "an on-box supervisor is already running at $ROOT; inspect it with 'stint deep dash' before launching another mission"
+    fi
+    ;;
+  1) ;;
+  *) die "could not verify the existing on-box supervisor state; refusing to stage over it" ;;
+esac
 
 RESUME_MODEL=""
 if [ "$RESUME" = 1 ]; then
