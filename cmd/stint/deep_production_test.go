@@ -210,6 +210,23 @@ func TestDeepProductionStartBuildsIdentityContractAndWaitsForDurableRunning(t *t
 	}
 }
 
+func TestDeepStartHelpDoesNotRequireProductionLauncher(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"-h"}} {
+		var runErr error
+		output := captureOutput(t, func() {
+			runErr = runDeepStartWith(args, config.Paths{}, "", "/tmp/stint", nil, io.Discard, io.Discard, time.Now().UTC())
+		})
+		if runErr != nil {
+			t.Fatalf("runDeepStartWith(%v) error = %v", args, runErr)
+		}
+		for _, want := range []string{"STINT DEEP", "--repo", "--mission", "--task-timeout"} {
+			if !strings.Contains(output, want) {
+				t.Errorf("help for %v missing %q:\n%s", args, want, output)
+			}
+		}
+	}
+}
+
 func TestDeepProductionStartRejectsInvalidLocalStateBeforeLauncher(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -443,6 +460,17 @@ func TestDeepProductionDashboardCommandUsesSavedOnBoxStateAndSession(t *testing.
 	}
 	if strings.Contains(command, "github-token") || strings.Contains(command, "credentials.json") {
 		t.Fatalf("remote dashboard command contains a credential path: %q", command)
+	}
+}
+
+func TestDeepProductionDashboardCommandPreservesNoColorFromEnvironment(t *testing.T) {
+	noColor := deepDashboardNoColor(false, "1")
+	command := deepProductionDashboardCommand(deepProductionRunBinding{
+		RemoteRoot:    "/var/lib/stint-onbox",
+		DeepSessionID: "deep-20260924-120000",
+	}, "", noColor, false)
+	if !noColor || !strings.Contains(command, "--no-color") {
+		t.Fatalf("NO_COLOR environment was not propagated to remote dashboard: %q", command)
 	}
 }
 

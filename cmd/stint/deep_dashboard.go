@@ -107,12 +107,12 @@ func runDeepDashboard(args []string) error {
 	controller := &deepDashboardController{
 		paths:     paths,
 		sessionID: *sessionID,
-		model:     deepdash.Model{Width: width, Height: height, NoColor: *noColor || os.Getenv("NO_COLOR") != "", View: deepdash.Run},
+		model:     deepdash.Model{Width: width, Height: height, NoColor: deepDashboardNoColor(*noColor, os.Getenv("NO_COLOR")), View: deepdash.Run},
 		refreshCh: make(chan deepDashboardRemoteResult, 1),
 	}
 	controller.loadLocal()
 	if binding, bindErr := loadDeepProductionBinding(paths); bindErr == nil && shouldRouteDeepDashboardRemote(controller, binding, *sessionID) {
-		return runRemoteDeepDashboard(paths, binding, *noColor, *refresh)
+		return runRemoteDeepDashboard(paths, binding, controller.model.NoColor, *refresh)
 	}
 	if !dash.IsTTY(os.Stdin) || !dash.IsTTY(os.Stdout) {
 		if *refresh && controller.model.Error == "" {
@@ -200,6 +200,10 @@ func runDeepDashboard(args []string) error {
 			}
 		}
 	}
+}
+
+func deepDashboardNoColor(flagValue bool, envValue string) bool {
+	return flagValue || envValue != ""
 }
 
 func shouldRouteDeepDashboardRemote(controller *deepDashboardController, binding deepProductionRunBinding, requestedSession string) bool {
