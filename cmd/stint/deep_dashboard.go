@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -346,6 +347,11 @@ func (c *deepDashboardController) startRefresh() {
 		result := deepDashboardRemoteResult{}
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
+		if deepDashboardUsesLocalWorker(state) {
+			result.Worker = collectOnboxDeepDashboardWorker(ctx, state, runLocalDashboardCommand)
+			c.refreshCh <- result
+			return
+		}
 		ssn, err := deepDashboardSSHState(paths, state)
 		if err != nil {
 			result.ComputeErr = err
@@ -358,37 +364,7 @@ func (c *deepDashboardController) startRefresh() {
 		if observeHermes {
 			go func() {
 				remote := newRemoteCmd(paths, ssn)
-				type observationResult struct {
-					worker deepdash.Worker
-					err    error
-				}
-				type logResult struct {
-					text string
-					err  error
-				}
-				observationCh := make(chan observationResult, 1)
-				logCh := make(chan logResult, 1)
-				go func() {
-					observed, workerErr := collectDeepWorkerObservation(ctx, remote, state.StartedAt)
-					observationCh <- observationResult{worker: observed, err: workerErr}
-				}()
-				go func() {
-					log, logErr := collectHermesAgentLog(ctx, remote)
-					logCh <- logResult{text: log, err: logErr}
-				}()
-				observed := <-observationCh
-				log := <-logCh
-				worker := observed.worker
-				if observed.err != nil {
-					worker.Error = compactTelemetryError(observed.err)
-				}
-				worker.HermesLogAt = time.Now().Local().Format("15:04:05")
-				if log.err != nil {
-					worker.HermesLogError = compactTelemetryError(log.err)
-				} else {
-					worker.HermesLog = log.text
-				}
-				workerCh <- worker
+				workerCh <- collectDeepDashboardWorkerEvidence(ctx, remote, state.StartedAt)
 			}()
 		}
 		if ssn.Status != sessionstate.StatusReady {
@@ -415,6 +391,60 @@ func (c *deepDashboardController) startRefresh() {
 		}
 		c.refreshCh <- result
 	}()
+}
+
+func deepDashboardUsesLocalWorker(state deep.DeepState) bool {
+	return state.Exec != nil && state.Exec.Worker == workerHermesOnBox
+}
+
+func collectOnboxDeepDashboardWorker(ctx context.Context, state deep.DeepState, local remoteCmd) deepdash.Worker {
+	if !deepDashboardUsesLocalWorker(state) {
+		return deepdash.Worker{Error: "Deep Work worker is not co-located with the dashboard"}
+	}
+	return collectDeepDashboardWorkerEvidence(ctx, local, state.StartedAt)
+}
+
+func collectDeepDashboardWorkerEvidence(ctx context.Context, run remoteCmd, startedAt time.Time) deepdash.Worker {
+	type observationResult struct {
+		worker deepdash.Worker
+		err    error
+	}
+	type logResult struct {
+		text string
+		err  error
+	}
+	observationCh := make(chan observationResult, 1)
+	logCh := make(chan logResult, 1)
+	go func() {
+		observed, err := collectDeepWorkerObservation(ctx, run, startedAt)
+		observationCh <- observationResult{worker: observed, err: err}
+	}()
+	go func() {
+		log, err := collectHermesAgentLog(ctx, run)
+		logCh <- logResult{text: log, err: err}
+	}()
+	observed := <-observationCh
+	log := <-logCh
+	worker := observed.worker
+	if observed.err != nil {
+		worker.Error = compactTelemetryError(observed.err)
+	}
+	worker.HermesLogAt = time.Now().Local().Format("15:04:05")
+	if log.err != nil {
+		worker.HermesLogError = compactTelemetryError(log.err)
+	} else {
+		worker.HermesLog = log.text
+	}
+	return worker
+}
+
+func runLocalDashboardCommand(ctx context.Context, command string) (string, error) {
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("run co-located worker observation: %w", err)
+	}
+	return string(output), nil
 }
 
 func (c *deepDashboardController) refreshBlocking() {

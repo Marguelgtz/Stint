@@ -59,6 +59,28 @@ class DeepAgentLogTailTests(unittest.TestCase):
             self.assertIn('"password":"[REDACTED]"', output)
             self.assertIn('"api_key":"[REDACTED]"', output)
 
+    def test_tail_redacts_compound_environment_credentials_and_authorization_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory, "agent.log")
+            path.write_text(
+                "R2_SECRET_ACCESS_KEY=ordinary-secret\n"
+                "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n"
+                "Authorization: Basic Zm9vOmJhcg==\n"
+                '{"authorization":"Basic json-user:json-password",'
+                '"R2_ACCESS_KEY_ID":"compound-json-secret"}\n',
+                encoding="utf-8",
+            )
+            output = TAIL.tail_log(str(path))
+            for secret in (
+                "ordinary-secret",
+                "AKIAABCDEFGHIJKLMNOP",
+                "Zm9vOmJhcg==",
+                "json-user:json-password",
+                "compound-json-secret",
+            ):
+                self.assertNotIn(secret, output)
+            self.assertGreaterEqual(output.count("[REDACTED]"), 5)
+
     def test_unavailable_log_is_reported_by_cli(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(FileNotFoundError):

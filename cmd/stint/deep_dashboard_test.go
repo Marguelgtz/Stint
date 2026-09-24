@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -124,6 +125,46 @@ func TestParseDeepWorkerObservationRejectsStoppedNInfer(t *testing.T) {
 	_, err := parseDeepWorkerObservation(`{"ninfer":{"running":false}}`)
 	if err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestDeepDashboardCollectsOnboxWorkerWithoutRemoteSession(t *testing.T) {
+	state := deep.DeepState{
+		StartedAt: time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC),
+		Exec:      &deep.ExecSettings{Worker: workerHermesOnBox},
+	}
+	var commands []string
+	var commandsMu sync.Mutex
+	runLocal := func(_ context.Context, command string) (string, error) {
+		commandsMu.Lock()
+		commands = append(commands, command)
+		commandsMu.Unlock()
+		if strings.Contains(command, "/root/stint-phasing/deep-observe") {
+			return `{"ninfer":{"running":true,"maxContext":262144,"kvCapacity":262144,"defaultMaxTokens":262144},"phaseRoutes":{"xhighRequests":1,"mediumRequests":2},"compression":{"state":"completed"}}`, nil
+		}
+		if command == "stint-deep-agent-log-tail" {
+			return "bounded local Hermes log tail", nil
+		}
+		return "", errors.New("unexpected local worker command")
+	}
+
+	if !deepDashboardUsesLocalWorker(state) {
+		t.Fatal("hermes-onbox should use the co-located worker observation path")
+	}
+	worker := collectOnboxDeepDashboardWorker(context.Background(), state, runLocal)
+	commandsMu.Lock()
+	commandCount := len(commands)
+	commandsMu.Unlock()
+	if commandCount != 2 {
+		t.Fatalf("local commands = %v, want observer and log-tail calls", commands)
+	}
+	if !worker.Observed || worker.MediumRequests != 2 || worker.HermesLog != "bounded local Hermes log tail" || worker.HermesLogError != "" {
+		t.Fatalf("on-box worker evidence = %+v", worker)
+	}
+
+	state.Exec.Worker = workerHermes
+	if deepDashboardUsesLocalWorker(state) {
+		t.Fatal("remote Hermes worker must continue to use the SSH observation path")
 	}
 }
 
