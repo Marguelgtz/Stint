@@ -14,33 +14,44 @@ Stint compute session
   → resumable landing and handoff
 ```
 
-The supported production entry point is [`scripts/launch-onbox-deep.sh`](../scripts/launch-onbox-deep.sh). `stint deep onbox` is the supervisor's box-side command. It expects the launcher to have prepared Hermes providers, phase routing, the verification toolchain, and durable compute identity first.
+The supported operator entry point is `stint deep start`. It uses the existing READY Stint compute session and calls [`scripts/launch-onbox-deep.sh`](../scripts/launch-onbox-deep.sh) internally. The shell launcher remains the production bootstrap implementation; `stint deep onbox` remains its box-side coordinator command.
 
 ## Before launch
 
 1. Build Stint with `make build`.
 2. Start a Stint compute session with the NInfer runtime and wait for `READY`.
-3. Commit the repository state you want copied to the box. The launcher stages the exact `HEAD`; it does not transfer local uncommitted files.
-4. Prepare a mission with an independent verification command for every task or at mission level.
-5. Provide a GitHub token file with the least authority the configured publisher needs, the target repository and base branch, and the Vast credentials file used by the deadline watchdog.
+3. Commit the repository state you want copied to the box. `stint deep start` refuses tracked or untracked changes and the launcher stages the exact committed `HEAD`.
+4. Prepare a mission with an independent verification command for every task or at mission level, plus the production `## GitHub` policy.
+5. Keep Stint's Vast credentials at `~/.config/stint/credentials.json` and the least-privilege GitHub token at `~/.config/stint/github-token`. An existing `~/.config/vanta-r2.env` is used for optional R2 evidence; use `--r2-env-file` for a different location.
 
 ## Production launch
 
 ```sh
-STINT_BOX_HOST=203.0.113.10 \
-STINT_BOX_PORT=22 \
-STINT_BOX_KEY="$HOME/.config/stint/ssh/id_ed25519" \
-STINT_MISSION="$PWD/mission.md" \
-STINT_REPO="$PWD" \
-STINT_GITHUB_TOKEN_FILE="$HOME/.config/stint/github-token" \
-STINT_GITHUB_REPOSITORY=owner/repository \
-STINT_GITHUB_BASE=main \
-STINT_VAST_CREDENTIALS="$HOME/.config/stint/credentials.json" \
-STINT_ONBOX_CLIENTS=2 \
-scripts/launch-onbox-deep.sh
+stint start interactive \
+  --hours 3 \
+  --runtime ninfer \
+  --ninfer-deployment release-bundle \
+  --ninfer-config native \
+  --clients 2
+
+stint status
+
+stint deep start \
+  --repo ~/Documents/projects/spark \
+  --mission ~/Documents/projects/Stint/docs/missions/spark-mcp-graduation.md
+
+stint deep dash
 ```
 
-The launcher obtains the instance ID and deadline from the READY Stint state file. If using a non-default state directory, set `STINT_SESSION_JSON` or set `STINT_INSTANCE_ID` and `STINT_DEADLINE` to the same values recorded in that READY state. It refuses an expired session or an identity mismatch.
+Before staging, `stint deep start` prints the repository, exact source commit and origin, clean-tree status, mission, compute identity, GPU/runtime, remaining time/deadline, clients, model, task timeout, max attempts, GitHub policy, R2 setting, and cost estimates when recorded. It validates the mission, repository, Stint-managed SSH key, Vast credentials, and GitHub token before invoking the production launcher. The CLI resolves the instance ID, SSH endpoint, key, deadline, and client count from Stint's READY session state. It never rents or extends compute.
+
+The command snapshots the validated mission and pins the source HEAD/origin between its preflight and staging. It rejects uncommitted tracked and untracked files; only the clean committed HEAD is staged, and the operator checkout is not mutated. The launcher transfers the required Vast credential and the single GitHub token file, not the broad operator configuration directory.
+
+`stint deep start` returns success only when the launcher reports both an `ONBOX_SUPERVISOR_RUNNING` process and a durable `RUNNING` record for the same Stint deadline. It records the on-box connection locally so `stint deep dash` opens the existing remote Deep Dashboard. Closing that SSH dashboard does not stop the detached supervisor or its deadline watchdog.
+
+The default task timeout is 15 minutes, maximum attempts is 2, provider is `custom:qwen-stint-{reasoning}`, model is `qwen3.8-27b`, and reasoning is `medium`. Use `--task-timeout`, `--max-attempts`, `--provider`, `--model`, `--reasoning`, `--action-plan`, or repeatable `--allow-command` only when the mission needs an override. The mission's explicit `## GitHub` policy supplies mode, repository, base, allowed authors, and approval; the current publisher supports `engineering` mode.
+
+For launcher diagnosis, [`scripts/launch-onbox-deep.sh`](../scripts/launch-onbox-deep.sh) remains callable directly, but the normal operator workflow should use `stint deep start`.
 
 Before it reports `RUNNING`, the launcher transfers and runs the same bootstrap used by the live smoke. It installs missing Hermes/Node and a compatible Go toolchain when the target repo has `go.mod`, verifies NInfer and the selected model, runs `go test ./...` for Stint itself, installs phase proxy and observer scripts, configures xhigh/medium providers and compression, and makes real Hermes calls through both routes. When `STINT_ONBOX_CLIENTS=2`, it also verifies concurrent xhigh and medium traffic. Any failed step stops launch before the supervisor starts.
 

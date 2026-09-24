@@ -1,6 +1,6 @@
 # Deep Work setup
 
-This is the operator runbook for the Hermes-on-box Deep Work path.
+This is the operator runbook for the Hermes-on-box Deep Work path. Normal startup uses `stint deep start`; the production shell launcher remains the implementation behind that command.
 
 ## Local prerequisites
 
@@ -8,9 +8,9 @@ This is the operator runbook for the Hermes-on-box Deep Work path.
 - A built Stint binary at `bin/stint` (`make build`).
 - A Stint SSH key, Vast credentials, and a READY compute session.
 - A mission file and a clean target repository at the commit to stage.
-- A GitHub token file, repository, and base branch for production publication.
+- The mission's explicit GitHub policy and a least-privilege GitHub token at `~/.config/stint/github-token`.
 
-The launcher requires the compute session to be `READY` and its deadline to be in the future. It reads the instance ID and deadline from `${XDG_STATE_HOME:-$HOME/.local/state}/stint/session.json` by default. Set `STINT_SESSION_JSON` to use another state file.
+Stint credentials are read from `~/.config/stint/credentials.json`, and the managed SSH key from `~/.config/stint/ssh/id_ed25519`. The CLI resolves host, port, instance ID, deadline, runtime, and client count from the READY session state. It refuses an expired session or missing identity fields before connecting to the box.
 
 ## Prepare the compute session
 
@@ -21,27 +21,36 @@ Start Stint with the NInfer runtime. Use two clients if the mission needs a conc
 ./bin/stint status
 ```
 
-Wait until the status is `READY`. Do not pass a stale instance ID or deadline to Deep Work. If explicit `STINT_INSTANCE_ID` or `STINT_DEADLINE` values are supplied, the launcher verifies they match the READY session file.
+Wait until the status is `READY`. `stint deep start` reads the identity and deadline from that session automatically. Direct calls to the shell launcher are reserved for advanced diagnostics and recovery; it checks any supplied instance ID or deadline against the READY session file.
 
 ## Launch Deep Work
 
-Set the remote SSH coordinates from the READY session and provide the local target repository and mission:
+Start the existing compute session with the intended runtime, then launch the mission through Stint:
 
 ```sh
-STINT_BOX_HOST=<ssh-host> \
-STINT_BOX_PORT=<ssh-port> \
-STINT_BOX_KEY="$HOME/.config/stint/ssh/id_ed25519" \
-STINT_MISSION="$PWD/mission.md" \
-STINT_REPO="$PWD" \
-STINT_GITHUB_TOKEN_FILE="$HOME/.config/stint/github-token" \
-STINT_GITHUB_REPOSITORY=owner/repository \
-STINT_GITHUB_BASE=main \
-STINT_VAST_CREDENTIALS="$HOME/.config/stint/credentials.json" \
-STINT_ONBOX_CLIENTS=2 \
-scripts/launch-onbox-deep.sh
+./bin/stint start interactive \
+  --hours 3 \
+  --runtime ninfer \
+  --ninfer-deployment release-bundle \
+  --ninfer-config native \
+  --clients 2
+
+./bin/stint status
+
+./bin/stint deep start \
+  --repo ~/Documents/projects/spark \
+  --mission ~/Documents/projects/Stint/docs/missions/spark-mcp-graduation.md
+
+./bin/stint deep dash
 ```
 
-The launcher stages the committed repo `HEAD`, transfers the mission and bootstrap bundle, then:
+Before transfer, `stint deep start` prints the repo `HEAD`, origin and clean-tree state; mission and GitHub policy; compute identity, GPU/runtime, remaining time and deadline; clients, model, task timeout, maximum attempts, R2 status, and estimated costs when available. It fails before launch if the repo is dirty, mission invalid, or required Stint/GitHub credentials are unavailable. It stages only the immutable committed `HEAD` and a validated mission snapshot, without mutating the operator checkout.
+
+The CLI passes the Stint-managed host, port, key and watchdog credential path to the existing launcher. It returns only after both the detached supervisor process marker and durable `RUNNING` record match the READY session deadline. The supervisor continues after the launcher and dashboard SSH connection close. `stint deep dash` routes to the GPU's existing Deep Dashboard using the saved SSH identity.
+
+Production defaults are a 15-minute task timeout, 2 attempts, `custom:qwen-stint-{reasoning}`, `qwen3.8-27b`, and `medium` reasoning. The mission's explicit `## GitHub` policy controls publication mode, repository, base, authors, and approval. Put the token in `~/.config/stint/github-token`; Stint uses `~/.config/vanta-r2.env` if present for optional R2 evidence, or pass `--r2-env-file` for another file.
+
+The existing launcher stages the committed repo `HEAD`, transfers the mission and bootstrap bundle, then:
 
 1. Installs missing Hermes and Node.js.
 2. Installs a current stable Go release with checksum verification when the target repository declares `go.mod` and its current compiler is too old.
@@ -66,7 +75,9 @@ The smoke uses an isolated Stint state/config root, an RTX 4090-only NInfer quer
 
 The detached supervisor owns restart, state recovery, publication retries, evidence snapshots, and the deadline watchdog. The operator machine may disconnect after the launcher prints `ONBOX_SUPERVISOR_RUNNING` with a `RUNNING` durable-state record.
 
-Inspect from the operator host:
+Use `stint deep dash` for normal monitoring. Raw SSH inspection is available for diagnostics; the command uses the SSH host, port, and Stint key already saved in local Stint configuration.
+
+Inspect the supervisor directly from the operator host only when diagnosing transport or dashboard problems:
 
 ```sh
 ssh -i "$STINT_BOX_KEY" -p "$STINT_BOX_PORT" "root@$STINT_BOX_HOST" \
@@ -94,7 +105,7 @@ persisted mode, repository, base, allowed authors, and approval policy. The
 checkpoint publisher currently rejects maintenance mode; use the separate
 maintenance workstream only after its merge and pagination gates are repaired.
 
-### Resume durable state after compute replacement
+### Advanced: resume durable state after compute replacement
 
 The operator launcher can qualify a replacement compute instance and resume a
 previous on-box session, but the saved state and repository must already be
