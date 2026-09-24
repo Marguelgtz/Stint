@@ -275,8 +275,8 @@ appear in captured outbound request bodies before a run is allowed to start.
 Install and configure the routes on a provisioned box with:
 
 ```bash
-rsync scripts/phaseproxy.py scripts/box-phase-setup.sh root@<host>:/root/
-ssh root@<host> 'chmod +x /root/phaseproxy.py /root/box-phase-setup.sh && PHASE_PROXY=/root/phaseproxy.py /root/box-phase-setup.sh'
+rsync scripts/phaseproxy.py scripts/box-phase-setup.sh scripts/deep-observe.sh scripts/deep-agent-log-tail.py root@<host>:/root/
+ssh root@<host> 'chmod +x /root/phaseproxy.py /root/box-phase-setup.sh /root/deep-observe.sh /root/deep-agent-log-tail.py && PHASE_PROXY=/root/phaseproxy.py DEEP_OBSERVE=/root/deep-observe.sh AGENT_LOG_TAIL=/root/deep-agent-log-tail.py /root/box-phase-setup.sh'
 ```
 
 Do not configure both phase entries with the same base URL: the first matching
