@@ -196,6 +196,25 @@ func TestParseMissionPerTaskVerify(t *testing.T) {
 	}
 }
 
+func TestParseMissionTaskDependencies(t *testing.T) {
+	mission := "# x\n\n## Objective\no\n\n## Tasks\n- [ ] IMPL-001: implement parser\n- [ ] TEST-001: add behavior tests\n- [ ] REVIEW-001: review implementation\n  - depends-on: IMPL-001, TEST-001\n"
+	m, err := ParseMission(mission)
+	if err != nil {
+		t.Fatalf("ParseMission: %v", err)
+	}
+	got := m.Tasks[2].DependsOn
+	if len(got) != 2 || got[0] != "IMPL-001" || got[1] != "TEST-001" {
+		t.Fatalf("review dependencies = %v", got)
+	}
+}
+
+func TestParseMissionRejectsForwardDependency(t *testing.T) {
+	mission := "# x\n\n## Objective\no\n\n## Tasks\n- [ ] REVIEW-001: review implementation\n  - depends-on: IMPL-001\n- [ ] IMPL-001: implement parser\n"
+	if _, err := ParseMission(mission); err == nil || !strings.Contains(err.Error(), "declared earlier") {
+		t.Fatalf("ParseMission error = %v, want prior-task dependency error", err)
+	}
+}
+
 func TestParseMissionRejectsUnknownReasoning(t *testing.T) {
 	mission := "# x\n\n## Objective\no\n\n## Tasks\n- [ ] T1: a\n  - reasoning: ultra\n"
 	if _, err := ParseMission(mission); err == nil || !strings.Contains(err.Error(), "invalid reasoning level") {
@@ -293,7 +312,7 @@ func TestBuildTaskPromptReconstruction(t *testing.T) {
 		"OBJECTIVE: Ship a small example.",
 		"CURRENT TASK: T2 (attempt 3)",
 		"ACCEPTANCE: go test reports ok",
-		"PREVIOUS ATTEMPT RESULT (attempt 2):",
+		"PREVIOUS EXECUTOR RESULT (attempt 2):",
 		"attempt 1: verify failed (example.go missing)",
 		"branch: stint/deep-20260902-150000",
 		"head: abc1234",

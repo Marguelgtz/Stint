@@ -24,10 +24,12 @@ type fakeClock struct {
 func (c *fakeClock) advance(d time.Duration) { c.now = c.now.Add(d) }
 
 type fakeExecutor struct {
-	calls   int
-	prompts []string
+	calls    int
+	prompts  []string
+	timeouts []time.Duration
 	// script maps call number (1-based) to the result for that invocation.
-	script map[int]execResult
+	script    map[int]execResult
+	scriptErr map[int]error
 	// after (optional) runs after each invocation — tests use it to
 	// advance the fake clock mid-run.
 	after func()
@@ -36,6 +38,7 @@ type fakeExecutor struct {
 func (f *fakeExecutor) run(_ context.Context, in execInput) (execResult, error) {
 	f.calls++
 	f.prompts = append(f.prompts, in.prompt)
+	f.timeouts = append(f.timeouts, in.timeout)
 	r, ok := f.script[f.calls]
 	if !ok {
 		r = completedResult()
@@ -53,7 +56,7 @@ func (f *fakeExecutor) run(_ context.Context, in execInput) (execResult, error) 
 	if f.after != nil {
 		f.after()
 	}
-	return r, nil
+	return r, f.scriptErr[f.calls]
 }
 
 // newTestRepo initializes a git repo with one commit and returns its path.
@@ -143,6 +146,23 @@ func completedResult() execResult {
 	return execResult{exitCode: 0, completed: true, finishReason: "completed"}
 }
 
+func TestOnBoxHandoffUsesOnBoxResumePathAndShowsEarlierLanding(t *testing.T) {
+	at := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	state := deep.DeepState{
+		SessionID: "20260924-120000", MissionName: "resume fixture", Objective: "continue work",
+		Phase: deep.PhaseLanded, Branch: "stint/deep-20260924-120000", StartedAt: at.Add(-time.Hour), Deadline: at.Add(time.Hour), Exec: &deep.ExecSettings{Worker: workerHermesOnBox},
+		Tasks:            []deep.Task{{ID: "T-001", Objective: "finish implementation", Status: deep.StatusQueued}},
+		PreviousLandings: []deep.LandingRecord{{At: at.Add(-time.Hour), Reason: "time budget exhausted", Commit: strings.Repeat("a", 40), HandoffSHA256: "digest"}},
+	}
+	handoff := buildHandoff(state, "later landing", at, "passed", deep.RepoSummary{})
+	if !strings.Contains(handoff, "`stint deep onbox --resume` in the on-box supervisor context") || strings.Contains(handoff, "`stint deep resume`") {
+		t.Fatalf("on-box handoff recommends the wrong resume path:\n%s", handoff)
+	}
+	if !strings.Contains(handoff, "Earlier landing epochs") || !strings.Contains(handoff, "time budget exhausted") || !strings.Contains(handoff, strings.Repeat("a", 40)) {
+		t.Fatalf("earlier landing identity was not retained:\n%s", handoff)
+	}
+}
+
 func failedResult() execResult {
 	return execResult{exitCode: 1, completed: false, finishReason: "error"}
 }
@@ -174,7 +194,7 @@ func TestDeepLoopContinuation(t *testing.T) {
 	if !strings.Contains(env.fake.prompts[1], "stint/deep-20260209T160000-testsess") {
 		t.Errorf("attempt-2 prompt lost the branch context:\n%s", env.fake.prompts[1])
 	}
-	if !strings.Contains(env.fake.prompts[1], "PREVIOUS ATTEMPT RESULT") {
+	if !strings.Contains(env.fake.prompts[1], "PREVIOUS EXECUTOR RESULT") {
 		t.Errorf("attempt-2 prompt lost the previous attempt evidence:\n%s", env.fake.prompts[1])
 	}
 	if env.state.HandoffPath == "" {
@@ -303,8 +323,11 @@ func TestDeepLoopParksWhenBudgetExhausted(t *testing.T) {
 	if err := env.coord.run(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if env.state.Tasks[0].Status != deep.StatusBlocked {
-		t.Errorf("task A = %s, want blocked (not started)", env.state.Tasks[0].Status)
+	if env.state.Tasks[0].Status != deep.StatusQueued {
+		t.Errorf("task A = %s, want queued (deferred without an invocation)", env.state.Tasks[0].Status)
+	}
+	if !strings.Contains(env.state.Tasks[0].Blocker, "deferred:") {
+		t.Errorf("task defer reason = %q, want explicit budget explanation", env.state.Tasks[0].Blocker)
 	}
 	if env.fake.calls != 0 {
 		t.Errorf("executor called %d times, want 0", env.fake.calls)
@@ -612,7 +635,7 @@ func TestDeepLoopPerTaskVerifyWithoutMissionVerify(t *testing.T) {
 		t.Fatalf("handoff missing: %v", err)
 	}
 	handoff := string(data)
-	if !strings.Contains(handoff, "task verify passed (`scoped task command`)") {
+	if !strings.Contains(handoff, "executor completed; repository verification passed (`scoped task command`)") {
 		t.Errorf("handoff missing the task-verify evidence label:\n%s", handoff)
 	}
 	if !strings.Contains(handoff, "worker reported completion (no verify command defined)") {
@@ -692,12 +715,83 @@ func TestDeepLoopVerifyBounded(t *testing.T) {
 	}
 	fails := 0
 	for _, in := range incs {
-		if in.Kind == deep.IncidentVerifyRun && strings.Contains(in.Detail, "result=fail") {
+		if in.Kind == deep.IncidentVerifyRun && (strings.Contains(in.Detail, "result=fail") || strings.Contains(in.Detail, "result=error:")) {
 			fails++
 		}
 	}
 	if fails == 0 {
 		t.Error("no failed verify-run incidents: the bound kill must be recorded")
+	}
+}
+
+func TestExecutorFailureCannotBeAcceptedByPassingVerification(t *testing.T) {
+	env := newTestEnv(t, nil, 1)
+	env.state.Tasks = env.state.Tasks[:1]
+	env.fake.scriptErr = map[int]error{1: context.DeadlineExceeded}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status == deep.StatusVerified {
+		t.Fatalf("task was verified after executor timeout: %+v", task)
+	}
+	if task.Status != deep.StatusBlocked {
+		t.Fatalf("task status = %s, want blocked after the only failed attempt", task.Status)
+	}
+	if task.VerificationResult != "repository verification passed" {
+		t.Fatalf("verification evidence = %q, want independent pass", task.VerificationResult)
+	}
+	if !strings.Contains(task.ExecutionError, "deadline exceeded") || !strings.Contains(task.LastResult, "executor error: context deadline exceeded") {
+		t.Fatalf("executor failure evidence was not retained: %+v", task)
+	}
+	if task.CheckpointCommit != "" || task.VerifiedAt != nil {
+		t.Fatalf("failed executor received acceptance identity: %+v", task)
+	}
+	fresh, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Tasks[0].Status == deep.StatusVerified || fresh.Tasks[0].VerificationResult != "repository verification passed" || fresh.Tasks[0].ExecutionError == "" {
+		t.Fatalf("durable task evidence contradicts executor outcome: %+v", fresh.Tasks[0])
+	}
+}
+
+func TestTimeoutShortensToFitBeforeLandingReserve(t *testing.T) {
+	env := newTestEnv(t, nil, 1)
+	env.state.Tasks = env.state.Tasks[:1]
+	env.coord.taskTimeout = 15 * time.Minute
+	env.state.LandBefore = env.clock.now.Add(13*time.Minute + 39*time.Second)
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if env.fake.calls != 1 {
+		t.Fatalf("executor calls = %d, want one shortened invocation", env.fake.calls)
+	}
+	want := 10*time.Minute + 9*time.Second
+	if env.fake.timeouts[0] != want {
+		t.Fatalf("effective executor timeout = %s, want %s", env.fake.timeouts[0], want)
+	}
+	task := env.state.Tasks[0]
+	if task.ConfiguredTimeoutSec != 900 || task.EffectiveTimeoutSec != int(want.Seconds()) || !strings.Contains(task.TimeoutDecision, "shortened") {
+		t.Fatalf("durable timeout decision = %+v", task)
+	}
+}
+
+func TestReviewTaskRequiresVerifiedPrerequisite(t *testing.T) {
+	env := newTestEnv(t, nil, 2)
+	env.state.Tasks = []deep.Task{
+		{ID: "IMPLEMENT-001", Objective: "implement change", Status: deep.StatusBlocked},
+		{ID: "REVIEW-001", Objective: "review implementation", Status: deep.StatusQueued, DependsOn: []string{"IMPLEMENT-001"}},
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	review := env.state.Tasks[1]
+	if review.Status != deep.StatusBlocked || review.Attempts != 0 || !strings.Contains(review.Blocker, "prerequisite IMPLEMENT-001 has status blocked") {
+		t.Fatalf("review outcome = %+v, want blocked without execution", review)
+	}
+	if env.fake.calls != 0 {
+		t.Fatalf("executor calls = %d, want no review invocation", env.fake.calls)
 	}
 }
 

@@ -10,6 +10,12 @@ import (
 	"github.com/Marguelgtz/Stint/internal/deep"
 )
 
+const (
+	defaultTaskVerifyReserve = 3 * time.Minute
+	coordinatorReserve       = 30 * time.Second
+	minimumUsefulTaskWindow  = 5 * time.Minute
+)
+
 // deepCoordinator is the Slice-1 Deep Work loop: select a task, invoke the
 // coding-agent executor in the isolated worktree, decide acceptance from
 // repository evidence, persist state, repeat until landing. The coordinator
@@ -44,10 +50,10 @@ type deepCoordinator struct {
 }
 
 // execInputFor builds the per-task invocation from the session-wide config.
-func (c *deepCoordinator) execInputFor(t deep.Task) execInput {
+func (c *deepCoordinator) execInputFor(t deep.Task, timeout time.Duration) execInput {
 	in := c.execCfg
 	in.workdir = c.state.WorktreePath
-	in.timeout = c.taskTimeout
+	in.timeout = timeout
 	mission := c.mission()
 	in.prompt = deep.BuildTaskPromptWithActionPlan(mission, t, t.Attempts, c.repoSummary(), c.execCfg.actionPlan)
 	if t.Reasoning != "" {
@@ -139,39 +145,75 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		return nil
 	}
 	t := &c.state.Tasks[idx]
+	if prerequisite := c.failedPrerequisite(*t); prerequisite != "" {
+		t.Status = deep.StatusBlocked
+		t.Blocker = prerequisite
+		t.LastResult = "not run: prerequisite was not verified"
+		if err := c.save(); err != nil {
+			return fmt.Errorf("persist blocked dependent task %s: %w", t.ID, err)
+		}
+		c.logf("task %s BLOCKED: %s", t.ID, prerequisite)
+		return nil
+	}
+	effectiveTimeout, timeoutDecision := c.effectiveTaskTimeout(now)
+	if effectiveTimeout <= 0 {
+		return fmt.Errorf("task %s has no useful executor window: %s", t.ID, timeoutDecision)
+	}
 	t.Status = deep.StatusActive
 	t.Attempts++
+	t.ConfiguredTimeoutSec = int(c.taskTimeout.Seconds())
+	t.EffectiveTimeoutSec = int(effectiveTimeout.Seconds())
+	t.TimeoutDecision = timeoutDecision
 	if err := c.save(); err != nil {
 		return fmt.Errorf("persist active task %s before invoking Hermes: %w", t.ID, err)
 	}
-	c.logf("task %s attempt %d: invoking executor (timeout %s)", t.ID, t.Attempts, c.taskTimeout)
+	c.logf("task %s attempt %d: invoking executor (configured maximum %s, effective timeout %s; %s)", t.ID, t.Attempts, c.taskTimeout, effectiveTimeout, timeoutDecision)
 
-	tc, cancel := context.WithTimeout(ctx, c.taskTimeout)
+	tc, cancel := context.WithTimeout(ctx, effectiveTimeout)
 	defer cancel()
 	c.incident(deep.IncidentExecutorInvoke, t.ID,
-		fmt.Sprintf("attempt %d %s (timeout %s)", t.Attempts, policySummary(c.execCfg), c.taskTimeout))
-	res, err := c.executor.run(tc, c.execInputFor(*t))
-	if err != nil {
-		c.logf("task %s: executor error: %v", t.ID, err)
-		c.incident(deep.IncidentExecutorError, t.ID, err.Error())
+		fmt.Sprintf("attempt %d %s (configured maximum %s; effective timeout %s; %s)", t.Attempts, policySummary(c.execCfg), c.taskTimeout, effectiveTimeout, timeoutDecision))
+	res, execErr := c.executor.run(tc, c.execInputFor(*t, effectiveTimeout))
+	if execErr != nil {
+		c.logf("task %s: executor error: %v", t.ID, execErr)
+		c.incident(deep.IncidentExecutorError, t.ID, execErr.Error())
 	}
 	c.logf("task %s attempt %d result: %s", t.ID, t.Attempts, res.summary())
 
-	verified, verifyOut, verifyCmd := c.accept(t, res)
+	verified, verifyOut, verifyCmd, verifyErr := c.accept(ctx, t)
 	if verifyCmd != "" {
-		if verified {
+		if verifyErr != nil {
+			c.incident(deep.IncidentVerifyRun, t.ID, "command=`"+verifyCmd+"` result=error: "+verifyErr.Error())
+		} else if verified {
 			c.incident(deep.IncidentVerifyRun, t.ID, "command=`"+verifyCmd+"` result=pass")
 		} else {
 			c.incident(deep.IncidentVerifyRun, t.ID, "command=`"+verifyCmd+"` result=fail")
 		}
 	}
 	t.LastResult = res.summary()
-	if verifyOut != "" {
-		t.LastResult += " | verify: " + strings.TrimSpace(tailLine(verifyOut, 2))
+	t.ExecutionError = ""
+	if execErr != nil {
+		t.ExecutionError = execErr.Error()
+		t.LastResult += " | executor error: " + execErr.Error()
+	}
+	t.VerificationCommand = verifyCmd
+	t.VerificationOutput = strings.TrimSpace(tailLine(verifyOut, 3))
+	t.VerificationResult = "not run"
+	if verifyCmd != "" {
+		switch {
+		case verifyErr != nil:
+			t.VerificationResult = "error: " + verifyErr.Error()
+		case verified:
+			t.VerificationResult = "repository verification passed"
+		default:
+			t.VerificationResult = "repository verification failed"
+		}
 	}
 
+	executionSucceeded := execErr == nil && res.completed && res.exitCode == 0
+
 	switch {
-	case verified:
+	case executionSucceeded && verified:
 		if msg, err := c.git.commitAll(c.state.WorktreePath, fmt.Sprintf("deep: %s %s verified", c.state.SessionID, t.ID)); err != nil {
 			c.logf("checkpoint commit for %s: %v (%s)", t.ID, err, msg)
 			c.incident(deep.IncidentCheckpointFail, t.ID, "checkpoint commit failed: "+err.Error())
@@ -209,17 +251,18 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 			t.Blocker = ""
 		}
 		c.logf("task %s VERIFIED", t.ID)
-	case verifyCmd == "" && res.completed && res.exitCode == 0:
+	case verifyCmd == "" && executionSucceeded:
 		t.Status = deep.StatusNeedsHuman
 		t.Blocker = "worker reported completion, but no independent verification command is defined"
-	case t.Attempts < c.state.TaskAttemptCap && now.Add(c.taskTimeout).Before(c.state.LandBefore):
+	case t.Attempts < c.state.TaskAttemptCap && c.hasUsefulTaskWindow(c.now()):
 		t.Status = deep.StatusIncomplete
+		t.Blocker = ""
 		c.logf("task %s INCOMPLETE (attempt %d/%d): will reconstruct context and continue",
 			t.ID, t.Attempts, c.state.TaskAttemptCap)
 	default:
 		t.Status = deep.StatusBlocked
 		if t.Blocker == "" {
-			t.Blocker = blockReason(res, verified, verifyOut)
+			t.Blocker = blockReason(res, execErr, verified, verifyOut, verifyErr)
 		}
 		c.logf("task %s BLOCKED: %s", t.ID, t.Blocker)
 	}
@@ -249,26 +292,38 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 // unverified. The verification run is bounded: a hung command must not
 // stall the coordinator. It returns the command it used so the caller can
 // record it in the incident log.
-func (c *deepCoordinator) accept(t *deep.Task, res execResult) (bool, string, string) {
+func (c *deepCoordinator) accept(ctx context.Context, t *deep.Task) (bool, string, string, error) {
 	command := t.Verify
 	if command == "" {
 		command = c.state.Verify
 	}
 	if command == "" {
-		return false, "", ""
+		return false, "", "", nil
 	}
 	bound := c.verifyTimeout
 	if bound <= 0 {
-		bound = 3 * time.Minute
+		bound = defaultTaskVerifyReserve
 	}
-	vctx, cancel := context.WithTimeout(context.Background(), bound)
+	vctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
-	out, ok, _ := c.verify(vctx, command, c.state.WorktreePath)
-	return ok, out, command
+	out, ok, err := c.verify(vctx, command, c.state.WorktreePath)
+	if err == nil && vctx.Err() != nil {
+		err = vctx.Err()
+	}
+	return ok && err == nil, out, command, err
 }
 
-func blockReason(res execResult, verified bool, verifyOut string) string {
-	if !verified && res.completed {
+func blockReason(res execResult, execErr error, verified bool, verifyOut string, verifyErr error) string {
+	if execErr != nil {
+		return "executor failed: " + execErr.Error()
+	}
+	if !res.completed || res.exitCode != 0 {
+		return fmt.Sprintf("executor did not complete successfully (exit %d): %s", res.exitCode, tailLine(res.stderrTail, 2))
+	}
+	if verifyErr != nil {
+		return "verification could not complete: " + verifyErr.Error()
+	}
+	if !verified {
 		if verifyOut != "" {
 			return "verification failed: " + strings.TrimSpace(tailLine(verifyOut, 2))
 		}
@@ -278,6 +333,62 @@ func blockReason(res execResult, verified bool, verifyOut string) string {
 		return fmt.Sprintf("invocation failed (exit %d): %s", res.exitCode, tailLine(res.stderrTail, 2))
 	}
 	return "invocation did not complete: " + res.finishReason
+}
+
+// effectiveTaskTimeout treats the configured timeout as a maximum. It reserves
+// bounded time for task verification and coordinator checkpoint work before
+// shortening the invocation to the remaining window.
+func (c *deepCoordinator) effectiveTaskTimeout(now time.Time) (time.Duration, string) {
+	maximum := c.taskTimeout
+	if maximum <= 0 {
+		return 0, "refused: configured task timeout is not positive"
+	}
+	verifyReserve := c.verifyTimeout
+	if verifyReserve <= 0 {
+		verifyReserve = defaultTaskVerifyReserve
+	}
+	remaining := c.state.LandBefore.Sub(now)
+	usable := remaining - verifyReserve - coordinatorReserve
+	minimum := minDuration(maximum, minimumUsefulTaskWindow)
+	if usable < minimum {
+		return 0, fmt.Sprintf("deferred: %s remains before landing cutoff; %s is reserved for verification and coordinator work, leaving less than the %s minimum useful invocation window (configured maximum %s)", remaining.Round(time.Second), (verifyReserve + coordinatorReserve).Round(time.Second), minimum.Round(time.Second), maximum.Round(time.Second))
+	}
+	if usable < maximum {
+		return usable, fmt.Sprintf("shortened from configured maximum %s to preserve %s for verification/coordinator work", maximum.Round(time.Second), (verifyReserve + coordinatorReserve).Round(time.Second))
+	}
+	return maximum, "started at configured maximum"
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (c *deepCoordinator) failedPrerequisite(task deep.Task) string {
+	for _, prerequisite := range task.DependsOn {
+		status := deep.Status("")
+		for _, candidate := range c.state.Tasks {
+			if candidate.ID == prerequisite {
+				status = candidate.Status
+				break
+			}
+		}
+		if status != deep.StatusVerified {
+			statusLabel := string(status)
+			if statusLabel == "" {
+				statusLabel = "missing"
+			}
+			return fmt.Sprintf("not run: prerequisite %s has status %s; implementation review requires a verified implementation", prerequisite, statusLabel)
+		}
+	}
+	return ""
+}
+
+func (c *deepCoordinator) hasUsefulTaskWindow(now time.Time) bool {
+	timeout, _ := c.effectiveTaskTimeout(now)
+	return timeout > 0
 }
 
 // selectTask returns the first task that still has useful work: queued
@@ -318,14 +429,22 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 		if !ok {
 			return c.land(ctx, "no safe useful work remaining")
 		}
-		if !now.Add(c.taskTimeout).Before(c.state.LandBefore) {
+		effective, decision := c.effectiveTaskTimeout(now)
+		if effective <= 0 {
 			t := &c.state.Tasks[idx]
-			t.Status = deep.StatusBlocked
-			t.Blocker = "not started: insufficient time before landing window"
+			if t.Attempts > 0 {
+				t.Status = deep.StatusIncomplete
+			} else {
+				t.Status = deep.StatusQueued
+			}
+			t.ConfiguredTimeoutSec = int(c.taskTimeout.Seconds())
+			t.EffectiveTimeoutSec = 0
+			t.TimeoutDecision = decision
+			t.Blocker = decision
 			if err := c.save(); err != nil {
 				return fmt.Errorf("persist task %s before landing: %w", t.ID, err)
 			}
-			return c.land(ctx, "time budget exhausted")
+			return c.land(ctx, "insufficient useful task window before landing cutoff")
 		}
 		if err := c.runTask(ctx, idx, now); err != nil {
 			return err

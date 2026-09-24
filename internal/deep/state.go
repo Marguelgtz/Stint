@@ -43,10 +43,21 @@ type DeepState struct {
 	LandingVerify     string          `json:"landingVerify,omitempty"`
 	LandingVerifyDone bool            `json:"landingVerifyDone,omitempty"`
 	LandingHandoff    string          `json:"landingHandoff,omitempty"`
+	PreviousLandings  []LandingRecord `json:"previousLandings,omitempty"`
 	TaskAttemptCap    int             `json:"taskAttemptCap"`
 	Exec              *ExecSettings   `json:"exec,omitempty"`
 	StartedAt         time.Time       `json:"startedAt"`
 	UpdatedAt         time.Time       `json:"updatedAt,omitempty"`
+}
+
+// LandingRecord preserves the identity and terminal reason of an earlier
+// landing when an operator deliberately resumes the same Deep Work session.
+type LandingRecord struct {
+	At            time.Time `json:"at"`
+	Reason        string    `json:"reason"`
+	Commit        string    `json:"commit,omitempty"`
+	Verification  string    `json:"verification,omitempty"`
+	HandoffSHA256 string    `json:"handoffSha256,omitempty"`
 }
 
 // ExecSettings are the per-session coding-agent invocation settings,

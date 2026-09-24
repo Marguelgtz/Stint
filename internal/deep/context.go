@@ -64,7 +64,13 @@ func BuildTaskPromptWithActionPlan(m Mission, t Task, attempt int, repo RepoSumm
 		fmt.Fprintf(&b, "VERIFY COMMAND (the coordinator runs this in the worktree to check your work; make it pass): %s\n", t.Verify)
 	}
 	if t.LastResult != "" {
-		fmt.Fprintf(&b, "PREVIOUS ATTEMPT RESULT (attempt %d):\n%s\n", attempt-1, t.LastResult)
+		fmt.Fprintf(&b, "PREVIOUS EXECUTOR RESULT (attempt %d):\n%s\n", attempt-1, t.LastResult)
+	}
+	if t.VerificationResult != "" && t.VerificationResult != "not run" {
+		fmt.Fprintf(&b, "PREVIOUS REPOSITORY VERIFICATION (diagnostic evidence only): command=%q result=%s\n", t.VerificationCommand, t.VerificationResult)
+		if t.VerificationOutput != "" {
+			fmt.Fprintf(&b, "verification output tail: %s\n", t.VerificationOutput)
+		}
 	}
 	if len(t.Findings) > 0 {
 		b.WriteString("FINDINGS SO FAR:\n")
