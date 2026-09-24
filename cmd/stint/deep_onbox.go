@@ -384,6 +384,13 @@ func retargetOnBoxActionPlanTask(tasks []deep.Task, actionPlan string) []deep.Ta
 		tasks[i].Attempts = 0
 		tasks[i].Blocker = ""
 		tasks[i].LastResult = ""
+		tasks[i].ExecutionError = ""
+		tasks[i].VerificationCommand = ""
+		tasks[i].VerificationResult = ""
+		tasks[i].VerificationOutput = ""
+		tasks[i].ConfiguredTimeoutSec = 0
+		tasks[i].EffectiveTimeoutSec = 0
+		tasks[i].TimeoutDecision = ""
 		tasks[i].Findings = nil
 		tasks[i].VerifiedAt = nil
 		tasks[i].CheckpointCommit = ""
@@ -475,7 +482,9 @@ func prepareDeepOnBoxResume(state *deep.DeepState, compute sessionstate.State, f
 	if err != nil {
 		return false, err
 	}
-	if state.Phase != deep.PhaseLanding && state.Phase != deep.PhaseExecuting {
+	if state.Phase == deep.PhaseLanded {
+		state.ReopenAfterLanding(now)
+	} else if state.Phase != deep.PhaseLanding && state.Phase != deep.PhaseExecuting {
 		state.Phase = deep.PhaseExecuting
 		state.LandedAt = nil
 	}

@@ -47,17 +47,29 @@ func (s Status) String() string { return string(s) }
 // command): when set, the coordinator runs it — instead of the mission's
 // ## Verification command — after each attempt of this task.
 type Task struct {
-	ID         string     `json:"id"`
-	Objective  string     `json:"objective"`
-	Acceptance string     `json:"acceptance,omitempty"`
-	Verify     string     `json:"verify,omitempty"`
-	Reasoning  string     `json:"reasoning,omitempty"`
-	Status     Status     `json:"status"`
-	Attempts   int        `json:"attempts"`
-	Blocker    string     `json:"blocker,omitempty"`
-	LastResult string     `json:"lastResult,omitempty"`
-	Findings   []string   `json:"findings,omitempty"`
-	VerifiedAt *time.Time `json:"verifiedAt,omitempty"`
+	ID         string `json:"id"`
+	Objective  string `json:"objective"`
+	Acceptance string `json:"acceptance,omitempty"`
+	Verify     string `json:"verify,omitempty"`
+	Reasoning  string `json:"reasoning,omitempty"`
+	// DependsOn names earlier tasks that must be verified before this task can
+	// run. This supports review tasks that inspect completed implementations.
+	DependsOn  []string `json:"dependsOn,omitempty"`
+	Status     Status   `json:"status"`
+	Attempts   int      `json:"attempts"`
+	Blocker    string   `json:"blocker,omitempty"`
+	LastResult string   `json:"lastResult,omitempty"`
+	// Attempt evidence is kept independently: a passing repository command is
+	// diagnostic evidence, not proof that a failed executor completed the task.
+	ExecutionError       string     `json:"executionError,omitempty"`
+	VerificationCommand  string     `json:"verificationCommand,omitempty"`
+	VerificationResult   string     `json:"verificationResult,omitempty"`
+	VerificationOutput   string     `json:"verificationOutput,omitempty"`
+	ConfiguredTimeoutSec int        `json:"configuredTimeoutSec,omitempty"`
+	EffectiveTimeoutSec  int        `json:"effectiveTimeoutSec,omitempty"`
+	TimeoutDecision      string     `json:"timeoutDecision,omitempty"`
+	Findings             []string   `json:"findings,omitempty"`
+	VerifiedAt           *time.Time `json:"verifiedAt,omitempty"`
 	// CheckpointCommit is the exact repository HEAD accepted by the
 	// coordinator for this task. The coordinator creates a distinct marker
 	// commit even when the worker already committed its own changes.

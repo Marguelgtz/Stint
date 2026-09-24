@@ -235,6 +235,37 @@ func TestPrepareDeepOnBoxResumeRebindsOnlyAfterWorktreeRecovery(t *testing.T) {
 	}
 }
 
+func TestPrepareDeepOnBoxResumeStartsFreshLandingEpoch(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	state := env.state
+	state.Exec = &deep.ExecSettings{Worker: workerHermesOnBox, Model: "model", TaskTimeoutSec: 600}
+	if err := state.BindCompute("vast", 100, env.clock.now); err != nil {
+		t.Fatal(err)
+	}
+	landedAt := env.clock.now.Add(-time.Minute)
+	state.Phase = deep.PhaseLanded
+	state.LandedAt = &landedAt
+	state.LandingReason = "time budget exhausted"
+	state.LandingCommit = strings.Repeat("a", 40)
+	state.LandingVerify = "passed\nold verification"
+	state.LandingVerifyDone = true
+	state.LandingHandoff = "old handoff"
+	compute := sessionstate.State{InstanceID: 100, Deadline: env.clock.now.Add(2 * time.Hour)}
+	if _, err := prepareDeepOnBoxResume(state, compute, &deepOnBoxFlags{resume: true}, env.coord.git, env.clock.now); err != nil {
+		t.Fatalf("resume landed session: %v", err)
+	}
+	if state.Phase != deep.PhaseExecuting || state.LandedAt != nil || state.LandingReason != "" || state.LandingCommit != "" || state.LandingVerifyDone || state.LandingVerify != "" || state.LandingHandoff != "" {
+		t.Fatalf("resumed landing fields remain stale: %+v", state)
+	}
+	if len(state.PreviousLandings) != 1 {
+		t.Fatalf("previous landing history = %+v", state.PreviousLandings)
+	}
+	previous := state.PreviousLandings[0]
+	if previous.Reason != "time budget exhausted" || previous.Commit != strings.Repeat("a", 40) || previous.Verification != "passed\nold verification" || previous.HandoffSHA256 == "" {
+		t.Fatalf("previous landing evidence was not preserved: %+v", previous)
+	}
+}
+
 func TestPrepareDeepOnBoxResumeRefusesImplicitComputeRebind(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
 	state := env.state

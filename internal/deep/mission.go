@@ -29,6 +29,7 @@ import (
 //	  - acceptance: <what must be true for the task to count as done>
 //	  - verify: <shell command the coordinator runs to verify THIS task;
 //	    overrides the mission-level ## Verification command for this task>
+//	  - depends-on: IMPLEMENT-001
 //
 // Unknown sections are ignored so the format can grow. Objective and a
 // non-empty task list are required; anything else is optional.
@@ -121,7 +122,21 @@ func ParseMission(content string) (Mission, error) {
 					break
 				}
 			}
-			if strings.HasPrefix(body, "acceptance:") && taskIdx >= 0 {
+			if strings.HasPrefix(body, "depends-on:") && taskIdx >= 0 {
+				value := strings.TrimSpace(strings.TrimPrefix(body, "depends-on:"))
+				for _, id := range strings.Split(value, ",") {
+					id = strings.TrimSpace(id)
+					if id == "" || !taskIDRe.MatchString(id) {
+						return m, fmt.Errorf("task %s: depends-on must name one or more valid task IDs", m.Tasks[taskIdx].ID)
+					}
+					for _, existing := range m.Tasks[taskIdx].DependsOn {
+						if existing == id {
+							return m, fmt.Errorf("task %s: duplicate prerequisite %q", m.Tasks[taskIdx].ID, id)
+						}
+					}
+					m.Tasks[taskIdx].DependsOn = append(m.Tasks[taskIdx].DependsOn, id)
+				}
+			} else if strings.HasPrefix(body, "acceptance:") && taskIdx >= 0 {
 				m.Tasks[taskIdx].Acceptance = strings.TrimSpace(strings.TrimPrefix(body, "acceptance:"))
 			} else if strings.HasPrefix(body, "verify:") && taskIdx >= 0 {
 				m.Tasks[taskIdx].Verify = strings.TrimSpace(stripCodeFence(strings.TrimPrefix(body, "verify:")))
@@ -154,6 +169,15 @@ func ParseMission(content string) (Mission, error) {
 	}
 	if len(m.Tasks) == 0 {
 		return m, fmt.Errorf("mission requires at least one task (## Tasks: '- [ ] ID: objective')")
+	}
+	seenTasks := make(map[string]bool, len(m.Tasks))
+	for _, task := range m.Tasks {
+		for _, dependency := range task.DependsOn {
+			if !seenTasks[dependency] {
+				return m, fmt.Errorf("task %s: prerequisite %q must be a task declared earlier in the mission", task.ID, dependency)
+			}
+		}
+		seenTasks[task.ID] = true
 	}
 	mode, err := NormalizeGitHubMode(githubMode)
 	if err != nil {
