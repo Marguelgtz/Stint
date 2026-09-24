@@ -125,8 +125,27 @@ func TestReadPerfStreamRejectsReasoningOnlyCompletion(t *testing.T) {
 		`data: [DONE]`,
 	}, "\n") + "\n"
 	_, err := readPerfStreamAt(strings.NewReader(stream), started, steppedPerfClock(started, 100*time.Millisecond))
-	if err == nil || !strings.Contains(err.Error(), "without user-visible content") {
+	if !errors.Is(err, errPerfNoVisibleContent) {
 		t.Fatalf("error = %v, want no-user-visible-content error", err)
+	}
+}
+
+func TestBenchmarkCompletionWithRetryDoesNotRepeatNoVisibleContent(t *testing.T) {
+	calls := 0
+	benchmark := func(context.Context, *http.Client, string, int) (perfSample, error) {
+		calls++
+		return perfSample{}, errPerfNoVisibleContent
+	}
+
+	_, attempts, err := benchmarkCompletionWithRetry(context.Background(), &http.Client{}, "prompt", 64, benchmark)
+	if !errors.Is(err, errPerfNoVisibleContent) {
+		t.Fatalf("benchmarkCompletionWithRetry() error = %v, want no-user-visible-content error", err)
+	}
+	if !strings.Contains(err.Error(), "increase --tokens") {
+		t.Fatalf("error = %q, want completion-budget guidance", err)
+	}
+	if attempts != 1 || calls != 1 {
+		t.Fatalf("attempts/calls = %d/%d, want 1/1", attempts, calls)
 	}
 }
 

@@ -21,6 +21,8 @@ import (
 
 const perfMaxAttempts = 3
 
+var errPerfNoVisibleContent = errors.New("stream completed without user-visible content")
+
 // perf is handled before main's command switch so it can remain a focused,
 // stackable feature without coupling benchmark logic into the lifecycle path.
 func init() {
@@ -179,6 +181,9 @@ func benchmarkCompletionWithRetry(ctx context.Context, client *http.Client, prom
 		if ctx.Err() != nil {
 			return perfSample{}, attempt, ctx.Err()
 		}
+		if errors.Is(err, errPerfNoVisibleContent) {
+			return perfSample{}, attempt, fmt.Errorf("%w; increase --tokens to allow a visible response", err)
+		}
 		if attempt == perfMaxAttempts {
 			break
 		}
@@ -275,7 +280,7 @@ func readPerfStreamAt(body io.Reader, started time.Time, now func() time.Time) (
 	}
 	sample.Total = now().Sub(started)
 	if firstVisible.IsZero() {
-		return perfSample{}, errors.New("stream completed without user-visible content")
+		return perfSample{}, errPerfNoVisibleContent
 	}
 	sample.TTFT = firstVisible.Sub(started)
 	switch {
