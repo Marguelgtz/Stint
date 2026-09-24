@@ -92,7 +92,11 @@ publish_once() {
   [ -n "$publisher" ] && [ -x "$publisher" ] || return 1
   local state_dir
   state_dir="$(latest_state_dir)" || return 0
-  "$publisher" sync "$state_dir" >>"$LOG_FILE" 2>&1
+  local status=0
+  "$publisher" sync "$state_dir" >>"$LOG_FILE" 2>&1 || status=$?
+  [ "$status" -eq 0 ] && return 0
+  [ "$status" -eq 3 ] && return 3
+  return 1
 }
 
 publish_final() {
@@ -101,8 +105,14 @@ publish_final() {
   local delay="${STINT_ONBOX_PUBLISH_RETRY_SECONDS:-5}"
   local i
   for i in $(seq 1 "$attempts"); do
-    if publish_once; then
+    local status=0
+    publish_once || status=$?
+    if [ "$status" -eq 0 ]; then
       return 0
+    fi
+    if [ "$status" -eq 3 ]; then
+      echo "$(date -u +%FT%TZ) GitHub publication stopped after permanent identity/policy failure (exit 3)" >>"$LOG_FILE"
+      return 1
     fi
     echo "$(date -u +%FT%TZ) GitHub publish attempt $i/$attempts failed; retrying" >>"$LOG_FILE"
     sleep "$delay"
