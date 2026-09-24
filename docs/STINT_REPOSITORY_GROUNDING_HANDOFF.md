@@ -1,20 +1,23 @@
 # Stint repository grounding handoff
 
-**Status:** authoritative main is e3e839cd4758a53093f8e660903f9a09f575c408
-after PR #141, and its landed-main CI passed. The live parallel-range run on
-one RTX 4090 completed the immutable bundle transfer, SHA verification,
-installation, model load, READY and teardown. Full release-bundle qualification
-and Deep Work remain open; source-build stays default and release-bundle stays
-opt-in.
+**Status:** authoritative main is `089607965715bd9435cc0e3b671b4f34c594e446`
+after PR #143; landed-main CI run `35938220186` passed all five required jobs.
+The live parallel-range run on one RTX 4090 completed the immutable bundle
+transfer, SHA verification, installation, model load, READY and teardown. PR
+#143 fixed Stint's invalid decode-rate reporting. Full release-bundle
+qualification and Deep Work remain open; source-build stays default and
+release-bundle stays opt-in.
 
 ## Authoritative repository and verification
 
-- Product main after #141 and before this evidence-doc refresh: e3e839cd4758a53093f8e660903f9a09f575c408.
+- Product main after #143: `089607965715bd9435cc0e3b671b4f34c594e446`.
 - PR #139 exact-head run 35924946874 and landed-main run 35925100519 passed all five required jobs; it records the source-build RTX 4090 performance baseline.
 - PR #140 exact-head run `35928576565` and landed-main run `35928870944`
   passed all five required CI jobs. PR #140 records the incomplete RTX 4090
   release-bundle transfer; it did not claim runtime acceptance.
 - PR #141 exact-head run 35931174559 and landed-main run 35931745106 passed all five required jobs; its live 4090 result is recorded below.
+- PR #142 records that live result and its limitations; exact-head run `35936860289` and landed-main run `35937034112` passed all five required jobs. Merge SHA: `59130984deb751034921fac262cdacc073e3d75b`.
+- PR #143 fixes invalid decode-rate reporting for buffered/reasoning-only output; exact-head run `35938070090` and landed-main run `35938220186` passed all five required jobs. Merge SHA: `089607965715bd9435cc0e3b671b4f34c594e446`.
 - Exact landed-main push run `35916137793` passed all five required jobs.
 - PR #131 merged as `2b5f7342093c520175b608a1a64bbce0b9443f31`. Its PR run
   `35905726077` appeared green but physically tested synthetic merge tree
@@ -40,13 +43,14 @@ opt-in.
 - PR #138 fixed a live `stint perf` no-output failure by appending an explicit
   short completion instruction to its synthetic prompt. Exact-head run
   `35923353592` and landed-main run `35923648426` passed all five required
-  jobs; merge SHA is the current `main` above.
+  jobs; merge SHA is `9638ac6fef4ad81a993a5bf1d73ffeffeb30a1ef`.
 - PR #93 closed unmerged at `2026-09-23T19:51:25Z` after #133 landed. Its
   [replacement comment](https://github.com/Marguelgtz/Stint/pull/93#issuecomment-5801853350)
   records the new docs index and paths. The final open PR set is #85 and
   protected generated evidence #110–#113.
-- The current open PR set remains #85 and protected evidence #110–#113; the
-  post-#138 refs and base SHAs are recorded in the ledger.
+- The current open PR set after #143 remains #85 and protected evidence
+  #110–#113; their exact heads and observed base SHAs are recorded in the
+  refreshed ledger snapshot.
 - The original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa`
   and all its untracked user files and local binary remain untouched.
 
@@ -178,6 +182,12 @@ valid performance, full-context, measured-network and Deep Work acceptance. See
 the grounding plan for the current gate.
 
 
+PR #143 corrected the benchmark's timing logic: it requires nonempty
+content/reasoning SSE update counts to match endpoint completion usage and a
+measurable interval before reporting decode tok/s. The old 8K number remains
+evidence of the defect, not a performance result. Exact-head and landed-main
+CI passed; this deterministic parser correction was not rerun on a GPU.
+
 The generic read-only Vast plan at `2026-09-23 20:12 UTC` selected an excluded
 RTX 3090 at `$0.379/hour`; it did not authorize or trigger a rental. The actual
 acceptance run used explicit `--runtime ninfer` and selected only the RTX 4090.
@@ -192,7 +202,8 @@ branches were not modified to rerun them.
 
 ## Next work
 
-1. Repair or account for the perf stream parser when a reasoning model emits no visible text or emits content only at completion; do not use the decode figure from this run.
-2. Repeat one bounded RTX 4090 acceptance run only when it can test visible two-lane correctness, valid long-context performance, and Deep Work after the range downloader has proven live integrity.
+1. When a complete acceptance run fits the authorized budget, test measured network qualification, visible two-lane correctness, valid 8K/long-context performance, full native-context stability and Hermes Deep Work on one explicit RTX 4090. Never use a 3090.
+2. The two 2026-09-24 offers cost an estimated $0.36 total, not a provider invoice. The recorded one-off ceiling was $0.60; another full run does not fit the remaining ~$0.24 estimate because model acquisition alone took 26m21s. Do not start a partial acceptance run that cannot reach the remaining gates.
 3. Keep source-build default and release-bundle opt-in until measured network qualification, full native context, two-lane correctness, performance and Deep Work pass.
-4. Keep #85 parked and #110–#113 open, unmerged, and untouched; refresh the open-PR ledger after the evidence PR lands.
+4. Keep #85 parked and #110–#113 open, unmerged, and untouched; current exact refs and legacy-check caveats are in the refreshed open-PR snapshot.
+5. Next Spark ↔ Stint slice: define a read-only evidence contract for selected runtime/bootstrap provenance after live qualification chooses a deployment path. Keep repository/evidence observation in Spark and provider lifecycle authority in Stint.

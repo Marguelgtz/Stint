@@ -9,7 +9,7 @@ the concise recovery point.
 
 - Repository: `Marguelgtz/Stint`, default branch `main`.
 - Starting main: `9634bf762a2dc9021747eb786db7fd23ccab84e9`.
-- Current main after #141 and before this results-docs refresh: e3e839cd4758a53093f8e660903f9a09f575c408; landed-main CI run 35931745106 passed all five required jobs.
+- Current main after #143: `089607965715bd9435cc0e3b671b4f34c594e446`; landed-main CI run `35938220186` passed all five required jobs.
 - The user's original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa` and its untracked files/local binary remain untouched. Work used isolated `/tmp` worktrees.
 - Current main preserves Hermes-on-box Deep Work, both dashboards, NInfer lane semantics, paid-session/provider safety, exact-head CI, and Spark path observation. See the ledger for historical source comparisons.
 
@@ -44,6 +44,8 @@ Grounding and runtime slices merged after the starting point:
 | #139 | bc368274ab5746a03eaa8c497b83023ddab3f6fe | record source-build RTX 4090 baseline | 35925100519 |
 | #140 | cc09c9ad3b340db6ca7afbdcfda7267e47027311 | record incomplete release-asset transfer | 35928870944 |
 | #141 | e3e839cd4758a53093f8e660903f9a09f575c408 | concurrent, resumable, SHA-verified release-asset ranges | 35931745106 |
+| #142 | `59130984deb751034921fac262cdacc073e3d75b` | document live RTX 4090 release-bundle transfer and incomplete inference acceptance | `35937034112` |
+| #143 | `089607965715bd9435cc0e3b671b4f34c594e446` | suppress invalid decode rates when streamed updates do not match usage; surface unavailable status | `35938220186` |
 
 Each listed exact landed-main run completed all five required Stint jobs. #124
 Pull-request runs `35882783534`, `35894208985`, `35898993338`, `35900956163`,
@@ -97,6 +99,15 @@ Deep Work remain untested. Keep source-build as default and release-bundle
 opt-in; the bundle has proven live acquisition, integrity, installation, model
 startup and teardown, not full production qualification or a faster overall
 READY time.
+
+PR #143 fixes the misleading decode rate observed in this run. It timestamps
+generated SSE updates and reports tok/s only when the update count matches the
+endpoint's completion-token usage and spans a measurable interval. Otherwise
+it preserves TTFT/total latency, marks decode unavailable in `perf`, `status`,
+JSON and the dashboard, and suppresses unverified rates in legacy cached
+samples. PR #143 exact-head run `35938070090` and landed-main run `35938220186`
+passed all five required jobs. This repairs Stint's measurement; it does not
+change model output or complete GPU acceptance.
 
 ## Runtime decision and current design
 
@@ -368,6 +379,8 @@ bundle path, and teardown evidence remain.
 - [x] Inspect the market read-only under existing caps at `18:37 UTC`, recheck the plan at `19:06 UTC`, and refresh it at `20:12 UTC`; no qualifying RTX 4090 was established and no compute was rented.
 - [x] Complete the first fresh RTX 4090 source-build smoke with a one-off hourly exception; record READY time, throughput, chat correctness, perf, cost ceiling and teardown. Merge the visible-output fix in #138.
 - [x] Merge #141 after exact-head CI run 35931174559 and landed-main run 35931745106 passed all five required jobs; its range downloader completed a live RTX 4090 release transfer with the pinned SHA verified, installed NInfer, reached READY and tore down.
+- [x] Merge #142 to record live release-bundle transfer and its incomplete inference acceptance; exact-head run `35936860289` and landed-main run `35937034112` passed all five required jobs.
+- [x] Merge #143 to prevent buffered/reasoning-only SSE output from producing false decode rates; exact-head run `35938070090` and landed-main run `35938220186` passed all five required jobs.
 - [~] Complete the remaining release-bundle acceptance gates: measured network qualification on the accepted host, visible two-lane correctness, valid 8K and long-context performance, full native-context stability, and Hermes Deep Work. Keep source-build as default and release-bundle opt-in until these pass.
 - [x] Merge #125 with the canonical docs and verbatim #73 history; then close only #48–#51 and #73 after their replacement/history records landed.
 - [x] Merge #131 and record its landing SHA / main CI; inspect its pull-request run and identify the synthetic-merge checkout gap.
@@ -377,11 +390,12 @@ bundle path, and teardown evidence remain.
 - [x] After #133's exact-head, synthetic merge-tree and main push CI passed, comment on and close #93; verify the resulting five-PR open snapshot and record its refs/check evidence.
 - [x] Merge #135 after exact-head and synthetic merge-tree verification; its smoke remains RTX 4090-only at the normal $0.40/hour target.
 - [x] Merge #136 smoke-landing docs and #138 perf-prompt fix. #138 exact-head CI `35923353592` and landed-main CI `35923648426` passed all five required jobs.
+- [x] Refresh this plan, handoff and current open-PR snapshot after #143 merged; the open set remains #85 and protected evidence #110–#113.
 
 ## Final-state rules
-PR #141 is merged as e3e839cd4758a53093f8e660903f9a09f575c408; exact-head
-CI run 35931174559 and landed-main run 35931745106 passed all five required
-jobs. The live 2026-09-24 RTX 4090 run completed all 56 release-bundle ranges,
+Current `main` is `089607965715bd9435cc0e3b671b4f34c594e446` after #143; its
+landed-main CI run `35938220186` passed all five required jobs. The live
+2026-09-24 RTX 4090 run completed all 56 release-bundle ranges,
 verified the pinned SHA, installed NInfer, downloaded and verified the separate
 Qwen model, reached READY with native 262144 context and two configured lanes,
 and confirmed teardown. Rental-to-READY was 31m20s, including 26m21s for model
@@ -391,4 +405,8 @@ The measured network floor was not rerun after the interrupted start was
 resumed. User-visible two-lane correctness, a valid long-context perf sample,
 full 262144 prompt depth, and Deep Work remain unverified. Source-build stays
 the default; release-bundle remains opt-in pending the remaining acceptance
-gates. Never use a 3090.
+gates. PR #143 removes the invalid decode-rate output but was verified locally
+and in CI, not on another GPU. Estimated spend for the two 2026-09-24 offers is
+about $0.36 against the bounded $0.60 test ceiling; a repeat full acceptance run
+does not fit the remaining estimate because model acquisition alone took
+26m21s. Never use a 3090.

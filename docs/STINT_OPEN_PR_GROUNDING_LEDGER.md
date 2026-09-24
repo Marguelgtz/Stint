@@ -42,6 +42,8 @@
 - PR #140: record the incomplete release-asset transfer, branch docs/4090-release-bundle-transfer-20260923 at head a6aaef2b0be1b650b46f3e1b496007fbf098036c, merged as cc09c9ad3b340db6ca7afbdcfda7267e47027311. Exact-head run 35928576565 and landed-main run 35928870944 passed all five required jobs.
 - PR #141: parallel, resumable range downloader with final pinned SHA verification and curl fallback, branch fix/ninfer-release-range-download-20260923 at head 348e46acc042da588c132ef33afb0135a22bf1c4, merged as e3e839cd4758a53093f8e660903f9a09f575c408. Exact-head run 35931174559 and landed-main run 35931745106 passed all five required jobs. The 2026-09-24 RTX 4090 run transferred all 56 ranges and verified the release asset SHA; see the current handoff and plan for incomplete inference acceptance.
 - The same 2026-09-24 run also revealed the perf stream limitation: short concurrent calls exhausted a 32-token limit on reasoning with no visible text, the 8K sample's decode-rate output was invalid for its stream timing, and the 200K-target request returned no visible token after three attempts. Treat these as acceptance failures, not successful model correctness/performance evidence.
+- PR #142: live RTX 4090 release-bundle evidence, branch `docs/record-4090-release-bundle-live-20260924` at head `2c521d66249530e705779ec8d100ed5c8a919109`, based on `main` at `e3e839cd4758a53093f8e660903f9a09f575c408`, merged as `59130984deb751034921fac262cdacc073e3d75b`. Exact-head run `35936860289` and landed-main run `35937034112` passed all five required jobs. The docs record 56-range transfer and pinned-SHA success, separate Qwen model acquisition, partial runtime readiness, and explicit failures/limitations. Documentation-only; no local tests were run. Disposition: merged evidence; release-bundle remains opt-in.
+- PR #143: false decode-rate correction, branch `fix/perf-stream-timing-20260924` at head `c1d571795b49333226a4d2a188f8e3c0692db6d7`, based on `main` at `59130984deb751034921fac262cdacc073e3d75b`, merged as `089607965715bd9435cc0e3b671b4f34c594e446`. Exact-head run `35938070090` and landed-main run `35938220186` passed all five required jobs. It updates `cmd/stint/perf.go`, cached performance/status telemetry, the ordinary dashboard, and regression tests. It only reports decode tok/s when streamed content/reasoning update count matches completion usage and there is a measurable interval; otherwise it preserves TTFT/total and marks decode unavailable. Legacy cached rates without timing evidence are hidden. Local `go test -count=1 ./...`, `go test -race ./...`, `go vet ./...`, build, focused tests, and `git diff --check` passed. It replaces the invalid metric calculation exposed by #142; it does not fix model output or establish live GPU acceptance.
 
 ## Historical NInfer packaging and promotion evidence
 
@@ -1063,7 +1065,7 @@ recorded separately at the end of this ledger.
 - **Disposition:** **KEEP OPEN AS CURRENT EVIDENCE — explicit mission constraint.**
 
 ## Final current open PR snapshot
-Checked on 2026-09-24 after #141 merged and before the results-docs PR.
+Checked on 2026-09-24 at 00:29 UTC after #143 merged and before the grounding refresh PR.
 GitHub reported five open PRs with the same refs listed below. Their attached
 legacy runs remain green but predate the #132 exact-head workflow, so exact-head
 CI is not established. Keep #85 parked and #110–#113 open, unmerged, untouched.
