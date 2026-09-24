@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import pathlib
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -69,7 +70,7 @@ unsafe_secret_metric{token="do-not-save"} 9
             old_count = OBSERVE.MAX_SAMPLES
             old_bytes = OBSERVE.MAX_BYTES
             OBSERVE.MAX_SAMPLES = 2
-            OBSERVE.MAX_BYTES = 1
+            OBSERVE.MAX_BYTES = 1024
             try:
                 OBSERVE.append_bounded(path, {"sample": 1})
                 OBSERVE.append_bounded(path, {"sample": 2})
@@ -80,6 +81,17 @@ unsafe_secret_metric{token="do-not-save"} 9
             finally:
                 OBSERVE.MAX_SAMPLES = old_count
                 OBSERVE.MAX_BYTES = old_bytes
+
+    def test_retention_obeys_combined_byte_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory, "samples.jsonl")
+            row_bytes = len((json.dumps({"sample": 1}, separators=(",", ":")) + "\n").encode("utf-8"))
+            max_bytes = (row_bytes * 2) - 1
+            for sample in (1, 2, 3):
+                OBSERVE.append_bounded(path, {"sample": sample}, max_samples=10, max_bytes=max_bytes)
+            records = path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual([json.loads(item)["sample"] for item in records], [3])
+            self.assertLessEqual(path.stat().st_size, max_bytes)
 
     def test_retention_trims_existing_small_rows_on_resume(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -96,6 +108,32 @@ unsafe_secret_metric{token="do-not-save"} 9
             finally:
                 OBSERVE.MAX_SAMPLES = old_count
                 OBSERVE.MAX_BYTES = old_bytes
+
+    def test_sampler_runs_past_retention_window_until_stopped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            latest = root / "deep" / "latest"
+            state_dir = root / "deep" / "session-1"
+            state_dir.mkdir(parents=True)
+            latest.write_text("session-1\n", encoding="utf-8")
+            session = root / "session.json"
+            session.write_text('{"clients":2}\n', encoding="utf-8")
+            calls = []
+
+            def fake_sample(_latest, _session, _previous, _previous_mono, max_samples):
+                calls.append(max_samples)
+                return {}, float(len(calls))
+
+            def stop_after_three(_seconds):
+                if len(calls) >= 3:
+                    raise KeyboardInterrupt
+
+            with mock.patch.object(sys, "argv", ["observer", "--latest", str(latest), "--session", str(session), "--max-samples", "2"]), \
+                 mock.patch.object(OBSERVE, "sample", side_effect=fake_sample), \
+                 mock.patch.object(OBSERVE.time, "sleep", side_effect=stop_after_three):
+                with self.assertRaises(KeyboardInterrupt):
+                    OBSERVE.main()
+            self.assertEqual(calls, [2, 2, 2], "max-samples should bound retention, not observer lifetime")
 
 
 if __name__ == "__main__":

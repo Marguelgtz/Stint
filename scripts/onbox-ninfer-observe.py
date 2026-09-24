@@ -120,9 +120,11 @@ def derive_rates(previous, counters, elapsed):
     return rates
 
 
-def append_bounded(path, payload):
+def append_bounded(path, payload, max_samples=MAX_SAMPLES, max_bytes=MAX_BYTES):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    max_samples = max(1, min(int(max_samples), MAX_SAMPLES))
+    max_bytes = max(1, min(int(max_bytes), MAX_BYTES))
     cache_key = str(path.resolve())
     count = _sample_counts.get(cache_key)
     if count is None:
@@ -137,16 +139,27 @@ def append_bounded(path, payload):
         stream.write(line)
     count += 1
     _sample_counts[cache_key] = count
-    if path.stat().st_size <= MAX_BYTES and count <= MAX_SAMPLES:
+    if path.stat().st_size <= max_bytes and count <= max_samples:
         return
-    data = path.read_bytes().splitlines()[-MAX_SAMPLES:]
+    lines = path.read_bytes().splitlines(keepends=True)
+    retained = []
+    retained_bytes = 0
+    for raw in reversed(lines):
+        if not raw.strip():
+            continue
+        row = raw if raw.endswith(b"\n") else raw + b"\n"
+        if len(retained) >= max_samples or retained_bytes + len(row) > max_bytes:
+            break
+        retained.append(row)
+        retained_bytes += len(row)
+    retained.reverse()
     fd, temp_name = tempfile.mkstemp(prefix="ninfer-runtime-", dir=path.parent)
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as stream:
-            stream.write(b"\n".join(data) + b"\n")
+            stream.writelines(retained)
         os.replace(temp_name, path)
-        _sample_counts[cache_key] = len(data)
+        _sample_counts[cache_key] = len(retained)
     finally:
         try:
             os.unlink(temp_name)
@@ -161,7 +174,7 @@ def latest_state_dir(latest_path):
     return Path(latest_path).parent / session
 
 
-def sample(latest_path, session_path, previous, previous_mono):
+def sample(latest_path, session_path, previous, previous_mono, max_samples=MAX_SAMPLES):
     observed_at = utc_now()
     endpoints = {}
     counters = {}
@@ -191,7 +204,7 @@ def sample(latest_path, session_path, previous, previous_mono):
     }
     state_dir = latest_state_dir(latest_path)
     if state_dir.is_dir():
-        append_bounded(state_dir / "ninfer-runtime.jsonl", payload)
+        append_bounded(state_dir / "ninfer-runtime.jsonl", payload, max_samples=max_samples)
     return counters, monotonic_now
 
 
@@ -204,8 +217,8 @@ def main():
     args = parser.parse_args()
     previous = {}
     previous_mono = None
-    samples = 0
-    while samples < max(1, min(args.max_samples, MAX_SAMPLES)):
+    max_samples = max(1, min(args.max_samples, MAX_SAMPLES))
+    while True:
         if not Path(args.latest).is_file():
             time.sleep(1.0)
             continue
@@ -213,7 +226,7 @@ def main():
             if not latest_state_dir(args.latest).is_dir():
                 time.sleep(1.0)
                 continue
-            previous, previous_mono = sample(args.latest, args.session, previous, previous_mono)
+            previous, previous_mono = sample(args.latest, args.session, previous, previous_mono, max_samples=max_samples)
         except Exception as exc:
             # Preserve observer failures locally where a session directory exists;
             # sampling failure must never stop the Deep Work coordinator.
@@ -223,12 +236,10 @@ def main():
                     "observedAt": utc_now(), "configuredClients": read_clients(args.session),
                     "exposedEngineSlotRows": 0, "slots": [], "counters": {}, "rates": {},
                     "endpoints": {"observer": f"unavailable: {type(exc).__name__}: {str(exc)[:180]}"},
-                })
+                }, max_samples=max_samples)
             except Exception:
                 pass
-        samples += 1
         time.sleep(max(1.0, min(args.interval, 60.0)))
-    return 0
 
 
 if __name__ == "__main__":
