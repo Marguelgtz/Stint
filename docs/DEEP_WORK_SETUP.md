@@ -33,6 +33,8 @@ For normal use, let Deep Work own the transition from no compute to detached exe
 
 When no session exists, the explicit `--hours` value authorizes the paid rental. The command forwards the compute flags into the existing `stint start interactive` lifecycle, waits for READY, then continues automatically into the production Deep Work launcher and detached supervisor. You do not need to run `stint start interactive`, poll `stint status`, and issue a second launch command yourself.
 
+If omitted, the new-session runtime and NInfer configuration default to `ninfer` and `native`. Production Deep Work rejects `llama.cpp`, `auto`, and non-native context profiles before it rents compute; an existing session must also report NInfer with native context.
+
 The existing lifecycle remains available independently for interactive inference or diagnostics. If you already have a READY session that you intentionally want Deep Work to reuse, omit the compute-provisioning flags:
 
 ```sh

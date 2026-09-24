@@ -64,9 +64,9 @@ type deepProductionProvisionFlags struct {
 
 func (p *deepProductionProvisionFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&p.hours, "hours", "", "paid compute duration in hours; supplying this lets deep start rent compute when no session exists")
-	fs.StringVar(&p.runtime, "runtime", "", "compute runtime forwarded to stint start interactive")
+	fs.StringVar(&p.runtime, "runtime", "", "new-session runtime; production Deep Work defaults to NInfer and rejects incompatible runtimes")
 	fs.StringVar(&p.ninferDeployment, "ninfer-deployment", "", "NInfer deployment forwarded to stint start interactive")
-	fs.StringVar(&p.ninferConfig, "ninfer-config", "", "NInfer config forwarded to stint start interactive")
+	fs.StringVar(&p.ninferConfig, "ninfer-config", "", "new-session NInfer config; production Deep Work defaults to native (262144 context)")
 	fs.StringVar(&p.context, "context", "", "llama.cpp context forwarded to stint start interactive")
 	fs.IntVar(&p.clients, "clients", 0, "NInfer clients forwarded to stint start interactive")
 	fs.Float64Var(&p.maxHourlyUSD, "max-hourly-usd", 0, "maximum hourly offer price for Deep Work compute")
@@ -98,6 +98,27 @@ func (p *deepProductionProvisionFlags) args() ([]string, error) {
 	if p == nil || !p.set["hours"] {
 		return nil, errors.New("renting Deep Work compute requires an explicit --hours <n> paid-duration cap")
 	}
+	if p.set["runtime"] {
+		runtime, err := normalizeRuntime(p.runtime)
+		if err != nil {
+			return nil, fmt.Errorf("Deep Work compute: %w", err)
+		}
+		if runtime != runtimeNInfer {
+			return nil, errors.New("production Deep Work requires --runtime ninfer; llama.cpp and auto may select an incompatible runtime")
+		}
+	}
+	if p.set["ninfer-config"] {
+		config, err := resolveNInferConfig(p.ninferConfig)
+		if err != nil {
+			return nil, fmt.Errorf("Deep Work compute: %w", err)
+		}
+		if config.Name != ninferConfigNative {
+			return nil, errors.New("production Deep Work requires --ninfer-config native (262144 context)")
+		}
+	}
+	if p.set["context"] {
+		return nil, errors.New("production Deep Work requires NInfer; --context is only supported by llama.cpp")
+	}
 	args := []string{"interactive"}
 	appendString := func(name, value string) {
 		if p.set[name] {
@@ -105,10 +126,9 @@ func (p *deepProductionProvisionFlags) args() ([]string, error) {
 		}
 	}
 	appendString("hours", p.hours)
-	appendString("runtime", p.runtime)
+	args = append(args, "--runtime", runtimeNInfer)
 	appendString("ninfer-deployment", p.ninferDeployment)
-	appendString("ninfer-config", p.ninferConfig)
-	appendString("context", p.context)
+	args = append(args, "--ninfer-config", ninferConfigNative)
 	appendString("location", p.location)
 	if p.set["clients"] {
 		args = append(args, "--clients", fmt.Sprintf("%d", p.clients))
@@ -441,11 +461,6 @@ func prepareDeepProductionLaunch(f *deepProductionStartFlags, paths config.Paths
 	if err != nil {
 		return nil, err
 	}
-	clients, clientsKnown := session.Clients, session.Clients > 0
-	if clients < 1 {
-		clients = 1 // the production launcher default for older session snapshots
-	}
-
 	actionPlan := strings.TrimSpace(f.actionPlan)
 	if actionPlan != "" {
 		if strings.IndexByte(actionPlan, 0) >= 0 {
@@ -508,6 +523,12 @@ func prepareDeepProductionLaunch(f *deepProductionStartFlags, paths config.Paths
 	if session.Status != sessionstate.StatusReady {
 		return nil, fmt.Errorf("Stint compute session is %s, not READY; resume or start a session and wait for READY", session.Status)
 	}
+	if runtimeForState(session) != runtimeNInfer {
+		return nil, fmt.Errorf("production Deep Work requires a READY NInfer session; current runtime is %s", runtimeForState(session))
+	}
+	if contextForState(session) != 262144 {
+		return nil, fmt.Errorf("production Deep Work requires NInfer native context (262144 tokens); current session context is %d", contextForState(session))
+	}
 	if session.InstanceID <= 0 {
 		return nil, errors.New("READY Stint session has no valid Vast instance identity")
 	}
@@ -526,6 +547,10 @@ func prepareDeepProductionLaunch(f *deepProductionStartFlags, paths config.Paths
 	}
 	if _, err := config.LoadCredentials(paths); err != nil {
 		return nil, fmt.Errorf("Vast credentials required by the production deadline watchdog are unavailable at %s: %w", paths.CredentialsFile, err)
+	}
+	clients, clientsKnown := session.Clients, session.Clients > 0
+	if clients < 1 {
+		clients = 1 // the production launcher default for older session snapshots
 	}
 
 	return &deepProductionLaunchPlan{

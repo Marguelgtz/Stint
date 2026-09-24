@@ -91,7 +91,7 @@ func newDeepProductionFixture(t *testing.T) deepProductionFixture {
 	deadline := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Second)
 	session := sessionstate.State{
 		InstanceID: 49812, GPUModel: "RTX_4090", Runtime: "ninfer", RuntimeDeployment: "release-bundle",
-		Clients: 2, HourlyUSD: 0.55, Hours: 3, StartedAt: time.Now().UTC().Add(-20 * time.Minute),
+		ContextTokens: 262144, Clients: 2, HourlyUSD: 0.55, Hours: 3, StartedAt: time.Now().UTC().Add(-20 * time.Minute),
 		RentalStartedAt: time.Now().UTC().Add(-20 * time.Minute), Deadline: deadline,
 		SSHHost: "203.0.113.25", SSHPort: 22110, Status: sessionstate.StatusReady,
 	}

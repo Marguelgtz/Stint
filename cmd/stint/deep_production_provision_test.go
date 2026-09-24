@@ -92,6 +92,78 @@ func TestDeepStartCanProvisionComputeThenLaunchDetachedRun(t *testing.T) {
 	}
 }
 
+func TestDeepStartDefaultsProvisioningToProductionNInferProfile(t *testing.T) {
+	fixture := newDeepProductionFixture(t)
+	if err := sessionstate.Clear(fixture.paths); err != nil {
+		t.Fatal(err)
+	}
+	var gotArgs []string
+	provisioner := func(_ context.Context, _ string, args []string, _, _ io.Writer) error {
+		gotArgs = append([]string(nil), args...)
+		return sessionstate.Save(fixture.paths, fixture.session)
+	}
+	runner := func(context.Context, string, []string, io.Writer, io.Writer) ([]byte, error) {
+		return []byte("ONBOX_SUPERVISOR_RUNNING pid=321\n{" +
+			`"status":"RUNNING","session":"deep-self-provision","deadline":"` + fixture.deadline.Format(time.RFC3339) + `"}` + "\n"), nil
+	}
+	err := runDeepStartWithProvisioner(
+		[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--hours", "3"},
+		fixture.paths, fixture.launcherPath, fixture.stintBinary, runner, provisioner,
+		io.Discard, io.Discard, time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(gotArgs, " ")
+	for _, want := range []string{"--runtime ninfer", "--ninfer-config native"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("default production profile args %q missing %q", joined, want)
+		}
+	}
+}
+
+func TestDeepStartRejectsIncompatibleRuntimeBeforeProvisioning(t *testing.T) {
+	tests := []struct {
+		name  string
+		flags []string
+		want  string
+	}{
+		{name: "llama cpp", flags: []string{"--runtime", "llama.cpp"}, want: "requires --runtime ninfer"},
+		{name: "auto", flags: []string{"--runtime", "auto"}, want: "requires --runtime ninfer"},
+		{name: "non-native context", flags: []string{"--ninfer-config", "precision"}, want: "requires --ninfer-config native"},
+		{name: "llama context flag", flags: []string{"--context", "262144"}, want: "--context is only supported by llama.cpp"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newDeepProductionFixture(t)
+			if err := sessionstate.Clear(fixture.paths); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--hours", "3"}
+			args = append(args, test.flags...)
+			provisionCalls := 0
+			err := runDeepStartWithProvisioner(
+				args, fixture.paths, fixture.launcherPath, fixture.stintBinary,
+				func(context.Context, string, []string, io.Writer, io.Writer) ([]byte, error) {
+					t.Fatal("launcher must not run for an incompatible runtime")
+					return nil, nil
+				},
+				func(context.Context, string, []string, io.Writer, io.Writer) error {
+					provisionCalls++
+					return nil
+				},
+				io.Discard, io.Discard, time.Now().UTC(),
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+			if provisionCalls != 0 {
+				t.Fatalf("provisioner called %d times for incompatible runtime", provisionCalls)
+			}
+		})
+	}
+}
+
 func TestDeepStartRequiresExplicitHoursBeforeRenting(t *testing.T) {
 	fixture := newDeepProductionFixture(t)
 	if err := sessionstate.Clear(fixture.paths); err != nil {
