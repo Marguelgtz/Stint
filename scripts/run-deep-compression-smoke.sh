@@ -9,6 +9,9 @@ set -Eeuo pipefail
 
 REPO_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 RUN_ID="${STINT_SMOKE_RUN_ID:-$(date -u +%Y%m%d-%H%M%S)}"
+case "$RUN_ID" in
+  ''|*[!A-Za-z0-9_-]*) printf 'FAIL unsafe smoke run id: %s\n' "$RUN_ID" >&2; exit 1 ;;
+esac
 STINT_BIN="${STINT_BIN:-$REPO_ROOT/bin/stint-deep-dashboard-smoke}"
 RUN_ROOT="${STINT_SMOKE_RUN_ROOT:-$HOME/.local/state/stint-deep-dashboard-smoke-$RUN_ID}"
 CONFIG_ROOT="${STINT_SMOKE_CONFIG_ROOT:-$HOME/.config/stint-deep-dashboard-smoke-$RUN_ID}"
@@ -20,6 +23,7 @@ LANE_SMOKE="${STINT_LANE_SMOKE:-1}"
 REQUIRE_COMPRESSION="${STINT_REQUIRE_COMPRESSION:-1}"
 EXPECTED_REMOTE_FILE="${STINT_EXPECTED_REMOTE_FILE:-compression-smoke.ok}"
 EXPECTED_REMOTE_TEXT="${STINT_EXPECTED_REMOTE_TEXT:-twelve chunks read after compression smoke}"
+NINFER_DEPLOYMENT="${STINT_NINFER_DEPLOYMENT:-release-bundle}"
 SMOKE_HOURS=1.5
 MAX_HOURLY_USD="${STINT_SMOKE_MAX_HOURLY_USD:-0.40}"
 MAX_SESSION_COST_USD="${STINT_SMOKE_MAX_SESSION_COST_USD:-0.60}"
@@ -32,6 +36,7 @@ SESSION_JSON="$STATE_DIR/session.json"
 LOG="$ARTIFACT_DIR/launcher.log"
 DASHBOARD_LOG="$ARTIFACT_DIR/dashboard-transcript.log"
 COORDINATOR_LOG="$ARTIFACT_DIR/coordinator.log"
+REMOTE_AUDIT_DIR="/root/.cache/stint-deep-compression-audit-$RUN_ID"
 mkdir -p "$STATE_DIR" "$XDG_CONFIG_HOME/stint" "$ARTIFACT_DIR"
 
 say() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$LOG"; }
@@ -45,11 +50,21 @@ down() {
 }
 
 REMOTE_READY=0
+AUDIT_WATCHER_STARTED=0
 DEEP_TASK_STARTED_AT=""
 DEEP_TASK_STARTED_AT_UTC=""
 capture_remote_evidence() {
   [ "$REMOTE_READY" = 1 ] || return 0
   say "capturing sanitized GPU observer and smoke artifact"
+  if [ "$AUDIT_WATCHER_STARTED" = 1 ]; then
+    timeout 20s "${SSH[@]}" "touch '$REMOTE_AUDIT_DIR/stop'; pid=\$(cat '$REMOTE_AUDIT_DIR/watcher.pid' 2>/dev/null || true); for _ in \$(seq 1 50); do [ -n \"\$pid\" ] || break; kill -0 \"\$pid\" 2>/dev/null || break; sleep 0.2; done" \
+      >>"$LOG" 2>&1 || say "WARN Hermes audit watcher did not stop cleanly"
+    timeout 30s "${SSH[@]}" "cat '$REMOTE_AUDIT_DIR/events.jsonl'" \
+      >"$ARTIFACT_DIR/hermes-tool-audit.jsonl" 2>>"$LOG" || true
+    timeout 30s "${SSH[@]}" "python3 /root/audit-deep-compression-hermes-session.py --journal '$REMOTE_AUDIT_DIR/events.jsonl'" \
+      >"$ARTIFACT_DIR/hermes-tool-audit.json" 2>>"$LOG" || true
+    AUDIT_WATCHER_STARTED=0
+  fi
   if [ -n "$DEEP_TASK_STARTED_AT_UTC" ]; then
     timeout 30s "${SSH[@]}" "STINT_DEEP_STARTED_AT='$DEEP_TASK_STARTED_AT_UTC' /root/stint-phasing/deep-observe" \
       >"$ARTIFACT_DIR/deep-observe.json" 2>>"$LOG" || true
@@ -72,10 +87,6 @@ capture_remote_evidence() {
   esac
   timeout 30s "${SSH[@]}" "cd '$remote_worktree' && test -f '$EXPECTED_REMOTE_FILE' && cat '$EXPECTED_REMOTE_FILE' && git status --short" \
     >"$ARTIFACT_DIR/remote-artifact.txt" 2>>"$LOG" || true
-  if [ -n "$DEEP_TASK_STARTED_AT" ]; then
-    timeout 30s "${SSH[@]}" "python3 /root/audit-deep-compression-hermes-session.py --started-after '$DEEP_TASK_STARTED_AT' --worktree '$remote_worktree'" \
-      >"$ARTIFACT_DIR/hermes-tool-audit.json" 2>>"$LOG" || true
-  fi
 }
 
 DASHBOARD_PID=""
@@ -101,6 +112,10 @@ require
 case "$LANE_SMOKE" in
   0|1) ;;
   *) say "FAIL STINT_LANE_SMOKE must be 0 or 1"; exit 1 ;;
+esac
+case "$NINFER_DEPLOYMENT" in
+  source-build|release-bundle) ;;
+  *) say "FAIL STINT_NINFER_DEPLOYMENT must be source-build or release-bundle"; exit 1 ;;
 esac
 if [ "$LANE_SMOKE" = 1 ] && [ "$NINFER_CLIENTS" != 2 ]; then
   say "FAIL concurrent lane smoke requires STINT_SMOKE_CLIENTS=2"
@@ -135,12 +150,12 @@ fi
 # at $0.50/hour and a $0.75 estimated rental total for a bounded one-off run.
 START_ARGS=(
   start interactive --hours "$SMOKE_HOURS"
-  --runtime ninfer --ninfer-config native --clients "$NINFER_CLIENTS"
+  --runtime ninfer --ninfer-deployment "$NINFER_DEPLOYMENT" --ninfer-config native --clients "$NINFER_CLIENTS"
   --min-measured-download-mbps 30 --min-network-mbps 300
   --network-candidate-attempts 1 --max-hourly-usd "$MAX_HOURLY_USD"
   --max-cost-usd "$MAX_SESSION_COST_USD"
 )
-say "validating RTX 4090 smoke options: ${SMOKE_HOURS}h, max rate \$${MAX_HOURLY_USD}/hour, rental estimate cap \$${MAX_SESSION_COST_USD}, one candidate, ${NINFER_CLIENTS} clients, lane smoke=$LANE_SMOKE"
+say "validating RTX 4090 smoke options: deployment=$NINFER_DEPLOYMENT, ${SMOKE_HOURS}h, max rate \$${MAX_HOURLY_USD}/hour, rental estimate cap \$${MAX_SESSION_COST_USD}, one candidate, ${NINFER_CLIENTS} clients, lane smoke=$LANE_SMOKE"
 "$STINT_BIN" "${START_ARGS[@]}" --validate-only >>"$LOG" 2>&1
 
 cp "$HOME/.config/stint-dryrun/stint/credentials.json" "$XDG_CONFIG_HOME/stint/credentials.json"
@@ -208,6 +223,14 @@ if [ "$LANE_SMOKE" = 1 ]; then
   say "running concurrent xhigh/medium two-lane smoke"
   timeout 6m "${SSH[@]}" 'PHASING_DIR=/root/stint-phasing /root/phase-lane-concurrency-smoke.sh' >>"$LOG" 2>&1
 fi
+PERF_STATUS=0
+say "running one near-context 200000-token perf probe"
+if timeout 18m "$STINT_BIN" perf --prompt-tokens 200000 --runs 1 --tokens 128 >>"$LOG" 2>&1; then
+  say "near-context perf probe passed"
+else
+  PERF_STATUS=$?
+  say "near-context perf probe failed with status $PERF_STATUS; continuing Deep Work to preserve end-to-end evidence"
+fi
 "${SSH[@]}" 'hermes config set compression.threshold_tokens 20000 && hermes config get compression.threshold_tokens' >>"$LOG" 2>&1
 "${SSH[@]}" 'git config --global --add safe.directory /root/stint-deep-dashboard-smoke' >>"$LOG" 2>&1
 
@@ -221,8 +244,10 @@ dashboard_recorder &
 DASHBOARD_PID=$!
 
 say "running bounded Deep Work task"
-DEEP_TASK_STARTED_AT="$(($(date +%s) - 30))"
+DEEP_TASK_STARTED_AT="$(($(date +%s) - 5))"
 DEEP_TASK_STARTED_AT_UTC="$(date -u +%FT%TZ)"
+timeout 30s "${SSH[@]}" "mkdir -p '$REMOTE_AUDIT_DIR'; rm -f '$REMOTE_AUDIT_DIR/stop' '$REMOTE_AUDIT_DIR/events.jsonl' '$REMOTE_AUDIT_DIR/watcher.pid'; nohup python3 /root/audit-deep-compression-hermes-session.py --started-after '$DEEP_TASK_STARTED_AT' --worktree-root '/root/stint-deep-dashboard-smoke/.stint-deep' --watch-journal '$REMOTE_AUDIT_DIR/events.jsonl' --stop-file '$REMOTE_AUDIT_DIR/stop' --watch-interval 0.25 >'$REMOTE_AUDIT_DIR/watcher.log' 2>&1 < /dev/null & echo \$! > '$REMOTE_AUDIT_DIR/watcher.pid'; sleep 0.2; kill -0 \$(cat '$REMOTE_AUDIT_DIR/watcher.pid')" >>"$LOG" 2>&1
+AUDIT_WATCHER_STARTED=1
 DEEP_ACTION_ARGS=()
 if [ -n "$ACTION_PLAN_PATH" ]; then
   DEEP_ACTION_ARGS=(--action-plan "$ACTION_PLAN_PATH")
@@ -243,17 +268,27 @@ say "coordinator exited status=$COORDINATOR_STATUS"
 "$STINT_BIN" deep dash --no-color --refresh >>"$DASHBOARD_LOG" 2>&1 || true
 stop_dashboard_recorder
 capture_remote_evidence
-python3 - "$ARTIFACT_DIR/deep-observe.json" "$ARTIFACT_DIR/remote-artifact.txt" "$COORDINATOR_LOG" "$ARTIFACT_DIR/hermes-tool-audit.json" <<'PY'
+python3 - "$ARTIFACT_DIR/deep-observe.json" "$ARTIFACT_DIR/remote-artifact.txt" "$COORDINATOR_LOG" "$ARTIFACT_DIR/hermes-tool-audit.json" "$PERF_STATUS" <<'PY'
 import json
 import os
 import sys
 from datetime import datetime
 
-observer_path, artifact_path, coordinator_path, audit_path = sys.argv[1:]
+observer_path, artifact_path, coordinator_path, audit_path, perf_status = sys.argv[1:]
 observer = json.load(open(observer_path, encoding="utf-8"))
 audit = json.load(open(audit_path, encoding="utf-8"))
 compression = observer.get("compression", {})
 routes = observer.get("phaseRoutes", {})
+ninfer = observer.get("ninfer", {})
+if (
+    ninfer.get("running") is not True
+    or ninfer.get("maxContext") != 262144
+    or ninfer.get("kvCapacity") != 262144
+    or ninfer.get("defaultMaxTokens") != 262144
+):
+    raise SystemExit(f"NInfer did not report native 262144 context and KV capacity: {ninfer}")
+if perf_status != "0":
+    raise SystemExit(f"near-context 200000-token perf probe failed with status {perf_status}")
 if os.environ.get("STINT_REQUIRE_COMPRESSION", "1") == "1" and (
     compression.get("state") != "completed"
     or compression.get("completed", 0) < 1
@@ -282,4 +317,4 @@ for marker in ("context compression summary was truncated", "context window over
     if marker in coordinator:
         raise SystemExit(f"unexpected compression failure marker: {marker}")
 PY
-say "PASS compression, medium route, twelve successful Hermes fixture reads, Hermes artifact write/verify, coordinator artifact verification, and dashboard transcript captured in $ARTIFACT_DIR"
+say "PASS native context, near-context perf, compression, medium route, twelve successful Hermes fixture reads, Hermes artifact write/verify, coordinator artifact verification, and dashboard transcript captured in $ARTIFACT_DIR"

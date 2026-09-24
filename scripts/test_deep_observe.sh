@@ -33,6 +33,9 @@ observer = json.load(open(sys.argv[1], encoding="utf-8"))
 routes = observer["phaseRoutes"]
 assert routes["xhighRequests"] == 1 and routes["xhighFailures"] == 0, routes
 assert routes["mediumRequests"] == 2 and routes["mediumFailures"] == 1, routes
+assert routes["mediumStatusCodes"] == {"200": 1, "503": 1}, routes
+assert routes["mediumLatestFailureStatus"] == 503, routes
+assert routes["mediumLatestFailureAt"] == "2026-09-23T02:03:00Z", routes
 PY
 
 python3 - "$TMP/phasing/wire-medium.jsonl" <<'PY'
@@ -48,6 +51,8 @@ import json, sys
 routes = json.load(open(sys.argv[1], encoding="utf-8"))["phaseRoutes"]
 assert routes["xhighRequests"] == 1 and routes["xhighFailures"] == 0, routes
 assert routes["mediumRequests"] == 1 and routes["mediumFailures"] == 0, routes
+assert routes["mediumStatusCodes"] == {"200": 1}, routes
+assert routes["mediumLatestFailureStatus"] is None, routes
 PY
 
 echo "deep observer phase counts, start-time filtering, and failure counts passed"

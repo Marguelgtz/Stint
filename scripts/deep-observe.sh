@@ -65,8 +65,14 @@ ninfer = {
 routes = {
     'xhighRequests': 0,
     'xhighFailures': 0,
+    'xhighStatusCodes': {},
+    'xhighLatestFailureStatus': None,
+    'xhighLatestFailureAt': '',
     'mediumRequests': 0,
     'mediumFailures': 0,
+    'mediumStatusCodes': {},
+    'mediumLatestFailureStatus': None,
+    'mediumLatestFailureAt': '',
     'latestPhase': '',
     'latestAt': '',
 }
@@ -88,8 +94,12 @@ for level, key in (('xhigh', 'xhighRequests'), ('medium', 'mediumRequests')):
                     status = int(record.get('response_status', 0))
                 except (TypeError, ValueError):
                     status = 0
+                status_codes = routes[f'{level}StatusCodes']
+                status_codes[str(status)] = status_codes.get(str(status), 0) + 1
                 if status < 200 or status >= 300:
                     routes[f'{level}Failures'] += 1
+                    routes[f'{level}LatestFailureStatus'] = status
+                    routes[f'{level}LatestFailureAt'] = timestamp
                 parsed = parse_time(timestamp)
                 if parsed and (latest_route_at is None or parsed >= latest_route_at):
                     latest_route_at = parsed

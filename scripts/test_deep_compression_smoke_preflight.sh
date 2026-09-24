@@ -59,6 +59,7 @@ grep -Fq 'FAKE_RENT_BLOCKED' "$TMP/artifacts/launcher.log"
 grep -Fq '2 clients, lane smoke=1' "$TMP/artifacts/launcher.log"
 for pair in \
   '--runtime:ninfer' \
+  '--ninfer-deployment:release-bundle' \
   '--ninfer-config:native' \
   '--clients:2' \
   '--hours:1.5' \
@@ -139,6 +140,19 @@ if [ "$result" -eq 0 ] || [ -e "$STINT_TEST_PREFLIGHT_MARKER" ]; then
 fi
 grep -Fq 'concurrent lane smoke requires STINT_SMOKE_CLIENTS=2' "$TMP/artifacts/launcher.log"
 
+export STINT_SMOKE_CLIENTS=2
+export STINT_NINFER_DEPLOYMENT=not-a-deployment
+set +e
+bash "$SCRIPT_DIR/run-deep-compression-smoke.sh" >"$TMP/test-invalid-deployment-out" 2>&1
+result=$?
+set -e
+if [ "$result" -eq 0 ] || [ -e "$STINT_TEST_PREFLIGHT_MARKER" ]; then
+  cat "$TMP/test-invalid-deployment-out" >&2
+  echo "invalid runtime deployment reached rental preflight" >&2
+  exit 1
+fi
+grep -Fq 'STINT_NINFER_DEPLOYMENT must be source-build or release-bundle' "$TMP/artifacts/launcher.log"
+
 LAUNCHER="$SCRIPT_DIR/run-deep-compression-smoke.sh"
 fixture_line="$(grep -nF 'SMOKE_REPO=/root/stint-deep-dashboard-smoke bash -s' "$LAUNCHER" | head -n 1 | cut -d: -f1)"
 provision_line="$(grep -nF 'STINT_TARGET_REPO=/root/stint-deep-dashboard-smoke' "$LAUNCHER" | head -n 1 | cut -d: -f1)"
@@ -150,6 +164,12 @@ grep -Fq 'down --yes' "$LAUNCHER" || {
   echo "unattended smoke cleanup must confirm teardown with --yes" >&2
   exit 1
 }
+perf_line="$(grep -nF 'perf --prompt-tokens 200000 --runs 1 --tokens 128' "$LAUNCHER" | head -n 1 | cut -d: -f1)"
+deep_line="$(grep -nF 'running bounded Deep Work task' "$LAUNCHER" | head -n 1 | cut -d: -f1)"
+if [ -z "$perf_line" ] || [ -z "$deep_line" ] || [ "$perf_line" -ge "$deep_line" ]; then
+  echo "near-context perf probe must run before the Deep Work acceptance task" >&2
+  exit 1
+fi
 if grep -Fq -- '--worker hermes' "$LAUNCHER"; then
   echo "Deep Work start must not pass the removed --worker flag" >&2
   exit 1

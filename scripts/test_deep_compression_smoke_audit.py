@@ -73,11 +73,16 @@ class HermesAuditTest(unittest.TestCase):
             )
             self.next_id += 1
 
-    def populate_success(self):
+    def populate_success(self, retry=False):
         for skip in range(12):
             self.add_call(
                 f"dd-{skip}",
                 f"dd if=context-fixture.txt bs=16384 count=1 skip={skip} status=none",
+            )
+        if retry:
+            self.add_call(
+                "dd-0-retry",
+                "dd if=context-fixture.txt bs=16384 count=1 skip=0 status=none",
             )
         self.add_call(
             "write",
@@ -109,6 +114,35 @@ class HermesAuditTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertNotIn(4, result["successfulChunkReads"])
         self.assertIn("Hermes did not successfully call all twelve dd reads in order", result["failures"])
+
+    def test_successful_retry_does_not_hide_the_ordered_first_pass(self):
+        self.populate_success(retry=True)
+        result = AUDIT.audit(self.db, 90.0, "/repo/.stint-deep/smoke")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["successfulChunkReads"], [*range(12), 0])
+
+    def test_watched_journal_survives_hermes_compression_pruning(self):
+        self.populate_success()
+        with tempfile.TemporaryDirectory() as temp:
+            journal = Path(temp) / "events.jsonl"
+            stop = Path(temp) / "stop"
+            stop.touch()
+            AUDIT.watch_journal(
+                self.db,
+                90.0,
+                "/repo/.stint-deep",
+                journal,
+                stop,
+                0.001,
+            )
+            with sqlite3.connect(self.db) as conn:
+                conn.execute("DELETE FROM messages")
+            result = AUDIT.audit_journal(journal)
+            self.assertTrue(result["ok"], result)
+            encoded = journal.read_text(encoding="utf-8")
+            self.assertNotIn("command", encoded)
+            self.assertNotIn("context-fixture.txt", encoded)
+            self.assertNotIn("compression-smoke.ok", encoded)
 
 
 if __name__ == "__main__":
