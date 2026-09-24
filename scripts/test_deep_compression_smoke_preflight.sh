@@ -154,4 +154,12 @@ if grep -Fq -- '--worker hermes' "$LAUNCHER"; then
   echo "Deep Work start must not pass the removed --worker flag" >&2
   exit 1
 fi
+grep -Fq '"$REPO_ROOT/scripts/deep-agent-log-tail.py"' "$LAUNCHER" || {
+  echo "fresh-box smoke must transfer the dashboard log-tail helper" >&2
+  exit 1
+}
+grep -Fq 'AGENT_LOG_TAIL=/root/deep-agent-log-tail.py' "$LAUNCHER" || {
+  echo "fresh-box smoke must install the transferred log-tail helper" >&2
+  exit 1
+}
 echo "deep-compression smoke preflight passed without provider mutation"

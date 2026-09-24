@@ -23,6 +23,8 @@ HEARTBEAT_FILE="$RUNTIME_DIR/heartbeat.json"
 LOG_FILE="$ROOT/supervisor.log"
 STINT_BIN="${STINT_ONBOX_BIN:-/usr/local/bin/stint}"
 HEARTBEAT_PID=""
+NINFER_OBSERVER_PID=""
+NINFER_OBSERVER_SESSION_FILE=""
 
 export XDG_STATE_HOME="$STATE_HOME"
 
@@ -214,6 +216,11 @@ cleanup_supervisor() {
     wait "$HEARTBEAT_PID" 2>/dev/null || true
     HEARTBEAT_PID=""
   fi
+  if [ -n "${NINFER_OBSERVER_PID:-}" ]; then
+    kill "$NINFER_OBSERVER_PID" 2>/dev/null || true
+    wait "$NINFER_OBSERVER_PID" 2>/dev/null || true
+    NINFER_OBSERVER_PID=""
+  fi
   publish_once || true
   snapshot || true
   if ! archive_final; then
@@ -251,6 +258,58 @@ print(phase)
 PY
 }
 
+read_latest_session() {
+  local latest="$STATE_HOME/stint/deep/latest"
+  [ -r "$latest" ] || return 1
+  local session
+  session="$(tr -d '[:space:]' < "$latest")"
+  case "$session" in
+    ''|*[!A-Za-z0-9_-]*) return 1 ;;
+  esac
+  printf '%s\n' "$session"
+}
+
+start_ninfer_observer_for_session() {
+  local observer="$1" latest="$STATE_HOME/stint/deep/latest" session_path="$STATE_HOME/stint/session.json" session_id="$2"
+  python3 "$observer" \
+    --latest "$latest" \
+    --session "$session_path" \
+    --session-id "$session_id" \
+    --interval "${STINT_ONBOX_NINFER_SAMPLE_SECONDS:-10}" \
+    --max-samples "${STINT_ONBOX_NINFER_MAX_SAMPLES:-1200}" \
+    >>"$ROOT/ninfer-runtime-observer.log" 2>&1 &
+  NINFER_OBSERVER_PID=$!
+}
+
+watch_ninfer_observer_for_new_session() {
+  local observer="$1" previous_session="$2" latest="$STATE_HOME/stint/deep/latest"
+  local session_path="$STATE_HOME/stint/session.json" marker="$NINFER_OBSERVER_SESSION_FILE"
+  (
+    while :; do
+      if [ -r "$latest" ]; then
+        session_id="$(tr -d '[:space:]' < "$latest")"
+        case "$session_id" in
+          ''|*[!A-Za-z0-9_-]*) ;;
+          *)
+            if [ "$session_id" != "$previous_session" ] && [ -d "$STATE_HOME/stint/deep/$session_id" ]; then
+              printf '%s\n' "$session_id" >"$marker"
+              chmod 600 "$marker"
+              exec python3 "$observer" \
+                --latest "$latest" \
+                --session "$session_path" \
+                --session-id "$session_id" \
+                --interval "${STINT_ONBOX_NINFER_SAMPLE_SECONDS:-10}" \
+                --max-samples "${STINT_ONBOX_NINFER_MAX_SAMPLES:-1200}"
+            fi
+            ;;
+        esac
+      fi
+      sleep 1
+    done
+  ) >>"$ROOT/ninfer-runtime-observer.log" 2>&1 &
+  NINFER_OBSERVER_PID=$!
+}
+
 run_supervisor() {
   local -a onbox_args=("$@")
   mkdir -p "$ROOT" "$RUNTIME_DIR" "$CONFIG_HOME/stint" "$STATE_HOME"
@@ -266,6 +325,28 @@ run_supervisor() {
   start_watchdog
   trap cleanup_supervisor EXIT
   trap 'exit 143' TERM INT
+  NINFER_OBSERVER_SESSION_FILE="$RUNTIME_DIR/ninfer-observer-session"
+  rm -f "$NINFER_OBSERVER_SESSION_FILE"
+  if [ -n "${STINT_ONBOX_NINFER_OBSERVER:-}" ] && [ -r "$STINT_ONBOX_NINFER_OBSERVER" ]; then
+    local resume=0 arg previous_session=""
+    for arg in "${onbox_args[@]}"; do
+      [ "$arg" = --resume ] && resume=1
+    done
+    previous_session="$(read_latest_session 2>/dev/null || true)"
+    if [ "$resume" = 1 ]; then
+      if [ -n "$previous_session" ] && [ -d "$STATE_HOME/stint/deep/$previous_session" ]; then
+        printf '%s\n' "$previous_session" >"$NINFER_OBSERVER_SESSION_FILE"
+        chmod 600 "$NINFER_OBSERVER_SESSION_FILE"
+        start_ninfer_observer_for_session "$STINT_ONBOX_NINFER_OBSERVER" "$previous_session"
+      else
+        echo "$(date -u +%FT%TZ) NInfer runtime observer waiting: no resumable Deep Work session exists" >>"$ROOT/ninfer-runtime-observer.log"
+      fi
+    else
+      watch_ninfer_observer_for_new_session "$STINT_ONBOX_NINFER_OBSERVER" "$previous_session"
+    fi
+  else
+    echo "$(date -u +%FT%TZ) NInfer runtime observer unavailable; coordinator continues without samples" >>"$LOG_FILE"
+  fi
   heartbeat_loop &
   HEARTBEAT_PID=$!
 

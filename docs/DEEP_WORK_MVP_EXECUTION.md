@@ -340,6 +340,12 @@ worktree (`/tmp/dw-live-1/.stint-deep/20260902-180013`, branch
 `stint/deep-20260902-180013`) and ran four real Cline→NInfer invocations, landing
 itself in **1m18s** (deadline untouched):
 
+This was a historical tiny-file demonstration, not timeout guidance for real
+coding work. Production on-box missions now default to a 15-minute maximum
+invocation, shortened only when the remaining window can still protect
+verification and landing reserves; the coordinator defers work below its
+five-minute useful-work floor.
+
 * T-001 (create `a.txt`): attempt 1 — Cline reported `completed` (22 s, 6
   iterations); the coordinator ran the mission verify command, it failed
   (`done.txt` absent), so the task transitioned **INCOMPLETE → continuation**:

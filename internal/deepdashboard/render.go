@@ -21,9 +21,13 @@ const (
 )
 
 type Task struct {
-	ID, Objective, Status, LastResult, Blocker string
-	Verify, CheckpointCommit, VerifiedAt       string
-	Attempts                                   int
+	ID, Objective, Status, LastResult, Blocker, Reasoning   string
+	Verify, CheckpointCommit, VerifiedAt                    string
+	ExecutionError, VerificationCommand, VerificationResult string
+	TimeoutDecision                                         string
+	ConfiguredTimeoutSec, EffectiveTimeoutSec               int
+	DependsOn                                               []string
+	Attempts                                                int
 }
 
 type Event struct {
@@ -43,6 +47,7 @@ type Worker struct {
 	Scope, LatestPhase, LatestAt, Compression, CompressionAt string
 	CompressionCompleted, CompressionFailed, Truncated       int
 	Error                                                    string
+	HermesLog, HermesLogError, HermesLogAt                   string
 }
 
 type Modal struct {
@@ -228,6 +233,11 @@ func tasksView(m Model, p palette) string {
 		label := taskStatus(task.Status, p)
 		line := fmt.Sprintf("%-12s %-11s %d  %s", task.ID, label, task.Attempts, compact(task.Objective, max(12, m.Width-32)))
 		lines = append(lines, line)
+		reasoning := strings.TrimSpace(task.Reasoning)
+		if reasoning == "" {
+			reasoning = "inherit"
+		}
+		lines = append(lines, "             reasoning "+reasoning)
 		if task.VerifiedAt != "" {
 			lines = append(lines, "             verified at "+task.VerifiedAt)
 		}
@@ -237,13 +247,63 @@ func tasksView(m Model, p palette) string {
 		if task.Verify != "" {
 			lines = append(lines, "             verify "+compact(task.Verify, max(12, m.Width-25)))
 		}
+		if len(task.DependsOn) > 0 {
+			lines = append(lines, "             requires "+compact(strings.Join(task.DependsOn, ", "), max(12, m.Width-25)))
+		}
+		if task.ConfiguredTimeoutSec > 0 {
+			timeouts := fmt.Sprintf("executor timeout %ds / %ds max", task.EffectiveTimeoutSec, task.ConfiguredTimeoutSec)
+			lines = append(lines, "             "+p.muted(compact(timeouts, max(12, m.Width-14))))
+			if task.TimeoutDecision != "" {
+				lines = append(lines, "             "+p.muted(compact("budget: "+timeoutDecisionLabel(task.TimeoutDecision), max(12, m.Width-14))))
+			}
+		}
+		if task.ExecutionError != "" {
+			lines = append(lines, "             "+p.danger("executor error: ")+compact(task.ExecutionError, max(12, m.Width-30)))
+		} else if task.LastResult != "" && (task.Status == "incomplete" || task.Status == "verified") {
+			lines = append(lines, "             "+p.muted(compact("executor: "+task.LastResult, max(12, m.Width-14))))
+		}
+		if task.VerificationResult != "" && task.VerificationResult != "not run" {
+			verification := verificationStatusLabel(task.VerificationResult)
+			lines = append(lines, "             verification: "+verification)
+			if task.VerificationCommand != "" {
+				verification = "verify command `" + task.VerificationCommand + "`"
+				lines = append(lines, "             "+p.muted(compact(verification, max(12, m.Width-14))))
+			}
+		}
 		if task.Blocker != "" {
 			lines = append(lines, "             "+p.danger("blocker: ")+compact(task.Blocker, max(12, m.Width-25)))
-		} else if task.LastResult != "" && (task.Status == "incomplete" || task.Status == "verified") {
-			lines = append(lines, "             "+p.muted(compact(task.LastResult, max(12, m.Width-14))))
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func verificationStatusLabel(result string) string {
+	value := strings.ToLower(strings.TrimSpace(result))
+	switch {
+	case strings.Contains(value, "passed"):
+		return "passed"
+	case strings.Contains(value, "failed"):
+		return "failed"
+	case strings.HasPrefix(value, "error:"):
+		return "error · " + strings.TrimSpace(result[len("error:"):])
+	default:
+		return compact(result, 48)
+	}
+}
+
+func timeoutDecisionLabel(decision string) string {
+	value := strings.ToLower(strings.TrimSpace(decision))
+	switch {
+	case strings.HasPrefix(value, "shortened"):
+		if !strings.Contains(value, "verification") {
+			return "shortened; coordinator reserve protected"
+		}
+		return "shortened; verification reserve protected"
+	case strings.HasPrefix(value, "deferred"), strings.HasPrefix(value, "refused"):
+		return "deferred: below minimum useful invocation window"
+	default:
+		return "started at configured maximum"
+	}
 }
 
 func phaseView(m Model, p palette) string {
@@ -356,19 +416,35 @@ func workerView(m Model, p palette) string {
 		if m.Worker.Error != "" {
 			b.WriteString("\n" + p.danger(compact(m.Worker.Error, m.Width)))
 		}
-		return b.String()
+	} else {
+		fmt.Fprintf(&b, "\nNInfer           context %d · KV %d · completion budget %d\n", m.Worker.NInferContext, m.Worker.NInferKV, m.Worker.NInferDefaultMaxTokens)
+		if m.Worker.Scope != "" {
+			b.WriteString(p.warn(compact(m.Worker.Scope, m.Width)) + "\n")
+		}
+		fmt.Fprintf(&b, "Phase routes      xhigh %d · medium %d", m.Worker.XHighRequests, m.Worker.MediumRequests)
+		if m.Worker.LatestPhase != "" {
+			fmt.Fprintf(&b, " · latest %s", m.Worker.LatestPhase)
+		}
+		b.WriteString("\nCompression       " + contextLine(m.Worker, p))
+		if m.Worker.Error != "" {
+			b.WriteString("\n" + p.danger(compact(m.Worker.Error, m.Width)))
+		}
 	}
-	fmt.Fprintf(&b, "\nNInfer           context %d · KV %d · completion budget %d\n", m.Worker.NInferContext, m.Worker.NInferKV, m.Worker.NInferDefaultMaxTokens)
-	if m.Worker.Scope != "" {
-		b.WriteString(p.warn(compact(m.Worker.Scope, m.Width)) + "\n")
+	b.WriteString("\n\n" + p.bold("HERMES AGENT LOG") + "  " + p.muted("remote tail"))
+	if m.Worker.HermesLogAt != "" {
+		b.WriteString(" · " + p.muted(m.Worker.HermesLogAt))
 	}
-	fmt.Fprintf(&b, "Phase routes      xhigh %d · medium %d", m.Worker.XHighRequests, m.Worker.MediumRequests)
-	if m.Worker.LatestPhase != "" {
-		fmt.Fprintf(&b, " · latest %s", m.Worker.LatestPhase)
-	}
-	b.WriteString("\nCompression       " + contextLine(m.Worker, p))
-	if m.Worker.Error != "" {
-		b.WriteString("\n" + p.danger(compact(m.Worker.Error, m.Width)))
+	if strings.TrimSpace(m.Worker.HermesLog) != "" {
+		lines := strings.Split(strings.TrimSpace(m.Worker.HermesLog), "\n")
+		visible := min(4, max(1, m.Height-19))
+		start := max(0, len(lines)-visible)
+		for _, line := range lines[start:] {
+			b.WriteString("\n" + compact(line, m.Width))
+		}
+	} else if m.Worker.HermesLogError != "" {
+		b.WriteString("\n" + p.warn(compact("unavailable: "+m.Worker.HermesLogError, m.Width)))
+	} else {
+		b.WriteString("\n" + p.muted("unavailable: no remote log sample yet"))
 	}
 	return b.String()
 }

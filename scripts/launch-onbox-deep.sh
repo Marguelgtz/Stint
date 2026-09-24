@@ -19,6 +19,8 @@ PHASE_SETUP_LOCAL="${STINT_PHASE_SETUP_LOCAL:-$SCRIPT_DIR/box-phase-setup.sh}"
 DEEP_OBSERVE_LOCAL="${STINT_DEEP_OBSERVE_LOCAL:-$SCRIPT_DIR/deep-observe.sh}"
 BOX_SMOKE_LOCAL="${STINT_BOX_SMOKE_LOCAL:-$SCRIPT_DIR/box-smoke.sh}"
 LANE_SMOKE_LOCAL="${STINT_LANE_SMOKE_LOCAL:-$SCRIPT_DIR/phase-lane-concurrency-smoke.sh}"
+AGENT_LOG_TAIL_LOCAL="${STINT_AGENT_LOG_TAIL_LOCAL:-$SCRIPT_DIR/deep-agent-log-tail.py}"
+NINFER_OBSERVER_LOCAL="${STINT_NINFER_OBSERVER_LOCAL:-$SCRIPT_DIR/onbox-ninfer-observe.py}"
 R2_SYNC_LOCAL="${STINT_R2_SYNC_LOCAL:-$SCRIPT_DIR/onbox-r2-sync.py}"
 R2_ARCHIVE_LOCAL="${STINT_R2_ARCHIVE_LOCAL:-$SCRIPT_DIR/onbox-r2-archive.py}"
 GITHUB_PUBLISH_LOCAL="${STINT_GITHUB_PUBLISH_LOCAL:-$SCRIPT_DIR/onbox-github-publish.py}"
@@ -54,6 +56,8 @@ REMOTE_PHASE_SETUP="$REMOTE_BOOTSTRAP/box-phase-setup.sh"
 REMOTE_DEEP_OBSERVE="$REMOTE_BOOTSTRAP/deep-observe.sh"
 REMOTE_BOX_SMOKE="$REMOTE_BOOTSTRAP/box-smoke.sh"
 REMOTE_LANE_SMOKE="$REMOTE_BOOTSTRAP/phase-lane-concurrency-smoke.sh"
+REMOTE_AGENT_LOG_TAIL="$REMOTE_BOOTSTRAP/deep-agent-log-tail.py"
+REMOTE_NINFER_OBSERVER="$REMOTE_BOOTSTRAP/onbox-ninfer-observe.py"
 REMOTE_R2_SYNC="$ROOT/onbox-r2-sync.py"
 REMOTE_R2_ARCHIVE="$ROOT/onbox-r2-archive.py"
 REMOTE_GITHUB_PUBLISH="$ROOT/onbox-github-publish.py"
@@ -140,7 +144,8 @@ fi
 [ -x "$BIN" ] || die "stint binary is missing or not executable: $BIN"
 [ -x "$SUPERVISOR_LOCAL" ] || die "supervisor script is missing or not executable: $SUPERVISOR_LOCAL"
 for script in "$PROVISION_LOCAL" "$PHASE_PROXY_LOCAL" "$PHASE_SETUP_LOCAL" \
-  "$DEEP_OBSERVE_LOCAL" "$BOX_SMOKE_LOCAL" "$LANE_SMOKE_LOCAL"; do
+  "$DEEP_OBSERVE_LOCAL" "$BOX_SMOKE_LOCAL" "$LANE_SMOKE_LOCAL" \
+  "$AGENT_LOG_TAIL_LOCAL" "$NINFER_OBSERVER_LOCAL"; do
   [ -r "$script" ] || die "fresh-box bootstrap component is missing: $script"
 done
 
@@ -379,9 +384,10 @@ fi
 retry_step "transfer Deep Work bootstrap" rsync -a -e "$RSYNC_SSH" \
   "$PROVISION_LOCAL" "$PHASE_PROXY_LOCAL" "$PHASE_SETUP_LOCAL" \
   "$DEEP_OBSERVE_LOCAL" "$BOX_SMOKE_LOCAL" "$LANE_SMOKE_LOCAL" \
+  "$AGENT_LOG_TAIL_LOCAL" "$NINFER_OBSERVER_LOCAL" \
   "root@$HOST:$REMOTE_BOOTSTRAP/"
 retry_step "protect Deep Work bootstrap" "${SSH[@]}" \
-  "chmod 0755 '$REMOTE_PROVISION' '$REMOTE_PHASE_PROXY' '$REMOTE_PHASE_SETUP' '$REMOTE_DEEP_OBSERVE' '$REMOTE_BOX_SMOKE' '$REMOTE_LANE_SMOKE'"
+  "chmod 0755 '$REMOTE_PROVISION' '$REMOTE_PHASE_PROXY' '$REMOTE_PHASE_SETUP' '$REMOTE_DEEP_OBSERVE' '$REMOTE_BOX_SMOKE' '$REMOTE_LANE_SMOKE' '$REMOTE_AGENT_LOG_TAIL' '$REMOTE_NINFER_OBSERVER'"
 
 # Production and the live smoke use this same fresh-box sequence. Do not start
 # the detached supervisor until runtime, model, phase providers, compression
@@ -394,6 +400,7 @@ retry_step "provision and verify box runtime" "${SSH[@]}" "$remote_provision_cmd
   die "fresh-box runtime or repository verification preflight failed"
 
 remote_phase_setup=(env "PHASE_PROXY=$REMOTE_PHASE_PROXY" "DEEP_OBSERVE=$REMOTE_DEEP_OBSERVE" \
+  "AGENT_LOG_TAIL=$REMOTE_AGENT_LOG_TAIL" \
   "HERMES_MODEL=$ONBOX_MODEL" "PHASING_DIR=$PHASING_DIR" "$REMOTE_PHASE_SETUP")
 remote_phase_setup_cmd="$(printf '%q ' "${remote_phase_setup[@]}")"
 retry_step "install phase routes and compression" "${SSH[@]}" "$remote_phase_setup_cmd" || \
@@ -469,6 +476,7 @@ remote_env=("STINT_ONBOX_BIN=$REMOTE_BIN" "STINT_ONBOX_ROOT=$ROOT" \
   "STINT_ONBOX_READY_FILE=$REMOTE_READY" "STINT_ONBOX_INSTANCE_ID=$STINT_INSTANCE_ID" \
   "STINT_ONBOX_DEADLINE=$STINT_DEADLINE" "STINT_ONBOX_STARTED_AT=${STINT_STARTED_AT:-}" \
   "STINT_ONBOX_CLIENTS=$CLIENTS" \
+  "STINT_ONBOX_NINFER_OBSERVER=$REMOTE_NINFER_OBSERVER" \
   "STINT_ONBOX_ORIGIN=gpu-instance")
 if [ "$SKIP_GITHUB" = 1 ]; then
   remote_env+=("STINT_ONBOX_SKIP_GITHUB=1")
