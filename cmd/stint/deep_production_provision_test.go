@@ -149,6 +149,53 @@ func TestDeepStartValidatesMissionBeforeProvisioning(t *testing.T) {
 	}
 }
 
+func TestDeepStartDoesNotProvisionWhenLaunchPreflightInputIsMissing(t *testing.T) {
+	tests := []struct {
+		name      string
+		flag      string
+		value     string
+		wantError string
+	}{
+		{name: "mission", flag: "--mission", value: "missing-mission.md", wantError: "read mission"},
+		{name: "repository", flag: "--repo", value: "missing-repository", wantError: "resolve repository path"},
+		{name: "action plan", flag: "--action-plan", value: "plans/missing.md", wantError: "action-plan seed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newDeepProductionFixture(t)
+			if err := sessionstate.Clear(fixture.paths); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{
+				"--repo", fixture.repo,
+				"--mission", fixture.mission,
+				"--github-token-file", fixture.tokenPath,
+				"--hours", "3",
+				test.flag, test.value,
+			}
+			provisionCalls := 0
+			err := runDeepStartWithProvisioner(
+				args, fixture.paths, fixture.launcherPath, fixture.stintBinary,
+				func(context.Context, string, []string, io.Writer, io.Writer) ([]byte, error) {
+					t.Fatal("launcher must not run for invalid local inputs")
+					return nil, nil
+				},
+				func(context.Context, string, []string, io.Writer, io.Writer) error {
+					provisionCalls++
+					return nil
+				},
+				io.Discard, io.Discard, time.Now().UTC(),
+			)
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("error = %v, want %q", err, test.wantError)
+			}
+			if provisionCalls != 0 {
+				t.Fatalf("provisioner called %d times for invalid %s input", provisionCalls, test.name)
+			}
+		})
+	}
+}
+
 func TestDeepStartDoesNotSilentlyIgnoreProvisionFlagsOnReadySession(t *testing.T) {
 	fixture := newDeepProductionFixture(t)
 	provisioner := func(context.Context, string, []string, io.Writer, io.Writer) error {

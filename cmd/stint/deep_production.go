@@ -29,6 +29,8 @@ const (
 	deepProductionModel      = "qwen3.8-27b"
 )
 
+var errDeepProductionSessionMissing = errors.New("no active Stint compute session")
+
 type deepProductionStartFlags struct {
 	missionPath   string
 	repoPath      string
@@ -270,7 +272,7 @@ func runDeepStartWithProvisioner(args []string, paths config.Paths, launcher, st
 	if err == nil && provision.requested() {
 		return errors.New("a READY Stint compute session already exists; omit compute provisioning flags to reuse it, or run `stint down` before requesting a new Deep Work rental")
 	}
-	if err != nil && errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, errDeepProductionSessionMissing) {
 		if !provision.requested() {
 			return fmt.Errorf("%w; or pass --hours <n> and compute flags to let `stint deep start` provision the session", err)
 		}
@@ -423,33 +425,6 @@ func prepareDeepProductionLaunch(f *deepProductionStartFlags, paths config.Paths
 		return nil, err
 	}
 
-	session, err := sessionstate.Load(paths)
-	if err != nil {
-		return nil, fmt.Errorf("no active Stint compute session; run `stint start interactive` first: %w", err)
-	}
-	if session.Status != sessionstate.StatusReady {
-		return nil, fmt.Errorf("Stint compute session is %s, not READY; resume or start a session and wait for READY", session.Status)
-	}
-	if session.InstanceID <= 0 {
-		return nil, errors.New("READY Stint session has no valid Vast instance identity")
-	}
-	if !session.Deadline.After(now) {
-		return nil, errors.New("READY Stint compute session has expired")
-	}
-	if !validSSHHost(session.SSHHost) || session.SSHPort < 1 || session.SSHPort > 65535 {
-		return nil, errors.New("READY Stint session is missing a valid SSH host or port; run `stint resume` to refresh its connection details")
-	}
-	keyInfo, err := os.Stat(paths.SSHPrivateKey)
-	if err != nil || !keyInfo.Mode().IsRegular() {
-		return nil, fmt.Errorf("Stint SSH private key is missing or unreadable at %s", paths.SSHPrivateKey)
-	}
-	if keyInfo.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("Stint SSH private key at %s must not be accessible by group or others; run `chmod 600 %s`", paths.SSHPrivateKey, paths.SSHPrivateKey)
-	}
-	if _, err := config.LoadCredentials(paths); err != nil {
-		return nil, fmt.Errorf("Vast credentials required by the production deadline watchdog are unavailable at %s: %w", paths.CredentialsFile, err)
-	}
-
 	githubToken := strings.TrimSpace(f.githubToken)
 	if githubToken == "" {
 		githubToken = filepath.Join(paths.ConfigDir, "github-token")
@@ -518,6 +493,39 @@ func prepareDeepProductionLaunch(f *deepProductionStartFlags, paths config.Paths
 	}
 	if stintBinary == "" {
 		return nil, errors.New("Stint binary path is empty")
+	}
+
+	// Load the active session only after validating every operator-controlled
+	// input above. The self-provision path may react to this specific missing
+	// session condition; unrelated ENOENT errors must never authorize a rental.
+	session, err := sessionstate.Load(paths)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: run `stint start interactive` first", errDeepProductionSessionMissing)
+		}
+		return nil, fmt.Errorf("load Stint compute session: %w", err)
+	}
+	if session.Status != sessionstate.StatusReady {
+		return nil, fmt.Errorf("Stint compute session is %s, not READY; resume or start a session and wait for READY", session.Status)
+	}
+	if session.InstanceID <= 0 {
+		return nil, errors.New("READY Stint session has no valid Vast instance identity")
+	}
+	if !session.Deadline.After(now) {
+		return nil, errors.New("READY Stint compute session has expired")
+	}
+	if !validSSHHost(session.SSHHost) || session.SSHPort < 1 || session.SSHPort > 65535 {
+		return nil, errors.New("READY Stint session is missing a valid SSH host or port; run `stint resume` to refresh its connection details")
+	}
+	keyInfo, err := os.Stat(paths.SSHPrivateKey)
+	if err != nil || !keyInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("Stint SSH private key is missing or unreadable at %s", paths.SSHPrivateKey)
+	}
+	if keyInfo.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("Stint SSH private key at %s must not be accessible by group or others; run `chmod 600 %s`", paths.SSHPrivateKey, paths.SSHPrivateKey)
+	}
+	if _, err := config.LoadCredentials(paths); err != nil {
+		return nil, fmt.Errorf("Vast credentials required by the production deadline watchdog are unavailable at %s: %w", paths.CredentialsFile, err)
 	}
 
 	return &deepProductionLaunchPlan{
