@@ -30,8 +30,9 @@ The GitHub listing at inspection had no open PR newer than #157. The older #110â
 
 | PR | Merge commit | Landed behavior |
 | --- | --- | --- |
-| #158 | `af7438d3100af6482021aff77a0ac976b1b4b03c` | Executor success is required for task acceptance; executor/verifier evidence is separate; review dependencies are gated; task timeout is a maximum with a persisted effective budget; on-box resume reopens a new landing epoch and updates handoff guidance. |
+| #158 | `af7438d3100af6482021aff77a0ac976b1b4b03c` | Executor success is required for task acceptance; executor/verifier evidence is separate; review dependencies are gated; task timeout is a maximum with a persisted effective budget; on-box resume reopens a new landing epoch and updates handoff guidance. Its review follow-up also skips verifier reserve when no verifier runs and keeps legacy worker-only completion from claiming repository verification. |
 | #159 | `478f96f428c736ffeed06139beaf63e5f5950a71` | Resumed final handoffs use versioned identities with preserved drift/history; deterministic publication conflicts stop retrying; repeat publication of the active versioned handoff is idempotent. Codex's P1 repeat-sync finding was fixed and covered by a third-sync regression test before merge. |
+| #161 | `5f332337f74720c81656af3a3e87459067897f32` | Clears an earlier time-window deferral blocker when a retry starts, so an exhausted retry reports its current executor/verification failure. The regression reloads durable state. This addresses the remaining Codex P2 from #158. |
 
 ## Stabilization contract
 
