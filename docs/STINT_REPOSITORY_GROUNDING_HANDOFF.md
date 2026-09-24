@@ -1,18 +1,18 @@
 # Stint repository grounding handoff
 
 **Status:** authoritative main at this checkpoint is
-`1e58eb48447dd1dc095bafa7b68f1118932c2b1e` after PR #150; landed-main CI run
-`35944655152` passed all five required jobs. PR #150 adds a hard-bounded
-one-run GPU budget override; runtime tuple/startup changes remain at PR #143
-(`089607965715bd9435cc0e3b671b4f34c594e446`). The 2026-09-24 source-build
-retest passed the low-load concurrent phase smoke and collected 8K/200K TTFT
-samples, but both Deep Work attempts failed the artifact verifier. The
-release-bundle path remains opt-in; do not use a 3090.
+`3478278fb14e615321c2abccf3b20715a399abe9` after PR #151; landed-main CI run
+`35949463973` passed all five required jobs. PR #150 bounds the one-run GPU
+override; #151 repairs the Deep Work smoke launcher. Runtime tuple/startup
+changes remain at PR #143 (`089607965715bd9435cc0e3b671b4f34c594e446`). The
+2026-09-24 source-build retest passed the low-load concurrent phase smoke and
+collected 8K/200K TTFT samples, but both Deep Work attempts failed the artifact
+verifier. The release-bundle path remains opt-in; do not use a 3090.
 
 ## Authoritative repository and verification
 
 - Product code main after #143: `089607965715bd9435cc0e3b671b4f34c594e446`.
-- Grounding checkpoint main after #150: `1e58eb48447dd1dc095bafa7b68f1118932c2b1e`; landed-main CI `35944655152` passed all five required jobs.
+- Grounding checkpoint main after #151: `3478278fb14e615321c2abccf3b20715a399abe9`; landed-main CI `35949463973` passed all five required jobs.
 - PR #139 exact-head run 35924946874 and landed-main run 35925100519 passed all five required jobs; it records the source-build RTX 4090 performance baseline.
 - PR #140 exact-head run `35928576565` and landed-main run `35928870944`
   passed all five required CI jobs. PR #140 records the incomplete RTX 4090
@@ -27,6 +27,7 @@ release-bundle path remains opt-in; do not use a 3090.
 - PR #148 refreshed the canonical grounding record and live open-PR snapshot; head `fe164300eb122937466bba3c32269f1c912b22ec`, merge `a3af6fe910093bbfa5e38975da1eec1be1475a1b`. Exact-head run `35942607882` and landed-main run `35942732849` passed all five required jobs.
 - PR #149 changes performance retry behavior: completed streams without visible text stop after one attempt and tell the operator to increase `--tokens`; transient failures still retry. Head `a0e6cbe8389796ba9140b72edc86a683e8262cc8`, base `a3af6fe910093bbfa5e38975da1eec1be1475a1b`, merge `6bbbadbfb282e0ddc90f0f08e1f5e32da8bbf413`. Exact-head run `35943238305` and landed-main run `35943380226` passed all five required jobs. Focused retry/parser tests and the full `cmd/stint` package passed locally. This avoids repeating the same costly 200K prompt when the previous stream exhausted its visible completion budget; no live GPU rerun was performed.
 - PR #150 bounds an explicit one-run GPU smoke exception at `$0.50/hour` and `$0.75` estimated rental, with lower defaults unchanged. Merge `1e58eb48447dd1dc095bafa7b68f1118932c2b1e`; landed-main CI run `35944655152` passed all five required jobs.
+- PR #151 repairs Deep Work smoke fixture setup, removes the unsupported `--worker` flag, makes teardown noninteractive and strengthens the preflight regression. Head `54559c66283e52232b8f69ed95ccec5ee9e68b05`, merge `3478278fb14e615321c2abccf3b20715a399abe9`; exact-head run `35949312353` and landed-main run `35949463973` passed all five required jobs.
 - Exact landed-main push run `35916137793` passed all five required jobs.
 - PR #131 merged as `2b5f7342093c520175b608a1a64bbce0b9443f31`. Its PR run
   `35905726077` appeared green but physically tested synthetic merge tree
@@ -57,7 +58,7 @@ release-bundle path remains opt-in; do not use a 3090.
   [replacement comment](https://github.com/Marguelgtz/Stint/pull/93#issuecomment-5801853350)
   records the new docs index and paths. The final open PR set is #85 and
   protected generated evidence #110–#113.
-- The open PR set verified after #149 remains #85 and protected evidence
+- The open PR set verified after #151 remains #85 and protected evidence
   #110–#113; their exact heads and observed base SHAs are recorded in the
   refreshed ledger snapshot.
 - The original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa`
@@ -139,14 +140,21 @@ phased smoke and concurrent xhigh/medium lane smoke passed. Perf processed
 122.86s total); decode was unavailable for both. This is not a full-context
 test.
 
+The final sanitized observer aggregated two xhigh requests (one non-2xx) and
+34 medium requests (three non-2xx) across setup and both tasks. Per-request
+failure codes were not retained; the dedicated smoke commands passed, but not
+every routed request is proven successful.
+
 Deep Work sessions `20260924-023039` and `20260924-024129` completed six
 compression operations with zero reported failures or truncated summaries.
 Both ended BLOCKED because `compression-smoke.ok` was absent and coordinator
 verification failed. The run found three launcher defects: missing
 `STINT_TARGET_REPO`, an obsolete `--worker` flag, and interactive teardown.
-The corrective patch and provider-free regression fixture are in the follow-up
-PR. Teardown succeeded at 02:48:11 UTC after 53m38s; estimated prorated rental
-is about `$0.43`, not an invoice. Full Deep Work acceptance remains open.
+PR #151 landed the launcher corrections and provider-free regression fixture;
+exact-head run `35949312353` and landed-main run `35949463973` passed all five
+required jobs. Teardown succeeded at 02:48:11 UTC after 53m38s; estimated
+prorated rental is about `$0.43`, not an invoice. Full Deep Work acceptance
+remains open.
 
 ### Earlier failed release-bundle transfer (2026-09-23)
 
@@ -233,5 +241,5 @@ branches were not modified to rerun them.
 1. Diagnose why Hermes did not create the required file after two successful executor exits; add a cheap write-capability check before another paid compression run.
 2. Keep source-build as default and release-bundle opt-in. The source-build run measured low-load lane routing and TTFT but did not verify decode rates, fill the native context, or pass Deep Work artifact verification.
 3. The new 4090 lease is estimated at `$0.43` rent, not a provider invoice; earlier release-bundle attempts were estimated separately at `$0.36`. Do not start another paid run until the Deep Work write path is understood.
-4. Keep #85 parked and #110–#113 open, unmerged, and untouched; refresh their exact refs and legacy-check caveats when landing the current follow-up.
+4. Keep #85 parked and #110–#113 open, unmerged, and untouched; their current refs and legacy-check caveats are in the snapshot refreshed after #151.
 5. Next Spark ↔ Stint slice: define a read-only evidence contract for selected runtime/bootstrap provenance after live qualification chooses a deployment path. Keep repository/evidence observation in Spark and provider lifecycle authority in Stint.

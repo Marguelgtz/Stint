@@ -51,6 +51,7 @@
 - PR #148: canonical grounding refresh, branch `docs/grounding-after-147-20260924` at head `fe164300eb122937466bba3c32269f1c912b22ec`, merged as `a3af6fe910093bbfa5e38975da1eec1be1475a1b`. Exact-head run `35942607882` and landed-main run `35942732849` passed all five required jobs. It records #146/#147 outcomes and refreshes the five-open-PR snapshot.
 - PR #149: performance retry correction, branch `fix/perf-no-visible-retry-20260924` at head `a0e6cbe8389796ba9140b72edc86a683e8262cc8`, based on `main` at `a3af6fe910093bbfa5e38975da1eec1be1475a1b`, merged as `6bbbadbfb282e0ddc90f0f08e1f5e32da8bbf413`. Exact-head run `35943238305` and landed-main run `35943380226` passed all five required jobs. Completed perf streams without user-visible text now stop after one attempt with `--tokens` guidance, while transient errors retain retries. Focused tests and full `cmd/stint` package tests passed; no GPU was rented.
 - PR #150: bounded GPU-smoke budget override, branch `fix/deep-smoke-budget-override-20260924` at head `24160b5f9184f81704e85f219825e0ed6028ec65`, based on `main` at `6bbbadbfb282e0ddc90f0f08e1f5e32da8bbf413`, merged as `1e58eb48447dd1dc095bafa7b68f1118932c2b1e`. Exact-head run `35944517850` and landed-main run `35944655152` passed all five required jobs. Defaults stay `$0.40/hour` and `$0.60` estimated rental; the explicit one-run maxima are `$0.50/hour` and `$0.75` estimated rental.
+- PR #151: repair Deep Work compression smoke launcher, branch `fix/deep-compression-smoke-launcher-20260924` at head `54559c66283e52232b8f69ed95ccec5ee9e68b05`, based on `main` at `1e58eb48447dd1dc095bafa7b68f1118932c2b1e`, merged as `3478278fb14e615321c2abccf3b20715a399abe9`. Exact-head run `35949312353` and landed-main run `35949463973` passed all five required jobs. It creates the fixture before provisioning, supplies `STINT_TARGET_REPO`, removes the obsolete `--worker` flag, confirms unattended teardown with `down --yes`, clarifies the artifact write/verify instruction, and adds regression guards. It does not claim the live Deep Work artifact gate passed.
 
 ## Live RTX 4090 retest (2026-09-24)
 
@@ -62,6 +63,11 @@ Perf processed 7,413 actual prompt tokens at 4.89s TTFT / 5.12s total and
 178,904 tokens at 122.82s TTFT / 122.86s total; decode was unavailable for
 both samples. The full context was not filled.
 
+The sanitized observer aggregated two xhigh requests (one non-2xx) and 34
+medium requests (three non-2xx) across setup and both tasks. Per-request
+failure codes were not retained; dedicated smoke commands passed, but this
+does not establish that every routed request succeeded.
+
 Two bounded Deep Work sessions (`20260924-023039`, `20260924-024129`) triggered
 six completed compression operations with zero reported compression failures
 and zero truncated summaries. Both were BLOCKED by the coordinator because
@@ -70,8 +76,8 @@ and zero truncated summaries. Both were BLOCKED by the coordinator because
 is in `remote-artifact.txt`. The local perf logs and dashboard/coordinator
 transcripts are under the same temporary run directory. Launcher defects
 found during the run—missing `STINT_TARGET_REPO`, obsolete `--worker`, and
-interactive teardown—are addressed in the follow-up code PR; the focused
-provider-free preflight fixture passes locally. The instance was destroyed at
+interactive teardown—were fixed by PR #151; its exact-head and landed-main CI
+passed all five required jobs. The instance was destroyed at
 02:48:11 UTC after 53m38s; prorated rent is estimated at `$0.43`, not a
 provider invoice. The source-build Deep Work gate remains incomplete, and this
 does not qualify the release-bundle path.
@@ -1096,7 +1102,7 @@ recorded separately at the end of this ledger.
 - **Disposition:** **KEEP OPEN AS CURRENT EVIDENCE — explicit mission constraint.**
 
 ## Latest verified open PR snapshot
-Checked on 2026-09-24 at 01:33 UTC after #149 merged. GitHub reported the same
+Checked on 2026-09-24 at 02:58 UTC after #151 merged. GitHub reported the same
 five open PRs with the exact refs listed below. Their attached
 legacy runs remain green but predate the #132 exact-head workflow, so exact-head
 CI is not established. Keep #85 parked and #110–#113 open, unmerged, untouched.
