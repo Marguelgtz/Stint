@@ -315,6 +315,38 @@ func TestDeepLoopLandsOnClock(t *testing.T) {
 	}
 }
 
+func TestDeepLoopRetryUsesCurrentFailureAfterPriorDeferral(t *testing.T) {
+	env := newTestEnv(t, map[int]execResult{1: failedResult()}, 1)
+	task := &env.state.Tasks[0]
+	task.Status = deep.StatusIncomplete
+	task.Blocker = "deferred: configured timeout did not fit before landing"
+	env.fake.scriptErr = map[int]error{1: errors.New("context deadline exceeded")}
+	if err := env.state.SaveDir(env.coord.stateDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	got := env.state.Tasks[0]
+	if got.Status != deep.StatusBlocked {
+		t.Fatalf("task status = %s, want blocked", got.Status)
+	}
+	if !strings.Contains(got.Blocker, "executor failed: context deadline exceeded") {
+		t.Fatalf("task blocker = %q, want current executor failure", got.Blocker)
+	}
+	if strings.Contains(got.Blocker, "deferred:") {
+		t.Fatalf("task blocker retained stale deferral reason: %q", got.Blocker)
+	}
+	fresh, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatalf("reload durable state: %v", err)
+	}
+	if fresh.Tasks[0].Blocker != got.Blocker || fresh.Tasks[0].Status != got.Status {
+		t.Fatalf("durable task = %s blocker %q, want %s blocker %q", fresh.Tasks[0].Status, fresh.Tasks[0].Blocker, got.Status, got.Blocker)
+	}
+}
+
 // Time-budget parking: with a task timeout that would overrun the landing
 // window, a queued task is parked instead of started.
 func TestDeepLoopParksWhenBudgetExhausted(t *testing.T) {
