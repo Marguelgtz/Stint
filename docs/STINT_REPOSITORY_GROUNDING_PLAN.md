@@ -9,7 +9,7 @@ the concise recovery point.
 
 - Repository: `Marguelgtz/Stint`, default branch `main`.
 - Starting main: `9634bf762a2dc9021747eb786db7fd23ccab84e9`.
-- Current main after #143: `089607965715bd9435cc0e3b671b4f34c594e446`; landed-main CI run `35938220186` passed all five required jobs.
+- Current main after #144: `db993e40da21ab0a4bf0895bde7e0969fa293785`; landed-main CI run `35939026936` passed all five required jobs. Product code remains at #143; #144 changed only grounding docs.
 - The user's original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa` and its untracked files/local binary remain untouched. Work used isolated `/tmp` worktrees.
 - Current main preserves Hermes-on-box Deep Work, both dashboards, NInfer lane semantics, paid-session/provider safety, exact-head CI, and Spark path observation. See the ledger for historical source comparisons.
 
@@ -46,6 +46,7 @@ Grounding and runtime slices merged after the starting point:
 | #141 | e3e839cd4758a53093f8e660903f9a09f575c408 | concurrent, resumable, SHA-verified release-asset ranges | 35931745106 |
 | #142 | `59130984deb751034921fac262cdacc073e3d75b` | document live RTX 4090 release-bundle transfer and incomplete inference acceptance | `35937034112` |
 | #143 | `089607965715bd9435cc0e3b671b4f34c594e446` | suppress invalid decode rates when streamed updates do not match usage; surface unavailable status | `35938220186` |
+| #144 | `db993e40da21ab0a4bf0895bde7e0969fa293785` | refresh canonical grounding docs after live runtime/perf evidence | `35939026936` |
 
 Each listed exact landed-main run completed all five required Stint jobs. #124
 Pull-request runs `35882783534`, `35894208985`, `35898993338`, `35900956163`,
@@ -119,7 +120,8 @@ Selected first immutable release tuple:
 - NInfer v2, CUDA 12.8, SM89/RTX 4090; native 262,144 context, E8 4-bit KV and MTP3. Stint's supported launch concurrency is one or two clients.
 
 The source pin is the explicitly selected 4090 port build after upstream issue
-#9's planner-accounting fix. The current upstream `rtx4090-port` head is
+#9's planner-accounting fix. A GitHub API recheck on 2026-09-24 found the
+upstream `rtx4090-port` branch unchanged. Its head is
 `aeeba414459d5d6989d57d8487c9d7a2f54bddd3`, five commits beyond Stint's pin.
 The only code change in that range is
 [`328d9aa`](https://github.com/sergiuszm/ninfer-4090/commit/328d9aa82d0c4a6d3540b65dfca7f41c8dec0cc4),
@@ -131,7 +133,12 @@ vision inputs in candidate acceptance before changing the pin. Current
 upstream README text claims MTP3, 262K context, and vision on 24 GB, but that is
 upstream capability documentation, not Stint live or dual-lane evidence.
 
-The pinned Hugging Face model revision remains v2:
+The pinned Hugging Face model revision remains v2. The current [model-card
+revision](https://huggingface.co/neroued/Qwen3.8-27B-NInfer/blob/1cbd84e7221e51186bd7f093a149912d2489625b/README.md)
+recheck on 2026-09-24 still shows v3 as incompatible with SM89: its
+artifact SHA-256 is `81f924d440c27261d820c19a9f8d45794c5aee410f8a68bd358133fa8c0375da`,
+its manifest requires NInfer `98dada0e…` and `sm_120a`, and it is not a 4090
+candidate. The pinned Hugging Face model revision is:
 [`18dfc887`](https://huggingface.co/neroued/Qwen3.8-27B-NInfer/tree/18dfc887423fa5aabf3cb56fac41490e462b3fab),
 18,210,531,328 bytes with SHA-256
 `eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e`. Current
@@ -362,7 +369,7 @@ bundle path, and teardown evidence remain.
 - #73 was closed on 2026-09-23 after #125 merged. Its two unique CP1 reports are preserved verbatim under `docs/history/`; provenance points to source commit `e78ceef308d85c9cac7c71e7d172bed7c66c4182`.
 - Successful generated Deep Work evidence #81–#84 (session `20260908-194552`) and failed attempts #86–#89 (sessions `20260909-012307` and `20260909-014522`) were closed unmerged on 2026-09-23 after checkpoint/handoff SHAs and accurate lessons were recorded in the ledger.
 - Keep #85 parked as a separate high-authority maintenance experiment. PR #93 was closed after selected taxonomy and current pages landed in #133; its replacement and closure comment are recorded in the ledger.
-- Keep #110–#113 open, unmerged and untouched as protected generated Deep Work evidence. The post-#138 snapshot still contains exactly #85 and #110–#113. Their legacy CI rollups were on synthetic merge trees; exact-head CI is not established. Current refs remain in the ledger.
+- Keep #110–#113 open, unmerged and untouched as protected generated Deep Work evidence. The latest verified snapshot after #144 contains exactly #85 and #110–#113. Their legacy CI rollups were on synthetic merge trees; exact-head CI is not established. Current refs remain in the ledger.
 
 ## Checkpoints
 
@@ -381,6 +388,7 @@ bundle path, and teardown evidence remain.
 - [x] Merge #141 after exact-head CI run 35931174559 and landed-main run 35931745106 passed all five required jobs; its range downloader completed a live RTX 4090 release transfer with the pinned SHA verified, installed NInfer, reached READY and tore down.
 - [x] Merge #142 to record live release-bundle transfer and its incomplete inference acceptance; exact-head run `35936860289` and landed-main run `35937034112` passed all five required jobs.
 - [x] Merge #143 to prevent buffered/reasoning-only SSE output from producing false decode rates; exact-head run `35938070090` and landed-main run `35938220186` passed all five required jobs.
+- [x] Merge #144 to refresh the plan, handoff and open-PR ledger after #143; exact-head run `35938902247` and landed-main run `35939026936` passed all five required jobs.
 - [~] Complete the remaining release-bundle acceptance gates: measured network qualification on the accepted host, visible two-lane correctness, valid 8K and long-context performance, full native-context stability, and Hermes Deep Work. Keep source-build as default and release-bundle opt-in until these pass.
 - [x] Merge #125 with the canonical docs and verbatim #73 history; then close only #48–#51 and #73 after their replacement/history records landed.
 - [x] Merge #131 and record its landing SHA / main CI; inspect its pull-request run and identify the synthetic-merge checkout gap.
@@ -390,11 +398,13 @@ bundle path, and teardown evidence remain.
 - [x] After #133's exact-head, synthetic merge-tree and main push CI passed, comment on and close #93; verify the resulting five-PR open snapshot and record its refs/check evidence.
 - [x] Merge #135 after exact-head and synthetic merge-tree verification; its smoke remains RTX 4090-only at the normal $0.40/hour target.
 - [x] Merge #136 smoke-landing docs and #138 perf-prompt fix. #138 exact-head CI `35923353592` and landed-main CI `35923648426` passed all five required jobs.
-- [x] Refresh this plan, handoff and current open-PR snapshot after #143 merged; the open set remains #85 and protected evidence #110–#113.
+- [x] Refresh this plan, handoff and current open-PR snapshot after #144 merged; the open set remains #85 and protected evidence #110–#113.
 
 ## Final-state rules
-Current `main` is `089607965715bd9435cc0e3b671b4f34c594e446` after #143; its
-landed-main CI run `35938220186` passed all five required jobs. The live
+Current `main` is `db993e40da21ab0a4bf0895bde7e0969fa293785` after #144; its
+landed-main CI run `35939026936` passed all five required jobs. The last
+product-code change is #143 at `089607965715bd9435cc0e3b671b4f34c594e446`;
+#144 refreshed only grounding docs. The live
 2026-09-24 RTX 4090 run completed all 56 release-bundle ranges,
 verified the pinned SHA, installed NInfer, downloaded and verified the separate
 Qwen model, reached READY with native 262144 context and two configured lanes,
