@@ -7,6 +7,7 @@ export PATH="$PATH:/usr/local/bin:$HOME/.local/bin"
 
 PHASE_PROXY="${PHASE_PROXY:-/root/stint-phaseproxy.py}"
 DEEP_OBSERVE="${DEEP_OBSERVE:-/root/deep-observe.sh}"
+AGENT_LOG_TAIL="${AGENT_LOG_TAIL:-/root/deep-agent-log-tail.py}"
 HERMES_MODEL="${HERMES_MODEL:-qwen3.8-27b}"
 PHASING_DIR="${PHASING_DIR:-/root/stint-phasing}"
 
@@ -18,6 +19,7 @@ command -v python3 >/dev/null 2>&1 || fail "python3 not on PATH"
 
 mkdir -p "$PHASING_DIR"
 install -m 0755 "$DEEP_OBSERVE" "$PHASING_DIR/deep-observe"
+install -m 0755 "$AGENT_LOG_TAIL" /usr/local/bin/stint-deep-agent-log-tail
 start_proxy() {
   local port="$1"
   local level="$2"

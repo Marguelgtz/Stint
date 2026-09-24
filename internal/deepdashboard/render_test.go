@@ -38,12 +38,55 @@ func TestWorkerViewShowsTruncation(t *testing.T) {
 	}
 }
 
+func TestWorkerViewShowsSanitizedHermesTailAndUnavailableStateInNarrowViewport(t *testing.T) {
+	m := testModel()
+	m.View, m.Width, m.Height = WorkerView, 42, 22
+	m.Worker.HermesLog = "request started\nrecent sanitized result"
+	m.Worker.HermesLogAt = "12:00:01"
+	out := Render(m)
+	if !strings.Contains(out, "HERMES AGENT LOG") || !strings.Contains(out, "recent sanitized result") || !strings.Contains(out, "remote tail") {
+		t.Fatalf("narrow worker view omitted Hermes log:\n%s", out)
+	}
+	if got := len(strings.Split(out, "\n")); got > m.Height {
+		t.Fatalf("rendered %d lines in %d-row viewport", got, m.Height)
+	}
+	m.Worker.HermesLog = ""
+	m.Worker.HermesLogError = "SSH connection unavailable"
+	out = Render(m)
+	if !strings.Contains(out, "unavailable:") {
+		t.Fatalf("missing explicit log-unavailable state:\n%s", out)
+	}
+}
+
 func TestTasksViewShowsVerificationTimeAndCheckpointSHA(t *testing.T) {
 	m := testModel()
 	m.View = Tasks
 	m.Tasks = []Task{{ID: "TASK-001", Status: "verified", Attempts: 1, Objective: "ship", Verify: "go test ./...", VerifiedAt: "2026-09-23T10:00:00Z", CheckpointCommit: "0123456789abcdef0123456789abcdef01234567"}}
 	out := Render(m)
 	for _, want := range []string{"TASK-001", "verified at 2026-09-23T10:00:00Z", "checkpoint SHA 0123456789abcdef0123456789abcdef01234567", "verify go test ./..."} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("tasks view missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestTasksViewShowsInheritedSessionReasoningExplicitly(t *testing.T) {
+	m := testModel()
+	m.View = Tasks
+	m.Tasks = []Task{{ID: "TASK-001", Status: "queued", Objective: "inspect repository"}}
+	out := Render(m)
+	if !strings.Contains(out, "reasoning inherit") {
+		t.Fatalf("tasks view should label an empty task effort as inherited:\n%s", out)
+	}
+}
+
+func TestTasksViewShowsIndependentAttemptEvidenceAndBudget(t *testing.T) {
+	m := testModel()
+	m.View = Tasks
+	m.Width = 68
+	m.Tasks = []Task{{ID: "TASK-001", Status: "blocked", Attempts: 1, Objective: "ship", Reasoning: "xhigh", Verify: "go test ./...", ExecutionError: "context deadline exceeded", VerificationCommand: "go test ./...", VerificationResult: "repository verification passed", ConfiguredTimeoutSec: 900, EffectiveTimeoutSec: 579, TimeoutDecision: "shortened to preserve verification reserve", DependsOn: []string{"IMPL-001"}}}
+	out := Render(m)
+	for _, want := range []string{"TASK-001", "reasoning xhigh", "requires IMPL-001", "executor error: context deadline exceeded", "verification: passed", "executor timeout 579s / 900s max", "budget: shortened; verification reserve protected"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("tasks view missing %q:\n%s", want, out)
 		}

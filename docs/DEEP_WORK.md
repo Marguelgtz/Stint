@@ -61,6 +61,9 @@ go test ./...
 - [ ] PARSE-001: Reject the malformed retry header.
   - acceptance: the parser returns a clear error and keeps valid headers working.
   - verify: go test ./internal/parser
+- [ ] PARSE-REVIEW-001: Review the parser change after implementation.
+  - depends-on: PARSE-001
+  - verify: go test ./internal/parser
 
 ## GitHub
 - mode: engineering
@@ -85,11 +88,21 @@ Coordinator task IDs beginning `STINT-PLAN-` and `STINT-CLOSE-` are reserved. `-
 
 ## Verification and command guidance
 
-A successful Hermes exit is a worker claim. A task becomes `verified` only after its independent verifier succeeds, a checkpoint commit is created, its exact commit SHA is read, and the verified state is persisted. A task without a verifier remains `needs_human`.
+A successful Hermes exit and a passing repository verification command are separate evidence. A task becomes `verified` only when the Hermes executor completed successfully, its independent verifier succeeds, a checkpoint commit is created, its exact commit SHA is read, and the verified state is persisted. Verification can run after an executor failure for diagnostics, but that result cannot accept the task. Durable state and the dashboard retain executor and verification outcomes separately. A task without a verifier remains `needs_human`.
+
+Review tasks may use `depends-on: IMPLEMENT-001, TEST-001` to name prerequisites declared earlier in the mission. The coordinator runs the review only after each prerequisite reaches `verified`; if a prerequisite ends blocked or needs human input, the review is recorded as blocked without invoking Hermes. The Tasks view shows a task's configured reasoning level, or `inherit` when it uses the session default.
+
+`--task-timeout` is a per-invocation maximum. When less time remains before the landing cutoff, the coordinator shortens an invocation only if it can still reserve the task-verification bound and checkpoint overhead. It defers work when the remaining executor window is below five minutes (or below the configured maximum when that maximum is shorter). The chosen timeout and its reason are persisted with the task attempt.
+
+Timing controls remain separate: the Vast `--hours` rental cap establishes the paid compute deadline; the Deep Work `--deadline` follows that deadline in the on-box launcher unless explicitly set; `LandBefore` protects the final landing window (normally 10 minutes, or one quarter of sessions shorter than 40 minutes, with a 2-minute minimum); `--task-timeout` is the maximum for each Hermes invocation (15 minutes in the production on-box launcher by default); `--max-attempts` limits retries (2 in that launcher); a configured task-verification command has a 3-minute bound, while a task with no verifier reserves no separate verifier timeout; NInfer's pending-request timeout is 600,000 ms; the on-box NInfer observer samples every 10 seconds; sanitized R2 heartbeats run every 20 seconds; and transient final-publication retries default to 12 attempts with 5 seconds between attempts. Policy and immutable identity conflicts stop publication immediately. Verification's 3-minute bound and the coordinator/checkpoint reserve are not coding-task timeout recommendations. A shortened coding invocation is still required to meet the five-minute useful-work floor when the configured maximum is longer.
 
 `--allow-command` adds advisory prompt text only. Stint does not enforce a command allow-list at the Hermes process boundary. Do not treat this setting as a security boundary.
 
-Hermes prompt files are created in protected temporary storage outside the target repository and removed after each invocation. Phase and compression counts shown by the worker view come from shared host logs. They are explicitly not attributed to a particular Deep Work session and are not task acceptance evidence.
+Hermes prompt files are created in protected temporary storage outside the target repository and removed after each invocation. Phase and compression counts shown by the worker view come from shared host logs. They are explicitly not attributed to a particular Deep Work session and are not task acceptance evidence. The Worker view also fetches a redacted tail of `/root/.hermes/logs/agent.log` over SSH (at most 80 lines/16 KiB); the remote tail command redacts common token and secret fields before returning data. Missing SSH/log access is shown as an unavailable observation and does not change durable run status. This passive read uses the session's persisted matching instance endpoint and does not require the local inference tunnel or READY lifecycle state.
+
+The detached supervisor samples NInfer `/metrics` and `/slots` every 10 seconds into a mode-0600, bounded `ninfer-runtime.jsonl` (up to 1,200 rows/6 MiB). Each row records configured NInfer clients separately from exposed engine slot rows, slot processing/retained/context/prompt depth, allow-listed request/cache/speculative counters, and counter-derived prefill and live-engine decode rates where consecutive monotonic samples exist. `session_digest`, prompts, and caller identity are omitted. Live-engine decode remains separate from benchmark decode.
+
+R2 remains a bounded evidence sink. The supervisor's sanitized snapshot is uploaded as `latest.json` and a timestamped `heartbeats/<UTC stamp>.json` using credentials from the configured R2 environment file (default `/var/lib/stint-onbox/config/r2.env`). Heartbeats exclude Hermes logs, prompts, source files, and credentials. The final allow-list is `deep.json`, `mission.md`, `handoff.md`, `incidents.jsonl`, `publication.json`, and the bounded `ninfer-runtime.jsonl`, plus `provenance.json`; raw Hermes logs are not archived to R2.
 
 ## State and recovery
 
@@ -122,3 +135,5 @@ The supported live smoke is [`scripts/run-onbox-deep-smoke.sh`](../scripts/run-o
 - A passing bootstrap is not a completed mission. Completion still depends on coordinator verification, durable publication, final handoff, and the deadline watchdog.
 
 See the canonical [Deep Work integration action plan](DEEP_WORK_ONBOX_EXECUTION_PLAN.md) for current branch/PR status, evidence, and remaining work.
+
+See the [2026-09-24 stabilization evidence report](DEEP_WORK_STABILIZATION_2026-09-24.md) for the grounded PR review, latest forensic findings, and stale session-checkpoint dispositions.

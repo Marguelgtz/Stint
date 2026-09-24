@@ -7,6 +7,9 @@ import socket
 import sys
 
 
+ALLOWED_FILES = {"deep.json", "mission.md", "handoff.md", "incidents.jsonl", "publication.json", "ninfer-runtime.jsonl"}
+
+
 def load_env(path):
     values = {}
     with open(path, encoding="utf-8") as stream:
@@ -79,9 +82,8 @@ def main():
     prefix = os.environ.get("STINT_R2_PREFIX", f"vanta/onbox/{session}").strip("/")
     proof = provenance(session)
     metadata = provenance_metadata(proof)
-    allowed = {"deep.json", "mission.md", "handoff.md", "incidents.jsonl", "publication.json"}
     uploaded = 0
-    for name in sorted(allowed):
+    for name in sorted(ALLOWED_FILES):
         path = os.path.join(state_dir, name)
         if os.path.isfile(path):
             content_type = "application/json" if name.endswith(".json") else "application/octet-stream"

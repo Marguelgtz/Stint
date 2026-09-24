@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -123,6 +127,40 @@ func TestParseDeepWorkerObservationRejectsStoppedNInfer(t *testing.T) {
 	}
 }
 
+func TestDeepDashboardLoadsMatchingArchivedSSHStateWithoutTunnel(t *testing.T) {
+	paths := testDashboardPaths(t.TempDir())
+	if err := os.MkdirAll(sessionArchiveDir(paths), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	archived := sessionstate.State{InstanceID: 77, Status: "STOPPED", SSHHost: "gpu.example.test", SSHPort: 2222}
+	data, err := json.Marshal(archived)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionArchiveDir(paths), "77.2026-09-24T12-00-00Z.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := deep.DeepState{ComputeBinding: &deep.ComputeBinding{Provider: "vast", InstanceID: 77}}
+	got, err := deepDashboardSSHState(paths, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.InstanceID != 77 || got.SSHHost != archived.SSHHost || got.SSHPort != archived.SSHPort || got.TunnelPID != 0 {
+		t.Fatalf("SSH state = %+v, want matching archived endpoint without a tunnel", got)
+	}
+}
+
+func TestCollectHermesAgentLogUsesBoundedRemoteHelper(t *testing.T) {
+	var command string
+	log, err := collectHermesAgentLog(context.Background(), func(_ context.Context, got string) (string, error) {
+		command = got
+		return "recent redacted line", nil
+	})
+	if err != nil || command != "stint-deep-agent-log-tail" || log != "recent redacted line" {
+		t.Fatalf("log=%q command=%q err=%v", log, command, err)
+	}
+}
+
 func TestDeepDashboardStopRequiresConfirmation(t *testing.T) {
 	stateDir := t.TempDir()
 	state := deep.NewState("20260908-120000", deep.Mission{Name: "fixture", Objective: "ship", Tasks: []deep.Task{{ID: "T-001", Objective: "work", Status: deep.StatusQueued}}}, "/repo", "/repo/.stint-deep/test", time.Now().Add(time.Hour), time.Now().Add(50*time.Minute), 2, time.Now())
@@ -170,7 +208,7 @@ func TestDeepDashboardStopRefusesDifferentComputeInstance(t *testing.T) {
 func TestDeepDashboardDetachesStaleWorkerObservation(t *testing.T) {
 	controller := &deepDashboardController{worker: deepdash.Worker{Observed: true, NInferContext: 100}}
 	controller.applyRemote(deepDashboardRemoteResult{ComputeErr: errors.New("wrong compute instance")})
-	if controller.worker.Observed || !strings.Contains(controller.worker.Error, "wrong compute instance") {
+	if controller.worker.Observed || !strings.Contains(controller.worker.HermesLogError, "wrong compute instance") {
 		t.Fatalf("worker after detach = %+v", controller.worker)
 	}
 }

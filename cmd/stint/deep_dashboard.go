@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -319,7 +321,15 @@ func (c *deepDashboardController) project() {
 		if task.VerifiedAt != nil {
 			verifiedAt = task.VerifiedAt.Local().Format(time.RFC3339)
 		}
-		m.Tasks = append(m.Tasks, deepdash.Task{ID: task.ID, Objective: task.Objective, Status: string(task.Status), Attempts: task.Attempts, Blocker: task.Blocker, LastResult: task.LastResult, Verify: task.Verify, CheckpointCommit: task.CheckpointCommit, VerifiedAt: verifiedAt})
+		m.Tasks = append(m.Tasks, deepdash.Task{
+			ID: task.ID, Objective: task.Objective, Status: string(task.Status), Attempts: task.Attempts, Reasoning: task.Reasoning,
+			Blocker: task.Blocker, LastResult: task.LastResult, Verify: task.Verify,
+			CheckpointCommit: task.CheckpointCommit, VerifiedAt: verifiedAt,
+			ExecutionError: task.ExecutionError, VerificationCommand: task.VerificationCommand,
+			VerificationResult: task.VerificationResult, TimeoutDecision: task.TimeoutDecision,
+			ConfiguredTimeoutSec: task.ConfiguredTimeoutSec, EffectiveTimeoutSec: task.EffectiveTimeoutSec,
+			DependsOn: append([]string(nil), task.DependsOn...),
+		})
 	}
 	m.Compute = projectDeepDashboardCompute(c.compute, c.computeLive)
 	m.Worker = c.worker
@@ -334,62 +344,73 @@ func (c *deepDashboardController) startRefresh() {
 	paths := c.paths
 	go func() {
 		result := deepDashboardRemoteResult{}
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
-		ssn, err := sessionstate.Load(paths)
-		if errors.Is(err, os.ErrNotExist) {
-			c.refreshCh <- result
-			return
-		}
+		ssn, err := deepDashboardSSHState(paths, state)
 		if err != nil {
 			result.ComputeErr = err
-			c.refreshCh <- result
-			return
-		}
-		if ssn.Status != sessionstate.StatusReady {
-			result.ComputeErr = fmt.Errorf("active compute session is %s, not READY", ssn.Status)
-			c.refreshCh <- result
-			return
-		}
-		if !deepStateMatchesCompute(state, ssn) {
-			result.ComputeErr = fmt.Errorf("active Vast instance %d does not match the compute instance bound to this Deep Work session", ssn.InstanceID)
-			c.refreshCh <- result
-			return
-		}
-		result.ComputeAvailable = true
-		// Do not fall back to the default endpoint if the active session's
-		// tunnel cannot be identified. That could attach unrelated model traffic
-		// to this historical Deep Work session.
-		tunnelPort := recordedTunnelPort(ssn)
-		if tunnelPort <= 0 {
-			result.ComputeAvailable = false
-			result.ComputeErr = errors.New("active compute tunnel identity is unavailable")
+			result.Worker.HermesLogError = compactTelemetryError(err)
 			c.refreshCh <- result
 			return
 		}
 		workerCh := make(chan deepdash.Worker, 1)
-		if state.Exec != nil && state.Exec.Worker == workerHermes {
+		observeHermes := state.Exec != nil && state.Exec.Worker == workerHermes
+		if observeHermes {
 			go func() {
-				worker, workerErr := collectDeepWorkerObservation(ctx, newRemoteCmd(paths, ssn), state.StartedAt)
-				if workerErr != nil {
-					worker.Error = compactTelemetryError(workerErr)
+				remote := newRemoteCmd(paths, ssn)
+				type observationResult struct {
+					worker deepdash.Worker
+					err    error
+				}
+				type logResult struct {
+					text string
+					err  error
+				}
+				observationCh := make(chan observationResult, 1)
+				logCh := make(chan logResult, 1)
+				go func() {
+					observed, workerErr := collectDeepWorkerObservation(ctx, remote, state.StartedAt)
+					observationCh <- observationResult{worker: observed, err: workerErr}
+				}()
+				go func() {
+					log, logErr := collectHermesAgentLog(ctx, remote)
+					logCh <- logResult{text: log, err: logErr}
+				}()
+				observed := <-observationCh
+				log := <-logCh
+				worker := observed.worker
+				if observed.err != nil {
+					worker.Error = compactTelemetryError(observed.err)
+				}
+				worker.HermesLogAt = time.Now().Local().Format("15:04:05")
+				if log.err != nil {
+					worker.HermesLogError = compactTelemetryError(log.err)
+				} else {
+					worker.HermesLog = log.text
 				}
 				workerCh <- worker
 			}()
 		}
-		deps := defaultSnapshotProbeDeps()
-		deps.endpoint = func(probeCtx context.Context) endpointHealth {
-			return probeEndpointHealthAtPort(probeCtx, tunnelPort)
+		if ssn.Status != sessionstate.StatusReady {
+			result.ComputeErr = fmt.Errorf("bound compute session is %s; live compute telemetry requires READY", ssn.Status)
+		} else if tunnelPort := recordedTunnelPort(ssn); tunnelPort <= 0 {
+			result.ComputeErr = errors.New("bound compute tunnel identity is unavailable")
+		} else {
+			result.ComputeAvailable = true
+			deps := defaultSnapshotProbeDeps()
+			deps.endpoint = func(probeCtx context.Context) endpointHealth {
+				return probeEndpointHealthAtPort(probeCtx, tunnelPort)
+			}
+			deps.inference = func(probeCtx context.Context) inferenceTelemetry {
+				return probeInferenceAtPort(probeCtx, tunnelPort)
+			}
+			result.Compute = collectSessionSnapshot(ctx, paths, ssn, time.Now().UTC(), true, deps)
 		}
-		deps.inference = func(probeCtx context.Context) inferenceTelemetry {
-			return probeInferenceAtPort(probeCtx, tunnelPort)
-		}
-		result.Compute = collectSessionSnapshot(ctx, paths, ssn, time.Now().UTC(), true, deps)
-		if state.Exec != nil && state.Exec.Worker == workerHermes {
+		if observeHermes {
 			select {
 			case result.Worker = <-workerCh:
 			case <-ctx.Done():
-				result.Worker.Error = "worker observation timed out"
+				result.Worker.HermesLogError = "remote worker observation timed out"
 			}
 		}
 		c.refreshCh <- result
@@ -407,11 +428,47 @@ func (c *deepDashboardController) applyRemote(result deepDashboardRemoteResult) 
 	c.compute, c.computeLive = result.Compute, result.ComputeAvailable
 	if result.ComputeErr != nil {
 		c.computeLive = false
-		c.worker = deepdash.Worker{Error: compactTelemetryError(result.ComputeErr)}
-	} else if result.Worker.Observed || result.Worker.Error != "" {
+		if result.Worker.HermesLogError == "" {
+			result.Worker.HermesLogError = compactTelemetryError(result.ComputeErr)
+		}
+		c.worker = result.Worker
+	} else if result.Worker.Observed || result.Worker.Error != "" || result.Worker.HermesLogAt != "" || result.Worker.HermesLogError != "" {
 		c.worker = result.Worker
 	}
 	c.project()
+}
+
+func deepDashboardSSHState(paths config.Paths, state deep.DeepState) (sessionstate.State, error) {
+	if state.ComputeBinding == nil || state.ComputeBinding.Provider != "vast" || state.ComputeBinding.InstanceID <= 0 {
+		return sessionstate.State{}, errors.New("Deep Work has no persisted Vast instance binding for remote observation")
+	}
+	id := state.ComputeBinding.InstanceID
+	usable := func(compute sessionstate.State) bool {
+		return compute.InstanceID == id && strings.TrimSpace(compute.SSHHost) != "" && compute.SSHPort > 0 && compute.SSHPort <= 65535
+	}
+	if current, err := sessionstate.Load(paths); err == nil && usable(current) {
+		return current, nil
+	}
+	entries, err := os.ReadDir(sessionArchiveDir(paths))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return sessionstate.State{}, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
+	prefix := fmt.Sprintf("%d.", id)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(sessionArchiveDir(paths), entry.Name()))
+		if readErr != nil {
+			continue
+		}
+		var compute sessionstate.State
+		if json.Unmarshal(data, &compute) == nil && usable(compute) {
+			return compute, nil
+		}
+	}
+	return sessionstate.State{}, fmt.Errorf("no persisted SSH endpoint is available for bound Vast instance %d", id)
 }
 
 func loadDeepDashboardSnapshot(stateDir, sessionID string) (deepDashboardSnapshot, error) {
@@ -508,6 +565,14 @@ func collectDeepWorkerObservation(ctx context.Context, remote remoteCmd, started
 		return deepdash.Worker{}, err
 	}
 	return parseDeepWorkerObservation(out)
+}
+
+func collectHermesAgentLog(ctx context.Context, remote remoteCmd) (string, error) {
+	out, err := remote(ctx, "stint-deep-agent-log-tail")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func parseDeepWorkerObservation(raw string) (deepdash.Worker, error) {

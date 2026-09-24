@@ -23,6 +23,7 @@ HEARTBEAT_FILE="$RUNTIME_DIR/heartbeat.json"
 LOG_FILE="$ROOT/supervisor.log"
 STINT_BIN="${STINT_ONBOX_BIN:-/usr/local/bin/stint}"
 HEARTBEAT_PID=""
+NINFER_OBSERVER_PID=""
 
 export XDG_STATE_HOME="$STATE_HOME"
 
@@ -214,6 +215,11 @@ cleanup_supervisor() {
     wait "$HEARTBEAT_PID" 2>/dev/null || true
     HEARTBEAT_PID=""
   fi
+  if [ -n "${NINFER_OBSERVER_PID:-}" ]; then
+    kill "$NINFER_OBSERVER_PID" 2>/dev/null || true
+    wait "$NINFER_OBSERVER_PID" 2>/dev/null || true
+    NINFER_OBSERVER_PID=""
+  fi
   publish_once || true
   snapshot || true
   if ! archive_final; then
@@ -266,6 +272,17 @@ run_supervisor() {
   start_watchdog
   trap cleanup_supervisor EXIT
   trap 'exit 143' TERM INT
+  if [ -n "${STINT_ONBOX_NINFER_OBSERVER:-}" ] && [ -r "$STINT_ONBOX_NINFER_OBSERVER" ]; then
+    python3 "$STINT_ONBOX_NINFER_OBSERVER" \
+      --latest "$STATE_HOME/stint/deep/latest" \
+      --session "$STATE_HOME/stint/session.json" \
+      --interval "${STINT_ONBOX_NINFER_SAMPLE_SECONDS:-10}" \
+      --max-samples "${STINT_ONBOX_NINFER_MAX_SAMPLES:-1200}" \
+      >>"$ROOT/ninfer-runtime-observer.log" 2>&1 &
+    NINFER_OBSERVER_PID=$!
+  else
+    echo "$(date -u +%FT%TZ) NInfer runtime observer unavailable; coordinator continues without samples" >>"$LOG_FILE"
+  fi
   heartbeat_loop &
   HEARTBEAT_PID=$!
 
