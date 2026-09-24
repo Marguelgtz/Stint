@@ -249,14 +249,14 @@ var (
 		name:    "deep",
 		section: "deepwork",
 		summary: "run a bounded Hermes engineering mission",
-		detail: `Deep Work runs bounded repository tasks through Hermes. The production path is ` + "`scripts/launch-onbox-deep.sh`" + `: Stint rents and qualifies compute, bootstraps the box, starts a detached on-box supervisor, and returns after the durable RUNNING handshake. Hermes, verification, checkpoints, and landing then continue on the box.
+		detail: `Deep Work runs bounded repository tasks through Hermes. From an existing READY Stint session, ` + "`stint deep start --repo ... --mission ...`" + ` validates the local source and policy, resolves the Stint SSH identity, invokes the production launcher, and returns only after the detached on-box supervisor reports its durable RUNNING handshake. Hermes, verification, checkpoints, and landing then continue on the box.
 
-Use ` + "`stint deep status`" + ` to inspect durable state and ` + "`stint deep resume`" + ` after an interruption. ` + "`stint deep onbox`" + ` is the box-side supervisor entry point; it is not a replacement for the launcher bootstrap.
+Use ` + "`stint deep dash`" + ` to inspect a production run. ` + "`stint deep status`" + ` and ` + "`stint deep resume`" + ` operate on the state directory selected by the current Stint process. ` + "`stint deep onbox`" + ` is the box-side coordinator entry point; it is not a replacement for the launcher bootstrap.
 
 Subcommands:
-  start   local development/fixture coordinator
+  start   start detached production Deep Work on the existing READY session
   status  show durable session phase and task evidence
-  dash    open the Deep Work execution cockpit
+  dash    open the Deep Work execution cockpit (routes to the on-box state after production start)
   stop    request a graceful landing
   resume  resume a recoverable coordinator
   onbox   run or resume the on-box Hermes coordinator`,
@@ -265,13 +265,14 @@ Subcommands:
 		flags: []cliFlag{
 			{name: "--mission", argument: "<file>", purpose: "mission Markdown file"},
 			{name: "--repo", argument: "<path>", purpose: "target git repository"},
-			{name: "--hours", argument: "<float>", defaultVal: "session deadline", purpose: "bounded session duration"},
-			{name: "--task-timeout", argument: "<dur>", defaultVal: "10m", purpose: "maximum wall time per Hermes invocation"},
-			{name: "--max-attempts", argument: "<int>", defaultVal: "3", purpose: "maximum attempts per task"},
+			{name: "--task-timeout", argument: "<dur>", defaultVal: "15m", purpose: "maximum wall time per Hermes task"},
+			{name: "--max-attempts", argument: "<int>", defaultVal: "2", purpose: "maximum attempts per task"},
 			{name: "--reasoning", argument: "<none|low|medium|xhigh>", defaultVal: "medium", purpose: "Hermes reasoning effort; task metadata may override it"},
-			{name: "--action-plan", argument: "<path>", purpose: "worktree-relative living action plan"},
+			{name: "--action-plan", argument: "<path>", purpose: "optional local or repository-relative action-plan seed"},
 			{name: "--provider", argument: "<id>", defaultVal: "custom:qwen-stint-{reasoning}", purpose: "configured Hermes provider or reasoning template"},
-			{name: "--model", argument: "<id>", purpose: "Hermes model id"},
+			{name: "--model", argument: "<id>", defaultVal: "qwen3.8-27b", purpose: "Hermes model id"},
+			{name: "--github-token-file", argument: "<file>", defaultVal: "~/.config/stint/github-token", purpose: "least-privilege publication token file"},
+			{name: "--r2-env-file", argument: "<file>", defaultVal: "~/.config/vanta-r2.env when present", purpose: "optional R2 evidence configuration"},
 			{name: "--allow-command", argument: "<prefix>", purpose: "advisory command guidance; Hermes does not enforce it"},
 			{name: "--json", defaultVal: "false", purpose: "status: print machine-readable state"},
 			{name: "--session", argument: "<id>", defaultVal: "latest", purpose: "status/dashboard: session to inspect"},
@@ -279,11 +280,15 @@ Subcommands:
 			{name: "--resume", defaultVal: "false", purpose: "onbox: resume persisted execution settings"},
 		},
 		examples: []string{
-			"scripts/launch-onbox-deep.sh --mission mission.md --repo /path/to/repo",
-			"stint deep status --json",
+			"stint start interactive --hours 3 --runtime ninfer --ninfer-deployment release-bundle --ninfer-config native --clients 2",
+			"stint deep start --repo ~/Documents/projects/spark --mission docs/missions/spark-mcp-graduation.md",
 			"stint deep dash",
+			"stint deep status --json",
 		},
 		notes: []string{
+			"deep start requires an existing READY compute session; it never rents or extends compute.",
+			"The production launcher stages only the clean committed HEAD and the validated mission snapshot; it does not mutate the operator checkout.",
+			"deep dash connects to the on-box dashboard for production runs; the supervisor remains detached if the dashboard connection closes.",
 			"The on-box coordinator uses a Stint-owned worktree and persists session state under the configured Stint state directory.",
 			"Independent verification and checkpoint persistence are coordinator decisions; a Hermes completion response alone is not VERIFIED.",
 			"Command prefixes are advisory prompt guidance; Stint does not enforce Hermes tool execution.",

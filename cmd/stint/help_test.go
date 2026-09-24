@@ -94,6 +94,28 @@ func TestCommandHelpRenders(t *testing.T) {
 	}
 }
 
+func TestDeepHelpPresentsDetachedProductionWorkflow(t *testing.T) {
+	out := captureOutput(t, func() { printCommandHelp("deep") })
+	for _, want := range []string{
+		"stint deep start --repo ... --mission ...",
+		"existing READY session",
+		"detached production Deep Work",
+		"stint deep dash",
+		"production launcher",
+		"--task-timeout <dur>",
+		"maximum wall time per Hermes task (default: 15m)",
+		"--max-attempts <int>",
+		"maximum attempts per task (default: 2)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("deep help output missing %q", want)
+		}
+	}
+	if strings.Contains(out, "local development/fixture coordinator") {
+		t.Error("deep start is still described as a local development coordinator")
+	}
+}
+
 func TestRunHelp(t *testing.T) {
 	if err := runHelp(nil); err != nil {
 		t.Fatalf("runHelp(nil): %v", err)

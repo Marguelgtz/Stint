@@ -4,17 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
-	"github.com/Marguelgtz/Stint/internal/config"
 	"github.com/Marguelgtz/Stint/internal/deep"
-	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
 // runDeep dispatches the Deep Work command group.
@@ -40,19 +35,6 @@ func runDeep(args []string) error {
 	}
 }
 
-type deepStartFlags struct {
-	missionPath   string
-	repoPath      string
-	hours         float64
-	taskTimeout   time.Duration
-	maxAttempts   int
-	allowCommands stringSlice
-	provider      string
-	model         string
-	reasoning     string
-	actionPlan    string
-}
-
 // stringSlice collects a repeatable --flag value into a slice.
 type stringSlice []string
 
@@ -64,187 +46,6 @@ func (s *stringSlice) Set(v string) error {
 	}
 	*s = append(*s, v)
 	return nil
-}
-
-// runDeepStart launches a Slice-1 Deep Work session: it rides an existing
-// READY compute session (1:1 mapping) and runs the coordinator in the
-// foreground until the session lands. It never rents, destroys, or extends
-// compute: the existing start/resume/watchdog machinery owns that.
-func runDeepStart(args []string) error {
-	fs := flag.NewFlagSet("deep start", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	f := &deepStartFlags{}
-	fs.StringVar(&f.missionPath, "mission", "", "mission Markdown file (required)")
-	fs.StringVar(&f.repoPath, "repo", "", "target git repository path (required)")
-	fs.Float64Var(&f.hours, "hours", 0, "optional Deep Work duration cap in hours (default: the compute session deadline)")
-	fs.DurationVar(&f.taskTimeout, "task-timeout", 10*time.Minute, "maximum wall time per coding-agent invocation")
-	fs.IntVar(&f.maxAttempts, "max-attempts", 3, "maximum executor attempts per task before parking")
-	fs.Var(&f.allowCommands, "allow-command", "advisory command prefix included in the Hermes prompt (repeatable)")
-	fs.StringVar(&f.provider, "provider", "custom:qwen-stint-{reasoning}", "configured Hermes provider id or reasoning template")
-	fs.StringVar(&f.model, "model", "", "Hermes model id (default: first model served on the compute box)")
-	fs.StringVar(&f.reasoning, "reasoning", deep.ReasoningMedium, "request reasoning effort: none, low, medium, or xhigh (task-level metadata may override it)")
-	fs.StringVar(&f.actionPlan, "action-plan", "", "optional path inside the worktree for a living action plan; creates a first xhigh planning task")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if f.missionPath == "" || f.repoPath == "" {
-		return errors.New("deep start requires --mission <file> and --repo <path>")
-	}
-	if f.taskTimeout <= 0 {
-		return errors.New("--task-timeout must be positive")
-	}
-	if f.maxAttempts < 1 {
-		return errors.New("--max-attempts must be at least 1")
-	}
-	var err error
-	if f.reasoning, err = deep.NormalizeReasoning(f.reasoning); err != nil {
-		return fmt.Errorf("--reasoning: %w", err)
-	}
-	if f.reasoning == "" {
-		return errors.New("--reasoning cannot be empty")
-	}
-	if f.actionPlan != "" {
-		f.actionPlan, err = actionPlanPath(f.actionPlan)
-		if err != nil {
-			return err
-		}
-	}
-
-	paths, err := config.DefaultPaths()
-	if err != nil {
-		return err
-	}
-	if err := paths.Ensure(); err != nil {
-		return err
-	}
-
-	// 1. Mission: parse and validate before any side effects.
-	mission, err := deep.ParseMissionFile(f.missionPath)
-	if err != nil {
-		return err
-	}
-
-	// 2. Compute: a READY session is a precondition (Slice-1 rides it).
-	session, err := sessionstate.Load(paths)
-	if err != nil {
-		return fmt.Errorf("no active compute session (%v); run `stint start interactive` first — "+
-			"Slice-1 Deep Work rides an existing session", err)
-	}
-	now := time.Now().UTC()
-	if session.Status != sessionstate.StatusReady {
-		return fmt.Errorf("compute session is %s, not READY; run `stint resume` or `stint start interactive` first", session.Status)
-	}
-	if !session.Deadline.After(now) {
-		return fmt.Errorf("compute session deadline has passed; run `stint resume` or `stint start interactive` first")
-	}
-
-	remoteFn := newRemoteCmd(paths, session)
-
-	// 3. Executor preflight: SSH, Hermes, and the model endpoint must all be
-	// reachable on the compute box before a worktree or session is created.
-	if _, err := remoteFn(context.Background(), "true"); err != nil {
-		return fmt.Errorf("cannot reach the compute box over SSH (%v); check the session (`stint status`)", err)
-	}
-	if out, err := remoteFn(context.Background(), "command -v hermes"); err != nil || strings.TrimSpace(out) == "" {
-		return errors.New("hermes was not found on the compute box")
-	}
-	modelsJSON, err := remoteFn(context.Background(), "curl -fsS -m 5 http://127.0.0.1:8080/v1/models")
-	if err != nil {
-		return fmt.Errorf("the compute-box model endpoint is not answering: %w", err)
-	}
-
-	// 4. Model: from the flags, or the first model the endpoint serves.
-	modelIDs, err := endpointModelIDsFromJSON(modelsJSON)
-	if err != nil {
-		return fmt.Errorf("parse compute-box model list: %w", err)
-	}
-	modelID := f.model
-	if modelID == "" {
-		modelID, err = firstEndpointModelFromJSON(modelsJSON)
-		if err != nil {
-			return fmt.Errorf("resolve model from the compute-box endpoint: %w (or pass --model)", err)
-		}
-	}
-	if !containsString(modelIDs, modelID) {
-		return fmt.Errorf("model %q is not served by the compute-box endpoint (available: %s)", modelID, strings.Join(modelIDs, ", "))
-	}
-
-	// 5. Repository: the repo (and its clean tree) is checked on the box.
-	var git gitOps = &remoteGit{remote: remoteFn}
-	if _, err := git.repoHead(f.repoPath); err != nil {
-		return fmt.Errorf("%s is not a git repository: %v", f.repoPath, err)
-	}
-	if clean, detail := git.cleanTracked(f.repoPath); !clean {
-		return fmt.Errorf("%s has uncommitted tracked changes; commit or stash them first:\n%s", f.repoPath, detail)
-	}
-	if err := preflightRemoteVerifyTools(mission, remoteFn); err != nil {
-		return err
-	}
-
-	// 6. Deep deadline: the compute deadline is the hard bound; --hours
-	//    may only tighten it. The coordinator lands before either.
-	deadline := session.Deadline
-	if f.hours > 0 {
-		if cap := now.Add(time.Duration(f.hours * float64(time.Hour))); cap.Before(deadline) {
-			deadline = cap
-		}
-	}
-	landBefore := landingDeadline(deadline, now)
-
-	// 7. Workspace: Stint-owned worktree cut from the repo's current HEAD.
-	sessionID := deep.NewSessionID(now)
-	worktree := filepath.Join(f.repoPath, ".stint-deep", sessionID)
-	if err := git.worktreeAdd(f.repoPath, worktree, deep.BranchName(sessionID)); err != nil {
-		return fmt.Errorf("create deep worktree: %w", err)
-	}
-	baseCommit, err := git.repoHead(worktree)
-	if err != nil {
-		return fmt.Errorf("read new worktree HEAD: %w", err)
-	}
-	if strings.TrimSpace(baseCommit) == "" {
-		return errors.New("new worktree returned an empty HEAD")
-	}
-
-	state := deep.NewState(sessionID, mission, f.repoPath, worktree, deadline, landBefore, f.maxAttempts, now)
-	state.BaseCommit = baseCommit
-	if err := state.BindCompute("vast", session.InstanceID, now); err != nil {
-		return fmt.Errorf("bind Deep Work session to compute instance: %w", err)
-	}
-	if f.actionPlan != "" {
-		state.Tasks = addActionPlanTask(state.Tasks, f.actionPlan)
-	}
-	// Persist the executor settings (and command policy) so `stint deep resume`
-	// can reconstruct identical invocations without a live endpoint or
-	// operator memory.
-	state.Exec = &deep.ExecSettings{
-		Worker:          workerHermes,
-		Provider:        f.provider,
-		Model:           modelID,
-		Reasoning:       f.reasoning,
-		ActionPlanPath:  f.actionPlan,
-		TaskTimeoutSec:  int(f.taskTimeout.Seconds()),
-		AllowedCommands: f.allowCommands,
-	}
-	if err := deep.SaveMissionCopy(paths.StateDir, sessionID, f.missionPath); err != nil {
-		return err
-	}
-	if err := state.SaveDir(paths.StateDir); err != nil {
-		return err
-	}
-
-	return deepRunSession(paths.StateDir, &state, &deepRunConfig{
-		worker:          workerHermes,
-		allowedCommands: f.allowCommands,
-		provider:        f.provider,
-		model:           modelID,
-		reasoning:       f.reasoning,
-		actionPlan:      f.actionPlan,
-		taskTimeout:     f.taskTimeout,
-		missionName:     mission.Name,
-		taskCount:       len(state.Tasks),
-		remote:          remoteFn,
-		paths:           paths,
-	}, git, false)
 }
 
 // actionPlanPath accepts a worktree-relative path so the same persisted value
