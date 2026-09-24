@@ -45,10 +45,17 @@ down() {
 }
 
 REMOTE_READY=0
+DEEP_TASK_STARTED_AT=""
+DEEP_TASK_STARTED_AT_UTC=""
 capture_remote_evidence() {
   [ "$REMOTE_READY" = 1 ] || return 0
   say "capturing sanitized GPU observer and smoke artifact"
-  timeout 30s "${SSH[@]}" '/root/stint-phasing/deep-observe' >"$ARTIFACT_DIR/deep-observe.json" 2>>"$LOG" || true
+  if [ -n "$DEEP_TASK_STARTED_AT_UTC" ]; then
+    timeout 30s "${SSH[@]}" "STINT_DEEP_STARTED_AT='$DEEP_TASK_STARTED_AT_UTC' /root/stint-phasing/deep-observe" \
+      >"$ARTIFACT_DIR/deep-observe.json" 2>>"$LOG" || true
+  else
+    timeout 30s "${SSH[@]}" '/root/stint-phasing/deep-observe' >"$ARTIFACT_DIR/deep-observe.json" 2>>"$LOG" || true
+  fi
   deep_id=""
   if [ -r "$STATE_DIR/deep/latest" ]; then
     deep_id="$(tr -d '[:space:]' < "$STATE_DIR/deep/latest")"
@@ -65,6 +72,10 @@ capture_remote_evidence() {
   esac
   timeout 30s "${SSH[@]}" "cd '$remote_worktree' && test -f '$EXPECTED_REMOTE_FILE' && cat '$EXPECTED_REMOTE_FILE' && git status --short" \
     >"$ARTIFACT_DIR/remote-artifact.txt" 2>>"$LOG" || true
+  if [ -n "$DEEP_TASK_STARTED_AT" ]; then
+    timeout 30s "${SSH[@]}" "python3 /root/audit-deep-compression-hermes-session.py --started-after '$DEEP_TASK_STARTED_AT' --worktree '$remote_worktree'" \
+      >"$ARTIFACT_DIR/hermes-tool-audit.json" 2>>"$LOG" || true
+  fi
 }
 
 DASHBOARD_PID=""
@@ -187,6 +198,7 @@ rsync -a -e "$SSH_RSYNC" \
   "$REPO_ROOT/scripts/deep-observe.sh" \
   "$REPO_ROOT/scripts/deep-compression-smoke-box-setup.sh" \
   "$REPO_ROOT/scripts/phase-lane-concurrency-smoke.sh" \
+  "$REPO_ROOT/scripts/audit-deep-compression-hermes-session.py" \
   "root@$B_HOST:/root/" >>"$LOG" 2>&1
 "${SSH[@]}" 'chmod +x /root/phaseproxy.py /root/box-phase-setup.sh /root/deep-observe.sh /root/deep-compression-smoke-box-setup.sh /root/phase-lane-concurrency-smoke.sh && PHASE_PROXY=/root/phaseproxy.py /root/box-phase-setup.sh' >>"$LOG" 2>&1
 
@@ -209,6 +221,8 @@ dashboard_recorder &
 DASHBOARD_PID=$!
 
 say "running bounded Deep Work task"
+DEEP_TASK_STARTED_AT="$(($(date +%s) - 30))"
+DEEP_TASK_STARTED_AT_UTC="$(date -u +%FT%TZ)"
 DEEP_ACTION_ARGS=()
 if [ -n "$ACTION_PLAN_PATH" ]; then
   DEEP_ACTION_ARGS=(--action-plan "$ACTION_PLAN_PATH")
@@ -229,25 +243,43 @@ say "coordinator exited status=$COORDINATOR_STATUS"
 "$STINT_BIN" deep dash --no-color --refresh >>"$DASHBOARD_LOG" 2>&1 || true
 stop_dashboard_recorder
 capture_remote_evidence
-python3 - "$ARTIFACT_DIR/deep-observe.json" "$ARTIFACT_DIR/remote-artifact.txt" "$COORDINATOR_LOG" <<'PY'
+python3 - "$ARTIFACT_DIR/deep-observe.json" "$ARTIFACT_DIR/remote-artifact.txt" "$COORDINATOR_LOG" "$ARTIFACT_DIR/hermes-tool-audit.json" <<'PY'
 import json
 import os
 import sys
+from datetime import datetime
 
-observer_path, artifact_path, coordinator_path = sys.argv[1:]
+observer_path, artifact_path, coordinator_path, audit_path = sys.argv[1:]
 observer = json.load(open(observer_path, encoding="utf-8"))
+audit = json.load(open(audit_path, encoding="utf-8"))
 compression = observer.get("compression", {})
 routes = observer.get("phaseRoutes", {})
-if os.environ.get("STINT_REQUIRE_COMPRESSION", "1") == "1" and (compression.get("state") != "completed" or compression.get("truncated", 0) != 0):
+if os.environ.get("STINT_REQUIRE_COMPRESSION", "1") == "1" and (
+    compression.get("state") != "completed"
+    or compression.get("completed", 0) < 1
+    or compression.get("failed", 0) != 0
+    or compression.get("truncated", 0) != 0
+):
     raise SystemExit(f"compression acceptance failed: {compression}")
-if routes.get("mediumRequests", 0) < 1:
+if routes.get("mediumRequests", 0) < 1 or routes.get("mediumFailures", 0) != 0:
     raise SystemExit(f"medium route acceptance failed: {routes}")
 expected = os.environ.get("STINT_EXPECTED_REMOTE_TEXT", "twelve chunks read after compression smoke")
 if expected not in open(artifact_path, encoding="utf-8").read():
     raise SystemExit("remote verified artifact was not captured")
+if audit.get("ok") is not True:
+    raise SystemExit(f"Hermes tool-call audit failed: {audit.get('failures', audit)}")
+first_compression = compression.get("firstAt")
+artifact_write = audit.get("artifactWriteAt")
+first_compression_time = datetime.fromisoformat(first_compression.replace("Z", "+00:00")) if first_compression else None
+artifact_write_time = datetime.fromisoformat(artifact_write.replace("Z", "+00:00")) if artifact_write else None
+if not first_compression_time or not artifact_write_time or first_compression_time >= artifact_write_time:
+    raise SystemExit(
+        "no successful compression completion was recorded before Hermes wrote the artifact: "
+        f"compression.firstAt={first_compression!r} artifactWriteAt={artifact_write!r}"
+    )
 coordinator = open(coordinator_path, encoding="utf-8", errors="replace").read().lower()
 for marker in ("context compression summary was truncated", "context window overflow"):
     if marker in coordinator:
         raise SystemExit(f"unexpected compression failure marker: {marker}")
 PY
-say "PASS compression, medium route, verified artifact, and dashboard transcript captured in $ARTIFACT_DIR"
+say "PASS compression, medium route, twelve successful Hermes fixture reads, Hermes artifact write/verify, coordinator artifact verification, and dashboard transcript captured in $ARTIFACT_DIR"

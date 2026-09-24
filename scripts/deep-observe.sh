@@ -98,7 +98,7 @@ for level, key in (('xhigh', 'xhighRequests'), ('medium', 'mediumRequests')):
     except OSError:
         pass
 
-compression = {'state': 'not_observed', 'completed': 0, 'failed': 0, 'truncated': 0, 'lastAt': ''}
+compression = {'state': 'not_observed', 'completed': 0, 'failed': 0, 'truncated': 0, 'firstAt': '', 'lastAt': ''}
 log_time = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:,\d+)?)')
 latest_compression_at = None
 try:
@@ -108,7 +108,9 @@ try:
             if not match:
                 continue
             try:
-                timestamp_dt = dt.datetime.strptime(match.group(1).split(',')[0], '%Y-%m-%d %H:%M:%S').replace(tzinfo=local_tz).astimezone(utc)
+                stamp = match.group(1)
+                fmt = '%Y-%m-%d %H:%M:%S,%f' if ',' in stamp else '%Y-%m-%d %H:%M:%S'
+                timestamp_dt = dt.datetime.strptime(stamp, fmt).replace(tzinfo=local_tz).astimezone(utc)
             except ValueError:
                 continue
             if started is not None and timestamp_dt < started:
@@ -122,6 +124,8 @@ try:
             elif 'context compression done:' in line:
                 compression['completed'] += 1
                 compression['state'] = 'completed'
+                if not compression['firstAt']:
+                    compression['firstAt'] = timestamp
                 compression['lastAt'] = timestamp
                 latest_compression_at = timestamp_dt
             elif 'Context compression failed after' in line or 'Compression summary failed:' in line:
