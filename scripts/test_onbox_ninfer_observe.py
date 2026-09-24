@@ -64,6 +64,23 @@ unsafe_secret_metric{token="do-not-save"} 9
             self.assertEqual(record["requestsDeferred"], 0)
             self.assertNotIn("caller", json.dumps(record).lower())
 
+    def test_pinned_sample_does_not_follow_a_newer_latest_pointer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            deep_root = root / "deep"
+            pinned_dir = deep_root / "session-pinned"
+            latest_dir = deep_root / "session-latest"
+            pinned_dir.mkdir(parents=True)
+            latest_dir.mkdir(parents=True)
+            latest = deep_root / "latest"
+            latest.write_text("session-latest\n", encoding="utf-8")
+            session = root / "session.json"
+            session.write_text('{"clients":2}\n', encoding="utf-8")
+            with mock.patch.object(OBSERVE, "fetch", side_effect=["", "[]"]):
+                OBSERVE.sample(str(latest), str(session), {}, None, session_id="session-pinned")
+            self.assertTrue((pinned_dir / "ninfer-runtime.jsonl").is_file())
+            self.assertFalse((latest_dir / "ninfer-runtime.jsonl").exists())
+
     def test_retention_is_bounded_and_private(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory, "samples.jsonl")
@@ -120,7 +137,7 @@ unsafe_secret_metric{token="do-not-save"} 9
             session.write_text('{"clients":2}\n', encoding="utf-8")
             calls = []
 
-            def fake_sample(_latest, _session, _previous, _previous_mono, max_samples):
+            def fake_sample(_latest, _session, _previous, _previous_mono, max_samples, session_id=None):
                 calls.append(max_samples)
                 return {}, float(len(calls))
 

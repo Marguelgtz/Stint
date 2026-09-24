@@ -45,6 +45,20 @@ class DeepAgentLogTailTests(unittest.TestCase):
             for secret in (aws_key, slack_token, google_key):
                 self.assertNotIn(secret, output)
 
+    def test_tail_redacts_json_quoted_secret_keys(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory, "agent.log")
+            path.write_text(
+                '{"password":"hunter2","api_key":"ordinary-secret",'
+                '"authorization":"Bearer json-token-value"}\n',
+                encoding="utf-8",
+            )
+            output = TAIL.tail_log(str(path))
+            for secret in ("hunter2", "ordinary-secret", "json-token-value"):
+                self.assertNotIn(secret, output)
+            self.assertIn('"password":"[REDACTED]"', output)
+            self.assertIn('"api_key":"[REDACTED]"', output)
+
     def test_unavailable_log_is_reported_by_cli(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(FileNotFoundError):

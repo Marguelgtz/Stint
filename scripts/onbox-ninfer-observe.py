@@ -169,12 +169,16 @@ def append_bounded(path, payload, max_samples=MAX_SAMPLES, max_bytes=MAX_BYTES):
 
 def latest_state_dir(latest_path):
     session = Path(latest_path).read_text(encoding="utf-8").strip()
+    return session_state_dir(latest_path, session)
+
+
+def session_state_dir(latest_path, session):
     if not re.fullmatch(r"[A-Za-z0-9_-]+", session):
         raise ValueError("invalid latest Deep Work session id")
     return Path(latest_path).parent / session
 
 
-def sample(latest_path, session_path, previous, previous_mono, max_samples=MAX_SAMPLES):
+def sample(latest_path, session_path, previous, previous_mono, max_samples=MAX_SAMPLES, session_id=None):
     observed_at = utc_now()
     endpoints = {}
     counters = {}
@@ -202,7 +206,7 @@ def sample(latest_path, session_path, previous, previous_mono, max_samples=MAX_S
         "rates": rates,
         "endpoints": endpoints,
     }
-    state_dir = latest_state_dir(latest_path)
+    state_dir = session_state_dir(latest_path, session_id) if session_id else latest_state_dir(latest_path)
     if state_dir.is_dir():
         append_bounded(state_dir / "ninfer-runtime.jsonl", payload, max_samples=max_samples)
     return counters, monotonic_now
@@ -212,26 +216,34 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--latest", required=True, help="Deep Work latest-session pointer")
     parser.add_argument("--session", required=True, help="configured local session.json")
+    parser.add_argument("--session-id", help="pin samples to this session instead of following latest")
     parser.add_argument("--interval", type=float, default=10.0)
     parser.add_argument("--max-samples", type=int, default=MAX_SAMPLES)
     args = parser.parse_args()
     previous = {}
     previous_mono = None
     max_samples = max(1, min(args.max_samples, MAX_SAMPLES))
+    if args.session_id and not re.fullmatch(r"[A-Za-z0-9_-]+", args.session_id):
+        raise SystemExit("invalid Deep Work session id")
     while True:
-        if not Path(args.latest).is_file():
-            time.sleep(1.0)
-            continue
         try:
-            if not latest_state_dir(args.latest).is_dir():
+            if args.session_id:
+                target_dir = session_state_dir(args.latest, args.session_id)
+            elif not Path(args.latest).is_file():
                 time.sleep(1.0)
                 continue
-            previous, previous_mono = sample(args.latest, args.session, previous, previous_mono, max_samples=max_samples)
+            else:
+                target_dir = latest_state_dir(args.latest)
+            if not target_dir.is_dir():
+                time.sleep(1.0)
+                continue
+            previous, previous_mono = sample(args.latest, args.session, previous, previous_mono,
+                                             max_samples=max_samples, session_id=args.session_id)
         except Exception as exc:
             # Preserve observer failures locally where a session directory exists;
             # sampling failure must never stop the Deep Work coordinator.
             try:
-                directory = latest_state_dir(args.latest)
+                directory = session_state_dir(args.latest, args.session_id) if args.session_id else latest_state_dir(args.latest)
                 append_bounded(directory / "ninfer-runtime.jsonl", {
                     "observedAt": utc_now(), "configuredClients": read_clients(args.session),
                     "exposedEngineSlotRows": 0, "slots": [], "counters": {}, "rates": {},

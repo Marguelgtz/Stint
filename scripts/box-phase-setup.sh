@@ -14,6 +14,7 @@ PHASING_DIR="${PHASING_DIR:-/root/stint-phasing}"
 fail() { echo "PHASE_SETUP_FAIL $*"; exit 1; }
 [ -x "$PHASE_PROXY" ] || fail "phase proxy is missing or not executable: $PHASE_PROXY"
 [ -x "$DEEP_OBSERVE" ] || fail "deep observer is missing or not executable: $DEEP_OBSERVE"
+[ -r "$AGENT_LOG_TAIL" ] || fail "Deep Work agent log-tail helper is missing: $AGENT_LOG_TAIL"
 command -v hermes >/dev/null 2>&1 || fail "hermes not on PATH"
 command -v python3 >/dev/null 2>&1 || fail "python3 not on PATH"
 

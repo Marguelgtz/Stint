@@ -10,13 +10,15 @@ cat >"$TMP/stint" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 [ "${1:-}" = deep ] && [ "${2:-}" = onbox ] || exit 64
-state_root="$XDG_STATE_HOME/stint/deep/fixture-session"
+session_id="${FAKE_SESSION_ID:-fixture-session}"
+state_root="$XDG_STATE_HOME/stint/deep/$session_id"
 mkdir -p "$state_root"
-printf 'fixture-session\n' >"$XDG_STATE_HOME/stint/deep/latest"
+printf '%s\n' "$session_id" >"$XDG_STATE_HOME/stint/deep/latest"
 cat >"$state_root/deep.json" <<JSON
-{"sessionId":"fixture-session","phase":"${FAKE_PHASE:-landed}","tasks":[]}
+{"sessionId":"$session_id","phase":"${FAKE_PHASE:-landed}","tasks":[]}
 JSON
 printf 'fixture handoff\n' >"$state_root/handoff.md"
+sleep "${FAKE_STINT_DELAY:-0}"
 EOF
 chmod 0700 "$TMP/stint"
 
@@ -32,9 +34,14 @@ EOF
 chmod 0700 "$TMP/archive"
 
 run_supervisor() {
-  local name="$1" archive_exit="$2" archive_path="$3" expected_status="$4" phase="${5:-landed}" status
+  local name="$1" archive_exit="$2" archive_path="$3" expected_status="$4" phase="${5:-landed}" observer_path="${6:-}" seed_old_session="${7:-0}" status
   local root="$TMP/$name-root"
   mkdir -p "$root"
+  if [ "$seed_old_session" = 1 ]; then
+    mkdir -p "$root/state/stint/deep/old-session"
+    printf 'old-session\n' >"$root/state/stint/deep/latest"
+    printf '{"sessionId":"old-session","phase":"stopped","tasks":[]}\n' >"$root/state/stint/deep/old-session/deep.json"
+  fi
   : >"$TMP/$name-events"
   set +e
   env \
@@ -45,10 +52,13 @@ run_supervisor() {
     STINT_ONBOX_SKIP_WATCHDOG=1 \
     STINT_ONBOX_SKIP_GITHUB=1 \
     STINT_ONBOX_R2_ARCHIVE="$archive_path" \
+    STINT_ONBOX_NINFER_OBSERVER="$observer_path" \
     STINT_ONBOX_HEARTBEAT_SECONDS=1 \
     EVENTS="$TMP/$name-events" \
     ARCHIVE_EXIT="$archive_exit" \
     FAKE_PHASE="$phase" \
+    FAKE_STINT_DELAY="$([ -n "$observer_path" ] && printf 2 || printf 0)" \
+    OBSERVER_ARGS="$TMP/$name-observer-args" \
     bash "$SUPERVISOR" run --mission "$TMP/mission.md" \
     >"$TMP/$name-out" 2>"$TMP/$name-err"
   status=$?
@@ -72,6 +82,16 @@ run_supervisor() {
     printf 'configured final archive helper was not called\n' >&2
     return 1
   fi
+  if [ -n "$observer_path" ]; then
+    if [ ! -r "$TMP/$name-observer-args" ] || \
+       ! grep -Fq -- '--session-id' "$TMP/$name-observer-args" || \
+       ! grep -Fq 'fixture-session' "$TMP/$name-observer-args" || \
+       grep -Fq 'old-session' "$TMP/$name-observer-args"; then
+      cat "$TMP/$name-observer-args" 2>/dev/null >&2 || true
+      printf 'observer did not pin samples to the new Deep Work session\n' >&2
+      return 1
+    fi
+  fi
 }
 
 : >"$TMP/mission.md"
@@ -80,6 +100,20 @@ run_supervisor archive-failure 17 "$TMP/archive" failure
 run_supervisor archive-disabled 0 "" success
 run_supervisor archive-missing 0 "$TMP/missing-archive" failure
 run_supervisor nonterminal-success 0 "$TMP/archive" failure executing
+
+cat >"$TMP/fake-observer.py" <<'EOF'
+#!/usr/bin/env python3
+import json
+import os
+import sys
+import time
+with open(os.environ["OBSERVER_ARGS"], "w", encoding="utf-8") as stream:
+    json.dump(sys.argv[1:], stream)
+while True:
+    time.sleep(0.1)
+EOF
+chmod 0700 "$TMP/fake-observer.py"
+run_supervisor observer-pins-new-session 0 "" success landed "$TMP/fake-observer.py" 1
 
 cat >"$TMP/permanent-publisher" <<'EOF'
 #!/usr/bin/env bash

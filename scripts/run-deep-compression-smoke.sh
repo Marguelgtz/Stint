@@ -185,10 +185,11 @@ rsync -a -e "$SSH_RSYNC" \
   "$REPO_ROOT/scripts/phaseproxy.py" \
   "$REPO_ROOT/scripts/box-phase-setup.sh" \
   "$REPO_ROOT/scripts/deep-observe.sh" \
+  "$REPO_ROOT/scripts/deep-agent-log-tail.py" \
   "$REPO_ROOT/scripts/deep-compression-smoke-box-setup.sh" \
   "$REPO_ROOT/scripts/phase-lane-concurrency-smoke.sh" \
   "root@$B_HOST:/root/" >>"$LOG" 2>&1
-"${SSH[@]}" 'chmod +x /root/phaseproxy.py /root/box-phase-setup.sh /root/deep-observe.sh /root/deep-compression-smoke-box-setup.sh /root/phase-lane-concurrency-smoke.sh && PHASE_PROXY=/root/phaseproxy.py /root/box-phase-setup.sh' >>"$LOG" 2>&1
+"${SSH[@]}" 'chmod +x /root/phaseproxy.py /root/box-phase-setup.sh /root/deep-observe.sh /root/deep-agent-log-tail.py /root/deep-compression-smoke-box-setup.sh /root/phase-lane-concurrency-smoke.sh && PHASE_PROXY=/root/phaseproxy.py AGENT_LOG_TAIL=/root/deep-agent-log-tail.py /root/box-phase-setup.sh' >>"$LOG" 2>&1
 
 say "running normal phased box smoke"
 timeout 12m "${SSH[@]}" 'STINT_PHASED=1 PHASING_DIR=/root/stint-phasing bash -s' < "$REPO_ROOT/scripts/box-smoke.sh" >>"$LOG" 2>&1
