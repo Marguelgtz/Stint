@@ -24,7 +24,7 @@ REQUIRE_COMPRESSION="${STINT_REQUIRE_COMPRESSION:-1}"
 EXPECTED_REMOTE_FILE="${STINT_EXPECTED_REMOTE_FILE:-compression-smoke.ok}"
 EXPECTED_REMOTE_TEXT="${STINT_EXPECTED_REMOTE_TEXT:-twelve chunks read after compression smoke}"
 NINFER_DEPLOYMENT="${STINT_NINFER_DEPLOYMENT:-release-bundle}"
-SMOKE_HOURS=1.5
+SMOKE_HOURS="${STINT_SMOKE_HOURS:-1.25}"
 MAX_HOURLY_USD="${STINT_SMOKE_MAX_HOURLY_USD:-0.40}"
 MAX_SESSION_COST_USD="${STINT_SMOKE_MAX_SESSION_COST_USD:-0.60}"
 
@@ -121,33 +121,38 @@ if [ "$LANE_SMOKE" = 1 ] && [ "$NINFER_CLIENTS" != 2 ]; then
   say "FAIL concurrent lane smoke requires STINT_SMOKE_CLIENTS=2"
   exit 1
 fi
-if ! python3 - "$MAX_HOURLY_USD" "$MAX_SESSION_COST_USD" <<'PY'
+if ! python3 - "$MAX_HOURLY_USD" "$MAX_SESSION_COST_USD" "$SMOKE_HOURS" <<'PY'
 from decimal import Decimal, InvalidOperation
 import sys
 
 try:
-    hourly, total = map(Decimal, sys.argv[1:])
+    hourly, total, hours = map(Decimal, sys.argv[1:])
 except InvalidOperation:
-    raise SystemExit("smoke limits must be numeric")
+    raise SystemExit("smoke limits and schedule must be numeric")
 if (
     not hourly.is_finite()
     or not total.is_finite()
+    or not hours.is_finite()
     or hourly <= 0
     or total <= 0
-    or hourly > Decimal("0.50")
+    or hours <= 0
+    or hours > Decimal("1.5")
+    or hourly > Decimal("0.60")
     or total > Decimal("0.75")
 ):
-    raise SystemExit("smoke limits cannot exceed $0.50/hour or a $0.75 rental estimate")
+    raise SystemExit("smoke limits cannot exceed $0.60/hour, a 90-minute schedule, or a $0.75 rental estimate")
+if hourly * hours > total:
+    raise SystemExit("smoke schedule estimate exceeds the rental estimate cap")
 PY
 then
-  say "FAIL smoke limits cannot exceed \$0.50/hour or a \$0.75 rental estimate and must be positive numeric values"
+  say "FAIL smoke limits cannot exceed \$0.60/hour, a 90-minute schedule, or a \$0.75 rental estimate and must fit the scheduled cost"
   exit 1
 fi
 
 # Validate the exact rental envelope before copying operator credentials or
 # reaching any provider code. Keep one RTX 4090 candidate and default to the
 # $0.40/hour, $0.60 total smoke ceiling. Explicit overrides are hard-clamped
-# at $0.50/hour and a $0.75 estimated rental total for a bounded one-off run.
+# at $0.60/hour and a $0.75 estimated rental total for a bounded one-off run.
 START_ARGS=(
   start interactive --hours "$SMOKE_HOURS"
   --runtime ninfer --ninfer-deployment "$NINFER_DEPLOYMENT" --ninfer-config native --clients "$NINFER_CLIENTS"

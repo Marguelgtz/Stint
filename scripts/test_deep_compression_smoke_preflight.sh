@@ -62,7 +62,7 @@ for pair in \
   '--ninfer-deployment:release-bundle' \
   '--ninfer-config:native' \
   '--clients:2' \
-  '--hours:1.5' \
+  '--hours:1.25' \
   '--max-hourly-usd:0.40' \
   '--max-cost-usd:0.60' \
   '--network-candidate-attempts:1' \
@@ -100,7 +100,21 @@ grep -Fxq -- '--max-cost-usd' "$TMP/preflight-args"
 grep -Fxq -- '0.75' "$TMP/preflight-args"
 
 rm -f "$STINT_TEST_PREFLIGHT_MARKER"
-export STINT_SMOKE_MAX_HOURLY_USD=0.51
+export STINT_SMOKE_MAX_HOURLY_USD=0.60
+set +e
+bash "$SCRIPT_DIR/run-deep-compression-smoke.sh" >"$TMP/test-max-rate-out" 2>&1
+result=$?
+set -e
+if [ "$result" -eq 0 ]; then
+  cat "$TMP/test-max-rate-out" >&2
+  echo "maximum authorized rate unexpectedly passed the deliberately blocked rental" >&2
+  exit 1
+fi
+grep -Fq 'max rate $0.60/hour, rental estimate cap $0.75' "$TMP/artifacts/launcher.log"
+grep -Fxq -- '0.60' "$TMP/preflight-args"
+
+rm -f "$STINT_TEST_PREFLIGHT_MARKER"
+export STINT_SMOKE_MAX_HOURLY_USD=0.61
 set +e
 bash "$SCRIPT_DIR/run-deep-compression-smoke.sh" >"$TMP/test-over-limit-out" 2>&1
 result=$?
@@ -110,7 +124,7 @@ if [ "$result" -eq 0 ] || [ -e "$STINT_TEST_PREFLIGHT_MARKER" ]; then
   echo "over-limit smoke settings reached rental preflight" >&2
   exit 1
 fi
-grep -Fq 'smoke limits cannot exceed $0.50/hour or a $0.75 rental estimate' "$TMP/artifacts/launcher.log"
+grep -Fq 'smoke limits cannot exceed $0.60/hour, a 90-minute schedule, or a $0.75 rental estimate' "$TMP/artifacts/launcher.log"
 
 rm -f "$STINT_TEST_PREFLIGHT_MARKER"
 export STINT_SMOKE_MAX_HOURLY_USD=0.50
@@ -124,11 +138,27 @@ if [ "$result" -eq 0 ] || [ -e "$STINT_TEST_PREFLIGHT_MARKER" ]; then
   echo "over-limit smoke total reached rental preflight" >&2
   exit 1
 fi
-grep -Fq 'smoke limits cannot exceed $0.50/hour or a $0.75 rental estimate' "$TMP/artifacts/launcher.log"
+grep -Fq 'smoke limits cannot exceed $0.60/hour, a 90-minute schedule, or a $0.75 rental estimate' "$TMP/artifacts/launcher.log"
+
+rm -f "$STINT_TEST_PREFLIGHT_MARKER"
+export STINT_SMOKE_MAX_HOURLY_USD=0.60
+export STINT_SMOKE_MAX_SESSION_COST_USD=0.75
+export STINT_SMOKE_HOURS=1.5
+set +e
+bash "$SCRIPT_DIR/run-deep-compression-smoke.sh" >"$TMP/test-over-schedule-out" 2>&1
+result=$?
+set -e
+if [ "$result" -eq 0 ] || [ -e "$STINT_TEST_PREFLIGHT_MARKER" ]; then
+  cat "$TMP/test-over-schedule-out" >&2
+  echo "over-cap schedule reached rental preflight" >&2
+  exit 1
+fi
+grep -Fq 'smoke schedule estimate exceeds the rental estimate cap' "$TMP/test-over-schedule-out"
+unset STINT_SMOKE_HOURS
 
 rm -f "$STINT_TEST_PREFLIGHT_MARKER"
 export STINT_SMOKE_CLIENTS=1
-export STINT_SMOKE_MAX_HOURLY_USD=0.50
+export STINT_SMOKE_MAX_HOURLY_USD=0.60
 set +e
 bash "$SCRIPT_DIR/run-deep-compression-smoke.sh" >"$TMP/test-invalid-lanes-out" 2>&1
 result=$?
