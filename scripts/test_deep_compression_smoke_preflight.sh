@@ -81,7 +81,53 @@ if [ -e "$TMP/run/stint/session.json" ]; then
 fi
 
 rm -f "$STINT_TEST_PREFLIGHT_MARKER"
+export STINT_SMOKE_MAX_HOURLY_USD=0.50
+export STINT_SMOKE_MAX_SESSION_COST_USD=0.75
+set +e
+bash "$SCRIPT_DIR/run-deep-compression-smoke.sh" >"$TMP/test-budget-override-out" 2>&1
+result=$?
+set -e
+if [ "$result" -eq 0 ]; then
+  cat "$TMP/test-budget-override-out" >&2
+  echo "smoke fixture unexpectedly passed its deliberately blocked rental" >&2
+  exit 1
+fi
+grep -Fq 'max rate $0.50/hour, rental estimate cap $0.75' "$TMP/artifacts/launcher.log"
+grep -Fxq -- '--max-hourly-usd' "$TMP/preflight-args"
+grep -Fxq -- '0.50' "$TMP/preflight-args"
+grep -Fxq -- '--max-cost-usd' "$TMP/preflight-args"
+grep -Fxq -- '0.75' "$TMP/preflight-args"
+
+rm -f "$STINT_TEST_PREFLIGHT_MARKER"
+export STINT_SMOKE_MAX_HOURLY_USD=0.51
+set +e
+bash "$SCRIPT_DIR/run-deep-compression-smoke.sh" >"$TMP/test-over-limit-out" 2>&1
+result=$?
+set -e
+if [ "$result" -eq 0 ] || [ -e "$STINT_TEST_PREFLIGHT_MARKER" ]; then
+  cat "$TMP/test-over-limit-out" >&2
+  echo "over-limit smoke settings reached rental preflight" >&2
+  exit 1
+fi
+grep -Fq 'smoke limits cannot exceed $0.50/hour or a $0.75 rental estimate' "$TMP/artifacts/launcher.log"
+
+rm -f "$STINT_TEST_PREFLIGHT_MARKER"
+export STINT_SMOKE_MAX_HOURLY_USD=0.50
+export STINT_SMOKE_MAX_SESSION_COST_USD=0.76
+set +e
+bash "$SCRIPT_DIR/run-deep-compression-smoke.sh" >"$TMP/test-over-total-out" 2>&1
+result=$?
+set -e
+if [ "$result" -eq 0 ] || [ -e "$STINT_TEST_PREFLIGHT_MARKER" ]; then
+  cat "$TMP/test-over-total-out" >&2
+  echo "over-limit smoke total reached rental preflight" >&2
+  exit 1
+fi
+grep -Fq 'smoke limits cannot exceed $0.50/hour or a $0.75 rental estimate' "$TMP/artifacts/launcher.log"
+
+rm -f "$STINT_TEST_PREFLIGHT_MARKER"
 export STINT_SMOKE_CLIENTS=1
+export STINT_SMOKE_MAX_HOURLY_USD=0.50
 set +e
 bash "$SCRIPT_DIR/run-deep-compression-smoke.sh" >"$TMP/test-invalid-lanes-out" 2>&1
 result=$?
