@@ -777,6 +777,34 @@ func TestTimeoutShortensToFitBeforeLandingReserve(t *testing.T) {
 	}
 }
 
+func TestNoVerifierTaskDoesNotReserveUnusedVerificationTime(t *testing.T) {
+	env := newTestEnv(t, nil, 1)
+	env.coord.taskTimeout = time.Minute
+	env.state.Verify = ""
+	env.state.Tasks = []deep.Task{{ID: "NO-VERIFY-001", Objective: "do useful work", Status: deep.StatusQueued}}
+	env.state.LandBefore = env.clock.now.Add(2 * time.Minute)
+	if err := env.state.SaveDir(env.coord.stateDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if env.fake.calls != 1 || env.fake.timeouts[0] != time.Minute {
+		t.Fatalf("no-verifier invocation calls/timeouts = %d/%v, want one 1-minute invocation", env.fake.calls, env.fake.timeouts)
+	}
+	if env.state.Tasks[0].Status != deep.StatusNeedsHuman {
+		t.Fatalf("no-verifier task status = %s, want needs_human", env.state.Tasks[0].Status)
+	}
+}
+
+func TestLegacyVerifiedTaskWithoutVerifierKeepsWorkerOnlyEvidence(t *testing.T) {
+	state := deep.DeepState{Verify: "", Tasks: []deep.Task{{ID: "LEGACY-001", Objective: "old task", Status: deep.StatusVerified, LastResult: `finish="completed"`}}}
+	evidence := taskHandoffEvidence(state, state.Tasks[0])
+	if !strings.Contains(evidence, "legacy verified state; no independent verifier recorded") || strings.Contains(evidence, "repository verification passed") {
+		t.Fatalf("legacy no-verifier evidence = %q", evidence)
+	}
+}
+
 func TestReviewTaskRequiresVerifiedPrerequisite(t *testing.T) {
 	env := newTestEnv(t, nil, 2)
 	env.state.Tasks = []deep.Task{

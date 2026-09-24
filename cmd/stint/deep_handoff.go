@@ -147,6 +147,9 @@ func taskHandoffEvidence(s deep.DeepState, t deep.Task) string {
 		if command == "" {
 			command = s.Verify
 		}
+		if command == "" {
+			return "worker reported completion (legacy verified state; no independent verifier recorded)"
+		}
 		return fmt.Sprintf("executor completed; repository verification passed (`%s`)", command)
 	case t.Attempts > 0:
 		evidence := strings.ReplaceAll(t.LastResult, "\n", " ")

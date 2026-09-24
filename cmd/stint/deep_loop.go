@@ -155,7 +155,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		c.logf("task %s BLOCKED: %s", t.ID, prerequisite)
 		return nil
 	}
-	effectiveTimeout, timeoutDecision := c.effectiveTaskTimeout(now)
+	effectiveTimeout, timeoutDecision := c.effectiveTaskTimeout(now, *t)
 	if effectiveTimeout <= 0 {
 		return fmt.Errorf("task %s has no useful executor window: %s", t.ID, timeoutDecision)
 	}
@@ -254,7 +254,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	case verifyCmd == "" && executionSucceeded:
 		t.Status = deep.StatusNeedsHuman
 		t.Blocker = "worker reported completion, but no independent verification command is defined"
-	case t.Attempts < c.state.TaskAttemptCap && c.hasUsefulTaskWindow(c.now()):
+	case t.Attempts < c.state.TaskAttemptCap && c.hasUsefulTaskWindow(c.now(), *t):
 		t.Status = deep.StatusIncomplete
 		t.Blocker = ""
 		c.logf("task %s INCOMPLETE (attempt %d/%d): will reconstruct context and continue",
@@ -338,23 +338,30 @@ func blockReason(res execResult, execErr error, verified bool, verifyOut string,
 // effectiveTaskTimeout treats the configured timeout as a maximum. It reserves
 // bounded time for task verification and coordinator checkpoint work before
 // shortening the invocation to the remaining window.
-func (c *deepCoordinator) effectiveTaskTimeout(now time.Time) (time.Duration, string) {
+func (c *deepCoordinator) effectiveTaskTimeout(now time.Time, task deep.Task) (time.Duration, string) {
 	maximum := c.taskTimeout
 	if maximum <= 0 {
 		return 0, "refused: configured task timeout is not positive"
 	}
-	verifyReserve := c.verifyTimeout
-	if verifyReserve <= 0 {
-		verifyReserve = defaultTaskVerifyReserve
+	verifyReserve := time.Duration(0)
+	if task.Verify != "" || c.state.Verify != "" {
+		verifyReserve = c.verifyTimeout
+		if verifyReserve <= 0 {
+			verifyReserve = defaultTaskVerifyReserve
+		}
 	}
 	remaining := c.state.LandBefore.Sub(now)
 	usable := remaining - verifyReserve - coordinatorReserve
 	minimum := minDuration(maximum, minimumUsefulTaskWindow)
+	reserveLabel := "coordinator checkpoint work"
+	if verifyReserve > 0 {
+		reserveLabel = "verification and coordinator work"
+	}
 	if usable < minimum {
-		return 0, fmt.Sprintf("deferred: %s remains before landing cutoff; %s is reserved for verification and coordinator work, leaving less than the %s minimum useful invocation window (configured maximum %s)", remaining.Round(time.Second), (verifyReserve + coordinatorReserve).Round(time.Second), minimum.Round(time.Second), maximum.Round(time.Second))
+		return 0, fmt.Sprintf("deferred: %s remains before landing cutoff; %s is reserved for %s, leaving less than the %s minimum useful invocation window (configured maximum %s)", remaining.Round(time.Second), (verifyReserve + coordinatorReserve).Round(time.Second), reserveLabel, minimum.Round(time.Second), maximum.Round(time.Second))
 	}
 	if usable < maximum {
-		return usable, fmt.Sprintf("shortened from configured maximum %s to preserve %s for verification/coordinator work", maximum.Round(time.Second), (verifyReserve + coordinatorReserve).Round(time.Second))
+		return usable, fmt.Sprintf("shortened from configured maximum %s to preserve %s for %s", maximum.Round(time.Second), (verifyReserve + coordinatorReserve).Round(time.Second), reserveLabel)
 	}
 	return maximum, "started at configured maximum"
 }
@@ -386,8 +393,8 @@ func (c *deepCoordinator) failedPrerequisite(task deep.Task) string {
 	return ""
 }
 
-func (c *deepCoordinator) hasUsefulTaskWindow(now time.Time) bool {
-	timeout, _ := c.effectiveTaskTimeout(now)
+func (c *deepCoordinator) hasUsefulTaskWindow(now time.Time, task deep.Task) bool {
+	timeout, _ := c.effectiveTaskTimeout(now, task)
 	return timeout > 0
 }
 
@@ -429,7 +436,7 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 		if !ok {
 			return c.land(ctx, "no safe useful work remaining")
 		}
-		effective, decision := c.effectiveTaskTimeout(now)
+		effective, decision := c.effectiveTaskTimeout(now, c.state.Tasks[idx])
 		if effective <= 0 {
 			t := &c.state.Tasks[idx]
 			if t.Attempts > 0 {
