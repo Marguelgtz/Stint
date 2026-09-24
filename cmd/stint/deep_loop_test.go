@@ -338,6 +338,13 @@ func TestDeepLoopRetryUsesCurrentFailureAfterPriorDeferral(t *testing.T) {
 	if strings.Contains(got.Blocker, "deferred:") {
 		t.Fatalf("task blocker retained stale deferral reason: %q", got.Blocker)
 	}
+	fresh, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatalf("reload durable state: %v", err)
+	}
+	if fresh.Tasks[0].Blocker != got.Blocker || fresh.Tasks[0].Status != got.Status {
+		t.Fatalf("durable task = %s blocker %q, want %s blocker %q", fresh.Tasks[0].Status, fresh.Tasks[0].Blocker, got.Status, got.Blocker)
+	}
 }
 
 // Time-budget parking: with a task timeout that would overrun the landing
