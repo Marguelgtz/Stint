@@ -26,24 +26,30 @@ The supported operator entry point is `stint deep start`. It uses the existing R
 
 ## Production launch
 
+The normal Deep Work path is one command. When no compute session exists, an explicit `--hours` authorizes `stint deep start` to call Stint's existing paid rental/provisioning lifecycle first, then continue directly into detached Deep Work:
+
 ```sh
-stint start interactive \
+stint deep start \
   --hours 3 \
+  --repo ~/Documents/projects/spark \
+  --mission ~/Documents/projects/Stint/docs/missions/spark-mcp-graduation.md \
   --runtime ninfer \
   --ninfer-deployment release-bundle \
   --ninfer-config native \
-  --clients 2
-
-stint status
-
-stint deep start \
-  --repo ~/Documents/projects/spark \
-  --mission ~/Documents/projects/Stint/docs/missions/spark-mcp-graduation.md
+  --clients 2 \
+  --max-hourly-usd 0.45 \
+  --max-cost-usd 1.35
 
 stint deep dash
 ```
 
-Before staging, `stint deep start` prints the repository, exact source commit and origin, clean-tree status, mission, compute identity, GPU/runtime, remaining time/deadline, clients, model, task timeout, max attempts, GitHub policy, R2 setting, and cost estimates when recorded. It validates the mission, repository, Stint-managed SSH key, Vast credentials, and GitHub token before invoking the production launcher. The CLI resolves the instance ID, SSH endpoint, key, deadline, and client count from Stint's READY session state. It never rents or extends compute.
+The compute portion still uses the standard `stint start interactive` lifecycle internally: Vast selection, cost policy, SSH qualification, NInfer/model startup, watchdog, tunnel, and READY state remain one implementation rather than a second Deep Work rental stack. After READY, the same command continues through the production launcher and detached on-box supervisor. The word `interactive` is therefore an internal provisioning profile in this path; Hermes inference and Deep Work execution remain GPU-local after handoff.
+
+`--hours` is the explicit paid-compute opt-in. Without an active session and without `--hours`, `stint deep start` fails rather than renting unexpectedly. For a new session, production Deep Work defaults to NInfer with the native 262144-token context and rejects incompatible runtime/context choices before renting. A READY session must already be NInfer/native. If a READY Stint session already exists, omit compute-provisioning flags and the command reuses that session. Supplying new-session cost/runtime flags while a READY session exists fails instead of silently ignoring them.
+
+Before any new rental is requested, Deep Work validates the mission and repository and checks the publication/R2 configuration needed after provisioning. The standard lifecycle then validates the Stint-managed SSH and Vast credentials while qualifying the compute session. Before staging, `stint deep start` prints the repository, exact source commit and origin, clean-tree status, mission, compute identity, GPU/runtime, remaining time/deadline, clients, model, task timeout, max attempts, GitHub policy, R2 setting, and cost estimates when recorded. The CLI resolves the instance ID, SSH endpoint, key, deadline, and client count from the resulting READY session state.
+
+If compute reaches READY but the later Deep Work bootstrap fails before the durable RUNNING handshake, the paid READY session is preserved under the existing lifecycle/watchdog rules for diagnosis or retry; Stint does not hide the failure by starting a second rental.
 
 The command snapshots the validated mission and pins the source HEAD/origin between its preflight and staging. It rejects uncommitted tracked and untracked files; only the clean committed HEAD is staged, and the operator checkout is not mutated. The launcher transfers the required Vast credential and the single GitHub token file, not the broad operator configuration directory.
 

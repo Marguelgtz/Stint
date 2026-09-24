@@ -29,6 +29,8 @@ const (
 	deepProductionModel      = "qwen3.8-27b"
 )
 
+var errDeepProductionSessionMissing = errors.New("no active Stint compute session")
+
 type deepProductionStartFlags struct {
 	missionPath   string
 	repoPath      string
@@ -42,6 +44,121 @@ type deepProductionStartFlags struct {
 	githubToken   string
 	r2Env         string
 }
+
+type deepProductionProvisionFlags struct {
+	hours                    string
+	runtime                  string
+	ninferDeployment         string
+	ninferConfig             string
+	context                  string
+	clients                  int
+	maxHourlyUSD             float64
+	maxCostUSD               float64
+	location                 string
+	minNetworkMbps           float64
+	minMeasuredDownloadMBps  float64
+	networkCandidateAttempts int
+	yes                      bool
+	set                      map[string]bool
+}
+
+func (p *deepProductionProvisionFlags) register(fs *flag.FlagSet) {
+	fs.StringVar(&p.hours, "hours", "", "paid compute duration in hours; supplying this lets deep start rent compute when no session exists")
+	fs.StringVar(&p.runtime, "runtime", "", "new-session runtime; production Deep Work defaults to NInfer and rejects incompatible runtimes")
+	fs.StringVar(&p.ninferDeployment, "ninfer-deployment", "", "NInfer deployment forwarded to stint start interactive")
+	fs.StringVar(&p.ninferConfig, "ninfer-config", "", "new-session NInfer config; production Deep Work defaults to native (262144 context)")
+	fs.StringVar(&p.context, "context", "", "llama.cpp context forwarded to stint start interactive")
+	fs.IntVar(&p.clients, "clients", 0, "NInfer clients forwarded to stint start interactive")
+	fs.Float64Var(&p.maxHourlyUSD, "max-hourly-usd", 0, "maximum hourly offer price for Deep Work compute")
+	fs.Float64Var(&p.maxCostUSD, "max-cost-usd", 0, "maximum scheduled Deep Work compute cost")
+	fs.StringVar(&p.location, "location", "", "preferred offer location forwarded to stint start interactive")
+	fs.Float64Var(&p.minNetworkMbps, "min-network-mbps", 0, "minimum advertised network forwarded to stint start interactive")
+	fs.Float64Var(&p.minMeasuredDownloadMBps, "min-measured-download-mbps", 0, "minimum measured download forwarded to stint start interactive")
+	fs.IntVar(&p.networkCandidateAttempts, "network-candidate-attempts", 0, "maximum provider candidates forwarded to stint start interactive")
+	fs.BoolVar(&p.yes, "yes", false, "confirm a newly selected rental without prompting")
+}
+
+func (p *deepProductionProvisionFlags) capture(fs *flag.FlagSet) {
+	p.set = map[string]bool{}
+	fs.Visit(func(item *flag.Flag) {
+		switch item.Name {
+		case "hours", "runtime", "ninfer-deployment", "ninfer-config", "context", "clients",
+			"max-hourly-usd", "max-cost-usd", "location", "min-network-mbps",
+			"min-measured-download-mbps", "network-candidate-attempts", "yes":
+			p.set[item.Name] = true
+		}
+	})
+}
+
+func (p *deepProductionProvisionFlags) requested() bool {
+	return p != nil && len(p.set) > 0
+}
+
+func (p *deepProductionProvisionFlags) args() ([]string, error) {
+	if p == nil || !p.set["hours"] {
+		return nil, errors.New("renting Deep Work compute requires an explicit --hours <n> paid-duration cap")
+	}
+	if p.set["runtime"] {
+		runtime, err := normalizeRuntime(p.runtime)
+		if err != nil {
+			return nil, fmt.Errorf("Deep Work compute: %w", err)
+		}
+		if runtime != runtimeNInfer {
+			return nil, errors.New("production Deep Work requires --runtime ninfer; llama.cpp and auto may select an incompatible runtime")
+		}
+	}
+	if p.set["ninfer-config"] {
+		config, err := resolveNInferConfig(p.ninferConfig)
+		if err != nil {
+			return nil, fmt.Errorf("Deep Work compute: %w", err)
+		}
+		if config.Name != ninferConfigNative {
+			return nil, errors.New("production Deep Work requires --ninfer-config native (262144 context)")
+		}
+	}
+	if p.set["context"] {
+		return nil, errors.New("production Deep Work requires NInfer; --context is only supported by llama.cpp")
+	}
+	args := []string{"interactive"}
+	appendString := func(name, value string) {
+		if p.set[name] {
+			args = append(args, "--"+name, value)
+		}
+	}
+	appendString("hours", p.hours)
+	args = append(args, "--runtime", runtimeNInfer)
+	appendString("ninfer-deployment", p.ninferDeployment)
+	args = append(args, "--ninfer-config", ninferConfigNative)
+	appendString("location", p.location)
+	if p.set["clients"] {
+		args = append(args, "--clients", fmt.Sprintf("%d", p.clients))
+	}
+	if p.set["max-hourly-usd"] {
+		args = append(args, "--max-hourly-usd", fmt.Sprintf("%g", p.maxHourlyUSD))
+	}
+	if p.set["max-cost-usd"] {
+		args = append(args, "--max-cost-usd", fmt.Sprintf("%g", p.maxCostUSD))
+	}
+	if p.set["min-network-mbps"] {
+		args = append(args, "--min-network-mbps", fmt.Sprintf("%g", p.minNetworkMbps))
+	}
+	if p.set["min-measured-download-mbps"] {
+		args = append(args, "--min-measured-download-mbps", fmt.Sprintf("%g", p.minMeasuredDownloadMBps))
+	}
+	if p.set["network-candidate-attempts"] {
+		args = append(args, "--network-candidate-attempts", fmt.Sprintf("%d", p.networkCandidateAttempts))
+	}
+	if p.set["yes"] {
+		if p.yes {
+			args = append(args, "--yes")
+		} else {
+			args = append(args, "--yes=false")
+		}
+	}
+	return args, nil
+}
+
+type deepComputeProvisioner func(context.Context, string, []string, io.Writer, io.Writer) error
 
 type deepProductionLaunchPlan struct {
 	Paths         config.Paths
@@ -101,6 +218,10 @@ func runDeepStart(args []string) error {
 }
 
 func runDeepStartWith(args []string, paths config.Paths, launcher, stintBinary string, runner deepProductionLauncher, stdout, stderr io.Writer, now time.Time) error {
+	return runDeepStartWithProvisioner(args, paths, launcher, stintBinary, runner, runDeepComputeProvisioner, stdout, stderr, now)
+}
+
+func runDeepStartWithProvisioner(args []string, paths config.Paths, launcher, stintBinary string, runner deepProductionLauncher, provisioner deepComputeProvisioner, stdout, stderr io.Writer, now time.Time) error {
 	fs := flag.NewFlagSet("deep start", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	f := &deepProductionStartFlags{}
@@ -115,12 +236,15 @@ func runDeepStartWith(args []string, paths config.Paths, launcher, stintBinary s
 	fs.StringVar(&f.actionPlan, "action-plan", "", "optional local or repository-relative action-plan seed")
 	fs.StringVar(&f.githubToken, "github-token-file", "", "GitHub token file (default: ~/.config/stint/github-token)")
 	fs.StringVar(&f.r2Env, "r2-env-file", "", "optional R2 environment file (default: ~/.config/vanta-r2.env when present)")
+	provision := &deepProductionProvisionFlags{}
+	provision.register(fs)
 	showHelp := false
 	fs.BoolVar(&showHelp, "help", false, "show Deep Work command help")
 	fs.BoolVar(&showHelp, "h", false, "show Deep Work command help")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	provision.capture(fs)
 	if showHelp {
 		printCommandHelp("deep")
 		return nil
@@ -165,6 +289,29 @@ func runDeepStartWith(args []string, paths config.Paths, launcher, stintBinary s
 		}
 	}
 	plan, err := prepareDeepProductionLaunch(f, paths, launcher, stintBinary, now)
+	if err == nil && provision.requested() {
+		return errors.New("a READY Stint compute session already exists; omit compute provisioning flags to reuse it, or run `stint down` before requesting a new Deep Work rental")
+	}
+	if errors.Is(err, errDeepProductionSessionMissing) {
+		if !provision.requested() {
+			return fmt.Errorf("%w; or pass --hours <n> and compute flags to let `stint deep start` provision the session", err)
+		}
+		provisionArgs, provisionErr := provision.args()
+		if provisionErr != nil {
+			return provisionErr
+		}
+		if err := validateDeepProvisionPrerequisites(f, paths); err != nil {
+			return err
+		}
+		if provisioner == nil {
+			return errors.New("Deep Work compute provisioner is unavailable")
+		}
+		fmt.Fprintln(stdout, "No READY compute session is recorded; provisioning compute for Deep Work.")
+		if err := provisioner(context.Background(), stintBinary, provisionArgs, stdout, stderr); err != nil {
+			return fmt.Errorf("Deep Work compute provisioning failed before detached launch: %w", err)
+		}
+		plan, err = prepareDeepProductionLaunch(f, paths, launcher, stintBinary, time.Now().UTC())
+	}
 	if err != nil {
 		return err
 	}
@@ -172,6 +319,33 @@ func runDeepStartWith(args []string, paths config.Paths, launcher, stintBinary s
 		return err
 	}
 	return executeDeepProductionLaunch(context.Background(), plan, runner, stdout, stderr)
+}
+
+func runDeepComputeProvisioner(ctx context.Context, stintBinary string, args []string, stdout, stderr io.Writer) error {
+	if strings.TrimSpace(stintBinary) == "" {
+		return errors.New("Stint binary path is empty")
+	}
+	command := exec.CommandContext(ctx, stintBinary, append([]string{"start"}, args...)...)
+	command.Stdin = os.Stdin
+	command.Stdout = stdout
+	command.Stderr = stderr
+	return command.Run()
+}
+
+func validateDeepProvisionPrerequisites(f *deepProductionStartFlags, paths config.Paths) error {
+	githubToken := strings.TrimSpace(f.githubToken)
+	if githubToken == "" {
+		githubToken = filepath.Join(paths.ConfigDir, "github-token")
+	}
+	resolved, err := filepath.Abs(githubToken)
+	if err != nil {
+		return fmt.Errorf("resolve GitHub token path: %w", err)
+	}
+	if err := validateGitHubTokenFile(resolved); err != nil {
+		return err
+	}
+	_, err = resolveDeepR2Env(paths, f.r2Env)
+	return err
 }
 
 func findDeepProductionLauncher() (string, error) {
@@ -271,33 +445,6 @@ func prepareDeepProductionLaunch(f *deepProductionStartFlags, paths config.Paths
 		return nil, err
 	}
 
-	session, err := sessionstate.Load(paths)
-	if err != nil {
-		return nil, fmt.Errorf("no active Stint compute session; run `stint start interactive` first: %w", err)
-	}
-	if session.Status != sessionstate.StatusReady {
-		return nil, fmt.Errorf("Stint compute session is %s, not READY; resume or start a session and wait for READY", session.Status)
-	}
-	if session.InstanceID <= 0 {
-		return nil, errors.New("READY Stint session has no valid Vast instance identity")
-	}
-	if !session.Deadline.After(now) {
-		return nil, errors.New("READY Stint compute session has expired")
-	}
-	if !validSSHHost(session.SSHHost) || session.SSHPort < 1 || session.SSHPort > 65535 {
-		return nil, errors.New("READY Stint session is missing a valid SSH host or port; run `stint resume` to refresh its connection details")
-	}
-	keyInfo, err := os.Stat(paths.SSHPrivateKey)
-	if err != nil || !keyInfo.Mode().IsRegular() {
-		return nil, fmt.Errorf("Stint SSH private key is missing or unreadable at %s", paths.SSHPrivateKey)
-	}
-	if keyInfo.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("Stint SSH private key at %s must not be accessible by group or others; run `chmod 600 %s`", paths.SSHPrivateKey, paths.SSHPrivateKey)
-	}
-	if _, err := config.LoadCredentials(paths); err != nil {
-		return nil, fmt.Errorf("Vast credentials required by the production deadline watchdog are unavailable at %s: %w", paths.CredentialsFile, err)
-	}
-
 	githubToken := strings.TrimSpace(f.githubToken)
 	if githubToken == "" {
 		githubToken = filepath.Join(paths.ConfigDir, "github-token")
@@ -314,11 +461,6 @@ func prepareDeepProductionLaunch(f *deepProductionStartFlags, paths config.Paths
 	if err != nil {
 		return nil, err
 	}
-	clients, clientsKnown := session.Clients, session.Clients > 0
-	if clients < 1 {
-		clients = 1 // the production launcher default for older session snapshots
-	}
-
 	actionPlan := strings.TrimSpace(f.actionPlan)
 	if actionPlan != "" {
 		if strings.IndexByte(actionPlan, 0) >= 0 {
@@ -366,6 +508,49 @@ func prepareDeepProductionLaunch(f *deepProductionStartFlags, paths config.Paths
 	}
 	if stintBinary == "" {
 		return nil, errors.New("Stint binary path is empty")
+	}
+
+	// Load the active session only after validating every operator-controlled
+	// input above. The self-provision path may react to this specific missing
+	// session condition; unrelated ENOENT errors must never authorize a rental.
+	session, err := sessionstate.Load(paths)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: run `stint start interactive` first", errDeepProductionSessionMissing)
+		}
+		return nil, fmt.Errorf("load Stint compute session: %w", err)
+	}
+	if session.Status != sessionstate.StatusReady {
+		return nil, fmt.Errorf("Stint compute session is %s, not READY; resume or start a session and wait for READY", session.Status)
+	}
+	if runtimeForState(session) != runtimeNInfer {
+		return nil, fmt.Errorf("production Deep Work requires a READY NInfer session; current runtime is %s", runtimeForState(session))
+	}
+	if contextForState(session) != 262144 {
+		return nil, fmt.Errorf("production Deep Work requires NInfer native context (262144 tokens); current session context is %d", contextForState(session))
+	}
+	if session.InstanceID <= 0 {
+		return nil, errors.New("READY Stint session has no valid Vast instance identity")
+	}
+	if !session.Deadline.After(now) {
+		return nil, errors.New("READY Stint compute session has expired")
+	}
+	if !validSSHHost(session.SSHHost) || session.SSHPort < 1 || session.SSHPort > 65535 {
+		return nil, errors.New("READY Stint session is missing a valid SSH host or port; run `stint resume` to refresh its connection details")
+	}
+	keyInfo, err := os.Stat(paths.SSHPrivateKey)
+	if err != nil || !keyInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("Stint SSH private key is missing or unreadable at %s", paths.SSHPrivateKey)
+	}
+	if keyInfo.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("Stint SSH private key at %s must not be accessible by group or others; run `chmod 600 %s`", paths.SSHPrivateKey, paths.SSHPrivateKey)
+	}
+	if _, err := config.LoadCredentials(paths); err != nil {
+		return nil, fmt.Errorf("Vast credentials required by the production deadline watchdog are unavailable at %s: %w", paths.CredentialsFile, err)
+	}
+	clients, clientsKnown := session.Clients, session.Clients > 0
+	if clients < 1 {
+		clients = 1 // the production launcher default for older session snapshots
 	}
 
 	return &deepProductionLaunchPlan{

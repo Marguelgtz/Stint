@@ -249,12 +249,12 @@ var (
 		name:    "deep",
 		section: "deepwork",
 		summary: "run a bounded Hermes engineering mission",
-		detail: `Deep Work runs bounded repository tasks through Hermes. From an existing READY Stint session, ` + "`stint deep start --repo ... --mission ...`" + ` validates the local source and policy, resolves the Stint SSH identity, invokes the production launcher, and returns only after the detached on-box supervisor reports its durable RUNNING handshake. Hermes, verification, checkpoints, and landing then continue on the box.
+		detail: `Deep Work runs bounded repository tasks through Hermes. ` + "`stint deep start --hours ... --repo ... --mission ...`" + ` can rent and qualify compute through Stint's existing interactive lifecycle when no session exists, then invoke the production launcher and return only after the detached on-box supervisor reports its durable RUNNING handshake. If a READY Stint session already exists, omit compute-provisioning flags and Deep Work reuses it. Hermes, verification, checkpoints, and landing then continue on the box.
 
 Use ` + "`stint deep dash`" + ` to inspect a production run. ` + "`stint deep status`" + ` and ` + "`stint deep resume`" + ` operate on the state directory selected by the current Stint process. ` + "`stint deep onbox`" + ` is the box-side coordinator entry point; it is not a replacement for the launcher bootstrap.
 
 Subcommands:
-  start   start detached production Deep Work on the existing READY session
+  start   provision compute when requested, then start detached production Deep Work
   status  show durable session phase and task evidence
   dash    open the Deep Work execution cockpit (routes to the on-box state after production start)
   stop    request a graceful landing
@@ -265,6 +265,14 @@ Subcommands:
 		flags: []cliFlag{
 			{name: "--mission", argument: "<file>", purpose: "mission Markdown file"},
 			{name: "--repo", argument: "<path>", purpose: "target git repository"},
+			{name: "--hours", argument: "<float>", purpose: "paid compute duration; when no session exists, explicitly authorizes Deep Work to rent one"},
+			{name: "--runtime", argument: "<auto|ninfer|llama.cpp>", defaultVal: "ninfer", purpose: "new-session runtime; production Deep Work requires NInfer"},
+			{name: "--ninfer-deployment", argument: "<source-build|release-bundle>", purpose: "new-session NInfer deployment"},
+			{name: "--ninfer-config", argument: "<coding|precision|native>", defaultVal: "native", purpose: "new-session NInfer configuration; production Deep Work requires native"},
+			{name: "--clients", argument: "<1|2>", purpose: "new-session NInfer client count"},
+			{name: "--max-hourly-usd", argument: "<usd>", purpose: "new-session maximum hourly offer price"},
+			{name: "--max-cost-usd", argument: "<usd>", purpose: "new-session maximum scheduled compute cost"},
+			{name: "--yes", defaultVal: "false", purpose: "confirm a newly selected rental without prompting"},
 			{name: "--task-timeout", argument: "<dur>", defaultVal: "15m", purpose: "maximum wall time per Hermes task"},
 			{name: "--max-attempts", argument: "<int>", defaultVal: "2", purpose: "maximum attempts per task"},
 			{name: "--reasoning", argument: "<none|low|medium|xhigh>", defaultVal: "medium", purpose: "Hermes reasoning effort; task metadata may override it"},
@@ -280,13 +288,14 @@ Subcommands:
 			{name: "--resume", defaultVal: "false", purpose: "onbox: resume persisted execution settings"},
 		},
 		examples: []string{
-			"stint start interactive --hours 3 --runtime ninfer --ninfer-deployment release-bundle --ninfer-config native --clients 2",
-			"stint deep start --repo ~/Documents/projects/spark --mission docs/missions/spark-mcp-graduation.md",
+			"stint deep start --hours 3 --runtime ninfer --ninfer-deployment release-bundle --ninfer-config native --clients 2 --max-hourly-usd 0.45 --max-cost-usd 1.35 --repo ~/Documents/projects/spark --mission docs/missions/spark-mcp-graduation.md",
+			"stint deep start --repo ~/Documents/projects/spark --mission docs/missions/spark-mcp-graduation.md  # reuse an existing READY session",
 			"stint deep dash",
 			"stint deep status --json",
 		},
 		notes: []string{
-			"deep start requires an existing READY compute session; it never rents or extends compute.",
+			"With no active session, --hours is the explicit paid-compute opt-in; Deep Work forwards the compute flags to the existing stint start interactive lifecycle before launching the detached supervisor.",
+			"A READY session is reused only when compute-provisioning flags are omitted; Stint never silently ignores new-session cost/runtime flags.",
 			"The production launcher stages only the clean committed HEAD and the validated mission snapshot; it does not mutate the operator checkout.",
 			"deep dash connects to the on-box dashboard for production runs; the supervisor remains detached if the dashboard connection closes.",
 			"The on-box coordinator uses a Stint-owned worktree and persists session state under the configured Stint state directory.",
