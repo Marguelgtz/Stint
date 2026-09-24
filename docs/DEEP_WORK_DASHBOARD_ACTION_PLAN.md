@@ -253,7 +253,9 @@ truncation, missing medium route, a dead phase proxy, and an unavailable observe
    compression threshold. The fixture supplies twelve distinct 16 KiB tool results
    to force compaction without using an actual mission repository.
    `scripts/run-deep-compression-smoke.sh` owns the isolated 90-minute lease,
-   transcript, evidence capture, and teardown for this gate.
+   transcript, evidence capture, and teardown for this gate. Its default uses
+   two clients and runs the concurrent xhigh/medium lane check; the rental is
+   capped at one RTX 4090 candidate, `$0.40/hour`, and `$0.60` total.
 3. Keep `stint deep dash` open from the operator machine throughout the smoke.
 4. Record a screenshot/transcript showing the active task, completed compaction,
 medium-route observation, verifier pass, and checkpoint.

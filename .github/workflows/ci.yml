@@ -64,6 +64,8 @@ jobs:
         run: bash scripts/test_onbox_supervisor.sh
       - name: Test fresh-box smoke CLI preflight without provider mutation
         run: bash scripts/test_onbox_smoke_preflight.sh
+      - name: Test Deep Work GPU smoke cost and candidate preflight
+        run: bash scripts/test_deep_compression_smoke_preflight.sh
       - name: Test NInfer runtime bundle packaging and archive safety
         run: python3 scripts/test_ninfer_runtime_bundle.py
       - name: Checkout GitHub synthetic merge tree
@@ -81,6 +83,7 @@ jobs:
           python3 scripts/test_onbox_github_publish.py
           bash scripts/test_onbox_supervisor.sh
           bash scripts/test_onbox_smoke_preflight.sh
+          bash scripts/test_deep_compression_smoke_preflight.sh
           python3 scripts/test_ninfer_runtime_bundle.py
 
   race-tests:

@@ -13,13 +13,16 @@ STINT_BIN="${STINT_BIN:-$REPO_ROOT/bin/stint-deep-dashboard-smoke}"
 RUN_ROOT="${STINT_SMOKE_RUN_ROOT:-$HOME/.local/state/stint-deep-dashboard-smoke-$RUN_ID}"
 CONFIG_ROOT="${STINT_SMOKE_CONFIG_ROOT:-$HOME/.config/stint-deep-dashboard-smoke-$RUN_ID}"
 ARTIFACT_DIR="${STINT_SMOKE_ARTIFACT_DIR:-$HOME/Documents/projects/Stint/deep-compression-smoke-$RUN_ID}"
-NINFER_CLIENTS="${STINT_SMOKE_CLIENTS:-1}"
+NINFER_CLIENTS="${STINT_SMOKE_CLIENTS:-2}"
 MISSION_PATH="${STINT_SMOKE_MISSION:-$REPO_ROOT/deep-work/COMPRESSION_SMOKE_MISSION.md}"
 ACTION_PLAN_PATH="${STINT_SMOKE_ACTION_PLAN:-}"
-LANE_SMOKE="${STINT_LANE_SMOKE:-0}"
+LANE_SMOKE="${STINT_LANE_SMOKE:-1}"
 REQUIRE_COMPRESSION="${STINT_REQUIRE_COMPRESSION:-1}"
 EXPECTED_REMOTE_FILE="${STINT_EXPECTED_REMOTE_FILE:-compression-smoke.ok}"
 EXPECTED_REMOTE_TEXT="${STINT_EXPECTED_REMOTE_TEXT:-twelve chunks read after compression smoke}"
+SMOKE_HOURS=1.5
+MAX_HOURLY_USD=0.40
+MAX_SESSION_COST_USD=0.60
 
 export XDG_STATE_HOME="$RUN_ROOT"
 export XDG_CONFIG_HOME="$CONFIG_ROOT"
@@ -83,6 +86,29 @@ cleanup() {
 trap cleanup EXIT
 
 require
+
+case "$LANE_SMOKE" in
+  0|1) ;;
+  *) say "FAIL STINT_LANE_SMOKE must be 0 or 1"; exit 1 ;;
+esac
+if [ "$LANE_SMOKE" = 1 ] && [ "$NINFER_CLIENTS" != 2 ]; then
+  say "FAIL concurrent lane smoke requires STINT_SMOKE_CLIENTS=2"
+  exit 1
+fi
+
+# Validate the exact rental envelope before copying operator credentials or
+# reaching any provider code. Keep one 4090 candidate and the authorized
+# $0.40/hour, $0.60 total smoke ceiling as hard defaults.
+START_ARGS=(
+  start interactive --hours "$SMOKE_HOURS"
+  --runtime ninfer --ninfer-config native --clients "$NINFER_CLIENTS"
+  --min-measured-download-mbps 30 --min-network-mbps 300
+  --network-candidate-attempts 1 --max-hourly-usd "$MAX_HOURLY_USD"
+  --max-cost-usd "$MAX_SESSION_COST_USD"
+)
+say "validating RTX 4090 smoke options: ${SMOKE_HOURS}h, max \$${MAX_HOURLY_USD}/hour, max \$${MAX_SESSION_COST_USD} total, one candidate, ${NINFER_CLIENTS} clients, lane smoke=$LANE_SMOKE"
+"$STINT_BIN" "${START_ARGS[@]}" --validate-only >>"$LOG" 2>&1
+
 cp "$HOME/.config/stint-dryrun/stint/credentials.json" "$XDG_CONFIG_HOME/stint/credentials.json"
 mkdir -p "$XDG_CONFIG_HOME/stint/ssh"
 cp "$HOME/.config/stint-dryrun/stint/ssh/id_ed25519" "$XDG_CONFIG_HOME/stint/ssh/id_ed25519"
@@ -90,10 +116,7 @@ cp "$HOME/.config/stint-dryrun/stint/ssh/id_ed25519.pub" "$XDG_CONFIG_HOME/stint
 chmod 600 "$XDG_CONFIG_HOME/stint/ssh/id_ed25519"
 
 say "starting isolated 90-minute native-NInfer smoke session"
-setsid "$STINT_BIN" start interactive --hours 1.5 --tunnel-port 8413 \
-  --runtime ninfer --ninfer-config native --clients "$NINFER_CLIENTS" \
-  --min-measured-download-mbps 30 --min-network-mbps 300 \
-  --network-candidate-attempts 5 --max-cost-usd 2 --yes >>"$LOG" 2>&1 < /dev/null &
+setsid "$STINT_BIN" "${START_ARGS[@]}" --yes >>"$LOG" 2>&1 < /dev/null &
 START_PID=$!
 
 ready=0
@@ -181,6 +204,7 @@ stop_dashboard_recorder
 capture_remote_evidence
 python3 - "$ARTIFACT_DIR/deep-observe.json" "$ARTIFACT_DIR/remote-artifact.txt" "$COORDINATOR_LOG" <<'PY'
 import json
+import os
 import sys
 
 observer_path, artifact_path, coordinator_path = sys.argv[1:]
