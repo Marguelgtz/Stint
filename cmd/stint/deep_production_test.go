@@ -446,6 +446,17 @@ func TestDeepProductionDashboardCommandUsesSavedOnBoxStateAndSession(t *testing.
 	}
 }
 
+func TestDeepProductionDashboardCommandPreservesNoColorFromEnvironment(t *testing.T) {
+	noColor := deepDashboardNoColor(false, "1")
+	command := deepProductionDashboardCommand(deepProductionRunBinding{
+		RemoteRoot:    "/var/lib/stint-onbox",
+		DeepSessionID: "deep-20260924-120000",
+	}, "", noColor, false)
+	if !noColor || !strings.Contains(command, "--no-color") {
+		t.Fatalf("NO_COLOR environment was not propagated to remote dashboard: %q", command)
+	}
+}
+
 func TestDeepDashboardPrefersNewestProductionBindingAndRespectsExplicitSession(t *testing.T) {
 	launchedAt := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	binding := deepProductionRunBinding{DeepSessionID: "production-session", LaunchedAt: launchedAt}
