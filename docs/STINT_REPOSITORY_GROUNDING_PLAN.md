@@ -9,7 +9,7 @@ the concise recovery point.
 
 - Repository: `Marguelgtz/Stint`, default branch `main`.
 - Starting main: `9634bf762a2dc9021747eb786db7fd23ccab84e9`.
-- Current main after docs-only #145: `b0295dac85fc4ef620feddcab9118f803c8fe123`; landed-main CI run `35940170909` passed all five required jobs. Product code remains at #143 (`089607965715bd9435cc0e3b671b4f34c594e446`); #144 and #145 changed only grounding docs.
+- Current main after #147: `25cbd2aac05b351408e501409ca7fb705251a21c`; landed-main CI run `35942221471` passed all five required jobs. #146 refreshed grounding docs; #147 hardened the Deep Work GPU smoke launcher and added CI coverage. Stint runtime/product code remains at #143 (`089607965715bd9435cc0e3b671b4f34c594e446`).
 - The user's original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa` and its untracked files/local binary remain untouched. Work used isolated `/tmp` worktrees.
 - Current main preserves Hermes-on-box Deep Work, both dashboards, NInfer lane semantics, paid-session/provider safety, exact-head CI, and Spark path observation. See the ledger for historical source comparisons.
 
@@ -48,6 +48,8 @@ Grounding and runtime slices merged after the starting point:
 | #143 | `089607965715bd9435cc0e3b671b4f34c594e446` | suppress invalid decode rates when streamed updates do not match usage; surface unavailable status | `35938220186` |
 | #144 | `db993e40da21ab0a4bf0895bde7e0969fa293785` | refresh canonical grounding docs after live runtime/perf evidence | `35939026936` |
 | #145 | `b0295dac85fc4ef620feddcab9118f803c8fe123` | refresh upstream runtime/model compatibility review and canonical grounding snapshot | `35940170909` |
+| #146 | `839247dd385d60f86f04a8cedd91a578ba9936a0` | refresh canonical grounding after #145 | `35941172359` |
+| #147 | `25cbd2aac05b351408e501409ca7fb705251a21c` | bound Deep Work GPU smoke to one RTX 4090 candidate, `$0.40/hour`, and `$0.60` total; default two-client lane check and fix launcher acceptance defects | `35942221471` |
 
 Each listed exact landed-main run completed all five required Stint jobs. #124
 Pull-request runs `35882783534`, `35894208985`, `35898993338`, `35900956163`,
@@ -399,14 +401,17 @@ bundle path, and teardown evidence remain.
 - [x] After #133's exact-head, synthetic merge-tree and main push CI passed, comment on and close #93; verify the resulting five-PR open snapshot and record its refs/check evidence.
 - [x] Merge #135 after exact-head and synthetic merge-tree verification; its smoke remains RTX 4090-only at the normal $0.40/hour target.
 - [x] Merge #136 smoke-landing docs and #138 perf-prompt fix. #138 exact-head CI `35923353592` and landed-main CI `35923648426` passed all five required jobs.
-- [x] Refresh this plan, handoff and current open-PR snapshot after #145 merged; the open set remains #85 and protected evidence #110–#113.
+- [x] Merge #146 to refresh grounding after #145; exact-head run `35941065010` and landed-main run `35941172359` passed all five required jobs.
+- [x] Merge #147 to bound the Deep Work smoke and add provider-free preflight regression coverage; exact-head run `35942025494` and landed-main run `35942221471` passed all five required jobs. No GPU was rented.
+- [x] Refresh this plan, handoff, and current open-PR snapshot after #147 merged; the open set remains #85 and protected evidence #110–#113.
 
 ## Final-state rules
 Current `main` at this grounding checkpoint is
-`b0295dac85fc4ef620feddcab9118f803c8fe123` after #145; its landed-main CI run
-`35940170909` passed all five required jobs. The last product-code change is
-#143 at `089607965715bd9435cc0e3b671b4f34c594e446`; #144 and #145 refreshed
-only grounding docs. The live
+`25cbd2aac05b351408e501409ca7fb705251a21c` after #147; its landed-main CI run
+`35942221471` passed all five required jobs. The last Stint runtime/product
+code change is #143 at `089607965715bd9435cc0e3b671b4f34c594e446`; #144–#146
+refreshed grounding docs, while #147 updates the bounded GPU smoke launcher
+and its CI safety fixture. No GPU was rented for #147. The live
 2026-09-24 RTX 4090 run completed all 56 release-bundle ranges,
 verified the pinned SHA, installed NInfer, downloaded and verified the separate
 Qwen model, reached READY with native 262144 context and two configured lanes,

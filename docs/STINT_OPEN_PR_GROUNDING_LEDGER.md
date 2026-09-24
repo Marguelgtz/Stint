@@ -46,6 +46,8 @@
 - PR #143: false decode-rate correction, branch `fix/perf-stream-timing-20260924` at head `c1d571795b49333226a4d2a188f8e3c0692db6d7`, based on `main` at `59130984deb751034921fac262cdacc073e3d75b`, merged as `089607965715bd9435cc0e3b671b4f34c594e446`. Exact-head run `35938070090` and landed-main run `35938220186` passed all five required jobs. It updates `cmd/stint/perf.go`, cached performance/status telemetry, the ordinary dashboard, and regression tests. It only reports decode tok/s when streamed content/reasoning update count matches completion usage and there is a measurable interval; otherwise it preserves TTFT/total and marks decode unavailable. Legacy cached rates without timing evidence are hidden. Local `go test -count=1 ./...`, `go test -race ./...`, `go vet ./...`, build, focused tests, and `git diff --check` passed. It replaces the invalid metric calculation exposed by #142; it does not fix model output or establish live GPU acceptance.
 - PR #144: grounding refresh, branch `docs/refresh-grounding-after-143-20260924` at head `4cce22805fc909e986d188557d9d446e8b9a137f`, based on `main` at `089607965715bd9435cc0e3b671b4f34c594e446`, merged as `db993e40da21ab0a4bf0895bde7e0969fa293785`. Exact-head run `35938902247` and landed-main run `35939026936` passed all five required jobs. It updated the current-main state, PR #142/#143 evidence, remaining GPU gate and point-in-time open-PR refs in the canonical plan/handoff/ledger. Documentation-only; `git diff --check` passed, no local test suite run. The refreshed snapshot confirmed the same five open PRs: #85 and protected evidence #110–#113.
 - PR #145: grounding refresh, branch `docs/refresh-grounding-after-144-20260924` at head `47846331212e50f88d9c6ec680b09dfb21407f09`, based on `main` at `db993e40da21ab0a4bf0895bde7e0969fa293785`, merged as `b0295dac85fc4ef620feddcab9118f803c8fe123`. Exact-head run `35940051705` and landed-main run `35940170909` passed all five required jobs. It refreshed the upstream NInfer/Qwen compatibility audit and canonical grounding state. Documentation-only; `git diff --check` passed, no local test suite run.
+- PR #146: grounding refresh, branch `docs/grounding-after-145-20260924` at head `944d870b1ce396a083320685a48cee641994f586`, merged as `839247dd385d60f86f04a8cedd91a578ba9936a0`. Exact-head run `35941065010` and landed-main run `35941172359` passed all five required jobs. Documentation-only; no local test suite run.
+- PR #147: Deep Work GPU smoke safety, branch `fix/deep-smoke-cost-and-lanes-20260924` at head `a8bd78868934ef986c87575c36455c28303d2717`, based on `main` at `839247dd385d60f86f04a8cedd91a578ba9936a0`, merged as `25cbd2aac05b351408e501409ca7fb705251a21c`. Exact-head run `35942025494` and landed-main run `35942221471` passed all five required jobs, including the new provider-free preflight fixture. Local shell syntax, fixture, and `git diff --check` passed. It defaults to two clients with concurrent xhigh/medium validation, one explicit NInfer/RTX 4090 candidate, `$0.40/hour`, and `$0.60` total; validates before credential copying, rejects incompatible lane settings, and fixes two launcher acceptance defects. No GPU was rented.
 
 ## Historical NInfer packaging and promotion evidence
 
@@ -1067,8 +1069,8 @@ recorded separately at the end of this ledger.
 - **Disposition:** **KEEP OPEN AS CURRENT EVIDENCE — explicit mission constraint.**
 
 ## Latest verified open PR snapshot
-Checked on 2026-09-24 at 00:59 UTC after #145 merged and before the next grounding refresh PR.
-GitHub reported five open PRs with the same refs listed below. Their attached
+Checked on 2026-09-24 at 01:18 UTC after #147 merged. GitHub reported the same
+five open PRs with the exact refs listed below. Their attached
 legacy runs remain green but predate the #132 exact-head workflow, so exact-head
 CI is not established. Keep #85 parked and #110–#113 open, unmerged, untouched.
 
