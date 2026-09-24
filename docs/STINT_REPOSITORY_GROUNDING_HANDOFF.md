@@ -1,20 +1,20 @@
 # Stint repository grounding handoff
 
-**Status:** one authoritative `main` is verified through CI, source/runtime and
-historical PR semantics are grounded, and the immutable runtime bundle remains
-opt-in. One fresh RTX 4090 source-build run reached READY and supplied a live
-startup/perf baseline. A second fresh 4090 run stopped during release-asset
-download at about 48%; release-bundle and Deep Work qualification remain open.
-The follow-up parallel-range downloader passes local fixtures but still needs
-exact-head CI and a live 4090 transfer/acceptance run.
+**Status:** authoritative main is e3e839cd4758a53093f8e660903f9a09f575c408
+after PR #141, and its landed-main CI passed. The live parallel-range run on
+one RTX 4090 completed the immutable bundle transfer, SHA verification,
+installation, model load, READY and teardown. Full release-bundle qualification
+and Deep Work remain open; source-build stays default and release-bundle stays
+opt-in.
 
 ## Authoritative repository and verification
 
-- Product `main` before this downloader change:
-  `cc09c9ad3b340db6ca7afbdcfda7267e47027311` (after #140).
+- Product main after #141 and before this evidence-doc refresh: e3e839cd4758a53093f8e660903f9a09f575c408.
+- PR #139 exact-head run 35924946874 and landed-main run 35925100519 passed all five required jobs; it records the source-build RTX 4090 performance baseline.
 - PR #140 exact-head run `35928576565` and landed-main run `35928870944`
   passed all five required CI jobs. PR #140 records the incomplete RTX 4090
   release-bundle transfer; it did not claim runtime acceptance.
+- PR #141 exact-head run 35931174559 and landed-main run 35931745106 passed all five required jobs; its live 4090 result is recorded below.
 - Exact landed-main push run `35916137793` passed all five required jobs.
 - PR #131 merged as `2b5f7342093c520175b608a1a64bbce0b9443f31`. Its PR run
   `35905726077` appeared green but physically tested synthetic merge tree
@@ -116,6 +116,8 @@ two clients were not tested at full context, no release-bundle deployment was
 used, and this run did not execute Deep Work. Source-build now has a measured
 READY baseline.
 
+### Earlier failed release-bundle transfer (2026-09-23)
+
 A fresh RTX 4090 run then selected the immutable release bundle on the same
 Vast offer, at `$0.4759259/hour`, with a one-hour `$0.48` schedule cap and
 `$0.50` session ceiling. Stint measured `52.3 MB/s` in its network
@@ -139,12 +141,42 @@ route result is not yet measured.
 Keep `release-bundle` opt-in and `source-build` default until a bounded 4090
 run passes the complete gate.
 
-Keep release deployment opt-in until a fresh RTX 4090 run covers the immutable
-bundle, short two-lane requests, full native-context stability, correctness,
-Hermes xhigh/medium routing, independent verification, checkpoint publication,
-handoff/archive, and teardown. First improve and locally verify asset delivery;
-then compare READY time with the source-build baseline. See the
-[grounding plan](STINT_REPOSITORY_GROUNDING_PLAN.md) for the current gate.
+### Verified range transfer and partial live acceptance (2026-09-24)
+
+On 2026-09-24, PR #141's range downloader was exercised on one fresh RTX
+4090 (instance 52313848, offer 48882869, California, $0.5037037/hour, 778 Mbps
+advertised). The run used one candidate, native 262144 context, two configured
+clients, and a $0.57/hour / $0.57 session cap. The release archive is
+939,381,613 bytes; all 56 ranges completed, the pinned SHA-256
+6725e60c8e3edb2982ad828898210868dd98ea1d4fe4d35f97bfa1e625414416 passed, and
+the runtime installed. Runtime acquisition took 2m41s. The Qwen model is a
+separate 18,210,531,328-byte artifact (SHA-256
+eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e); its
+transfer took 26m21s. Rental-to-READY was 31m20s. The engine reported native
+262144 capacity and two configured lanes; the 8K perf sample used 22.4/48 GiB
+VRAM. Stint down confirmed teardown.
+
+An earlier 4090 offer at $0.4524074/hour measured 22.6 MB/s and was destroyed
+because it missed the original 40 MB/s floor. The next run relaxed the floor
+to 20 MB/s and price cap to $0.57, but its start process was interrupted before
+the measurement step. Resuming the INSTANCE_CREATED session bypassed network
+qualification, so the second host has no measured-throughput result. Estimated
+prorated cost from the two archive timestamps is about $0.36 total, not a
+provider invoice.
+
+The runtime bundle passed live acquisition and integrity but full acceptance
+did not. Two simultaneous 32-token chat calls returned empty visible content
+with every completion token marked as reasoning. At 8K, the benchmark processed
+7,413 actual prompt tokens (TTFT 6.05s, total 6.05s, 45 output tokens); its
+706,044.7 tok/s decode figure is invalid because visible text arrived at the
+end of the stream. The 200K-target benchmark returned no visible token after
+three retries. Full 262144 prompt depth and Hermes Deep Work were not tested.
+Overall READY was 31m20s, including model transfer; source-build's earlier
+26m17s result used different network conditions, so this is not an A/B result.
+Keep source-build default and release-bundle opt-in pending visible correctness,
+valid performance, full-context, measured-network and Deep Work acceptance. See
+the grounding plan for the current gate.
+
 
 The generic read-only Vast plan at `2026-09-23 20:12 UTC` selected an excluded
 RTX 3090 at `$0.379/hour`; it did not authorize or trigger a rental. The actual
@@ -160,12 +192,7 @@ branches were not modified to rerun them.
 
 ## Next work
 
-1. Get exact-head CI green for the parallel-range downloader before merging.
-2. Run the immutable release bundle on one fresh RTX 4090 and complete the
-   remaining runtime and Deep Work gates within explicit price and candidate
-   limits; stop early if the measured transfer again leaves no acceptance
-   window.
-3. Compare release-bundle startup with the source-build baseline before choosing
-   a production default. Keep source-build as default until qualification passes.
-4. Refresh the open-PR ledger after acceptance; keep #85 parked and #110–#113
-   open, unmerged, and untouched.
+1. Repair or account for the perf stream parser when a reasoning model emits no visible text or emits content only at completion; do not use the decode figure from this run.
+2. Repeat one bounded RTX 4090 acceptance run only when it can test visible two-lane correctness, valid long-context performance, and Deep Work after the range downloader has proven live integrity.
+3. Keep source-build default and release-bundle opt-in until measured network qualification, full native context, two-lane correctness, performance and Deep Work pass.
+4. Keep #85 parked and #110–#113 open, unmerged, and untouched; refresh the open-PR ledger after the evidence PR lands.
