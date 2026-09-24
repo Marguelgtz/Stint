@@ -9,7 +9,7 @@ the concise recovery point.
 
 - Repository: `Marguelgtz/Stint`, default branch `main`.
 - Starting main: `9634bf762a2dc9021747eb786db7fd23ccab84e9`.
-- Current main after #150: `1e58eb48447dd1dc095bafa7b68f1118932c2b1e`; landed-main CI run `35944655152` passed all five required jobs. #150 adds a hard-bounded one-run GPU budget override; runtime tuple/startup remains at #143 (`089607965715bd9435cc0e3b671b4f34c594e446`).
+- Current main after #151: `3478278fb14e615321c2abccf3b20715a399abe9`; landed-main CI run `35949463973` passed all five required jobs. #150 added the bounded one-run GPU override; #151 repaired the Deep Work smoke launcher. Runtime tuple/startup remains at #143 (`089607965715bd9435cc0e3b671b4f34c594e446`).
 - The user's original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa` and its untracked files/local binary remain untouched. Work used isolated `/tmp` worktrees.
 - Current main preserves Hermes-on-box Deep Work, both dashboards, NInfer lane semantics, paid-session/provider safety, exact-head CI, and Spark path observation. See the ledger for historical source comparisons.
 
@@ -53,6 +53,7 @@ Grounding and runtime slices merged after the starting point:
 | #148 | `a3af6fe910093bbfa5e38975da1eec1be1475a1b` | record #147 landing and refresh exact open-PR snapshot | `35942732849` |
 | #149 | `6bbbadbfb282e0ddc90f0f08e1f5e32da8bbf413` | fail fast on completed perf streams without visible content instead of repeating expensive prompts | `35943380226` |
 | #150 | `1e58eb48447dd1dc095bafa7b68f1118932c2b1e` | allow a hard-bounded one-run GPU smoke override up to `$0.50/hour` / `$0.75` rental estimate while preserving lower defaults | `35944655152` |
+| #151 | `3478278fb14e615321c2abccf3b20715a399abe9` | repair Deep Work compression smoke fixture setup, supported CLI invocation, unattended teardown, and regression guards | `35949463973` |
 
 Each listed exact landed-main run completed all five required Stint jobs. #124
 Pull-request runs `35882783534`, `35894208985`, `35898993338`, `35900956163`,
@@ -235,16 +236,21 @@ tokens at 122.82s TTFT / 122.86s total. Decode was unavailable for both because
 streamed updates did not match completion usage. Neither sample filled the
 native 262144-token context.
 
+The final sanitized observer aggregated two xhigh requests (one non-2xx) and
+34 medium requests (three non-2xx) across setup and both tasks. Per-request
+failure codes were not retained. The dedicated smoke commands passed, but do
+not infer that every routed request succeeded.
+
 Two bounded Deep Work attempts reached NInfer and the medium route. Six
 compression calls completed with zero failures and zero truncated summaries,
 but both tasks ended BLOCKED: `compression-smoke.ok` was missing and the
 coordinator verifier did not pass. Do not treat this as Deep Work acceptance.
 The run exposed launcher defects: missing `STINT_TARGET_REPO`, the removed
-`--worker` flag, and interactive teardown. The follow-up fix creates the
-fixture before provisioning, passes the repo/model environment, removes the
-obsolete flag and uses `down --yes`. The provider-free launcher regression
-fixture passes locally. Source-build remains default; release-bundle stays
-opt-in, and full-context stability / successful Deep Work remain open gates.
+`--worker` flag, and interactive teardown. PR #151 corrected these paths and
+added a provider-free launcher regression guard; exact-head run `35949312353`
+and landed-main run `35949463973` passed all five required jobs. Source-build
+remains default; release-bundle stays opt-in, and full-context stability /
+successful Deep Work remain open gates.
 
 ### Earlier fresh RTX 4090 single-stream release-bundle transfer attempt
 
@@ -440,13 +446,15 @@ bundle path, and teardown evidence remain.
 - [x] Merge #149 to avoid repeating large perf prefills after completed streams with no visible answer; exact-head run `35943238305` and landed-main run `35943380226` passed all five required jobs. No GPU was rented.
 - [x] Merge #150 to hard-bound the one-run GPU smoke exception; exact-head and landed-main CI passed all five jobs, with landed-main run `35944655152`.
 - [x] Retest source-build on one RTX 4090. The two-lane and 8K/200K TTFT probes ran; Deep Work completed six compression operations but failed both artifact verifications. Confirm teardown; no 3090 used.
-- [~] Fix the Deep Work smoke launcher defects found in the run and refresh canonical grounding after the fix lands.
+- [x] Merge #151 to repair the Deep Work smoke launcher; exact-head run `35949312353` and landed-main run `35949463973` passed all five required jobs.
+- [x] Refresh the canonical plan, handoff and current open-PR snapshot after #151; #85 and protected evidence #110–#113 remain open and untouched.
 
 ## Final-state rules
-Current `main` at this checkpoint is `1e58eb48447dd1dc095bafa7b68f1118932c2b1e`
-after #150; landed-main CI run `35944655152` passed all five required jobs.
+Current `main` at this checkpoint is `3478278fb14e615321c2abccf3b20715a399abe9`
+after #151; landed-main CI run `35949463973` passed all five required jobs.
 Runtime tuple/startup changes remain at #143
-(`089607965715bd9435cc0e3b671b4f34c594e446`). The release-bundle run and this
+(`089607965715bd9435cc0e3b671b4f34c594e446`). #151 repaired the smoke setup,
+Deep Work flags and unattended teardown. The release-bundle run and this
 source-build retest are separate: release transfer/SHA verification passed,
 while the source-build retest reached READY in 26m10s, measured 47.2 MB/s,
 processed 7,413 and 178,904 prompt tokens, and passed the concurrent
@@ -455,5 +463,6 @@ xhigh/medium smoke. Decode was unavailable in both perf samples; no full
 reported compression failure or truncation, but both task verifiers failed
 because the required artifact was missing. Instance `52334596` was confirmed
 destroyed after 53m38s; prorated rental is estimated at about `$0.43`, not an
-invoice. The launcher defects are being corrected. Keep release-bundle opt-in
-and never use a 3090.
+invoice. The launcher fixes are on `main`; Deep Work artifact verification
+still needs diagnosis before another paid run. Keep release-bundle opt-in and
+never use a 3090.
