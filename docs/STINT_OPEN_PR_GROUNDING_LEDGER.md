@@ -2,7 +2,7 @@
 
 **Historical inventory:** the complete detailed records below were captured on 2026-09-23 after #118 merged (38 open PRs). Their paths, symbols, and recorded check rollups describe that point-in-time snapshot. Base SHAs are observed PR base refs, not claims that stale branches include current `main`.
 
-**Final open snapshot after #138:** checked on 2026-09-23 at 21:38 UTC after #138 merged. GitHub reported five open PRs: #85 and protected Deep Work evidence #110–#113. Their exact heads, observed base SHAs and legacy check runs are recorded in the final snapshot at the end of this ledger. The protected generated PRs #110–#113 remain untouched.
+**Historical open snapshot after #138:** checked on 2026-09-23 at 21:38 UTC after #138 merged. GitHub reported five open PRs: #85 and protected Deep Work evidence #110–#113. Their exact heads, observed base SHAs and legacy check runs are recorded in the final snapshot at the end of this ledger. The protected generated PRs #110–#113 remain untouched.
 
 **Purpose:** account for each open PR by semantics. Green checks alone do not make a stale/stacked PR safe to merge. Generated GPU-run artifacts remain outside product `main`.
 
@@ -35,6 +35,13 @@
 - Live RTX 4090 result for #138: one instance `52296599` / offer `40583612`, no 3090, `$0.4759259/hour`, one-hour schedule `$0.48`, session cap `$0.50`, one candidate attempt, measured network `46.3 MB/s`. Source runtime acquisition took `23m51s`; model acquisition took `8m26s` overlapping that work; rental-to-READY was `26m17s`. Estimated prorated charge is about `$0.31`, not a reconciled invoice. Two concurrent chat answers were correct (`42`, `56`); 8K perf was 164.8 tok/s at 7,413 actual prompt tokens; 178,904 actual prompt tokens reached 549.0 tok/s with 22.4/24 GB VRAM and no OOM. The run did not test release-bundle, full 262144 prompt depth or Deep Work. Teardown was verified.
 - #117 active-lane semantics: `/metrics` `requests_processing`, with `/slots` processing-lane fallback; retained/resident prompt tokens contribute to resident depth, not active count. NInfer cache ratio is prefix-cache hits / (hits + uncached prompt tokens), and NInfer prefill is marked uncached; llama.cpp cache ratio uses cached/total prompt tokens.
 - #117 event history intentionally carries no caller/client identity; `session_digest` is not a stable Stint identity.
+
+## Landing evidence after the 2026-09-23 snapshot
+
+- PR #139: source-build RTX 4090 result documentation, branch docs/record-4090-runtime-perf-20260923 at head 9b997c53bef224cf6f0fa13101ff0184b14850f7, merged as bc368274ab5746a03eaa8c497b83023ddab3f6fe. Exact-head run 35924946874 and landed-main run 35925100519 passed all five required jobs.
+- PR #140: record the incomplete release-asset transfer, branch docs/4090-release-bundle-transfer-20260923 at head a6aaef2b0be1b650b46f3e1b496007fbf098036c, merged as cc09c9ad3b340db6ca7afbdcfda7267e47027311. Exact-head run 35928576565 and landed-main run 35928870944 passed all five required jobs.
+- PR #141: parallel, resumable range downloader with final pinned SHA verification and curl fallback, branch fix/ninfer-release-range-download-20260923 at head 348e46acc042da588c132ef33afb0135a22bf1c4, merged as e3e839cd4758a53093f8e660903f9a09f575c408. Exact-head run 35931174559 and landed-main run 35931745106 passed all five required jobs. The 2026-09-24 RTX 4090 run transferred all 56 ranges and verified the release asset SHA; see the current handoff and plan for incomplete inference acceptance.
+- The same 2026-09-24 run also revealed the perf stream limitation: short concurrent calls exhausted a 32-token limit on reasoning with no visible text, the 8K sample's decode-rate output was invalid for its stream timing, and the 200K-target request returned no visible token after three attempts. Treat these as acceptance failures, not successful model correctness/performance evidence.
 
 ## Historical NInfer packaging and promotion evidence
 
@@ -1056,12 +1063,10 @@ recorded separately at the end of this ledger.
 - **Disposition:** **KEEP OPEN AS CURRENT EVIDENCE — explicit mission constraint.**
 
 ## Final current open PR snapshot
-
-Checked on 2026-09-23 at `21:38 UTC`, after PR #138 merged. GitHub reported
-exactly five open PRs. Their attached legacy runs have five required checks
-green, but ran before the #132 exact-head workflow; **exact-head CI is not
-established**. Keep #85 parked and leave #110–#113 open, unmerged, and
-untouched.
+Checked on 2026-09-24 after #141 merged and before the results-docs PR.
+GitHub reported five open PRs with the same refs listed below. Their attached
+legacy runs remain green but predate the #132 exact-head workflow, so exact-head
+CI is not established. Keep #85 parked and #110–#113 open, unmerged, untouched.
 
 | PR | State / merge state | Head branch @ exact SHA | Base branch @ observed SHA | Legacy PR check rollup / exact-head CI | Disposition |
 |---:|---|---|---|---|---|
