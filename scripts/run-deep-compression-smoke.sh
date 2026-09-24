@@ -40,7 +40,7 @@ require() { [ -x "$STINT_BIN" ] || { say "FAIL missing executable: $STINT_BIN"; 
 down() {
   if [ -f "$SESSION_JSON" ]; then
     say "tearing down dedicated smoke compute"
-    timeout 5m "$STINT_BIN" down >>"$LOG" 2>&1 || say "WARN teardown command failed; inspect $SESSION_JSON"
+    timeout 5m "$STINT_BIN" down --yes >>"$LOG" 2>&1 || say "WARN teardown command failed; inspect $SESSION_JSON"
   fi
 }
 
@@ -174,8 +174,13 @@ SSH_RSYNC="ssh -i $KEY -p $B_PORT -o BatchMode=yes -o StrictHostKeyChecking=acce
 REMOTE_READY=1
 say "box READY: $B_HOST:$B_PORT"
 
+say "preparing the compression smoke worktree"
+timeout 5m "${SSH[@]}" 'SMOKE_REPO=/root/stint-deep-dashboard-smoke bash -s' \
+  < "$REPO_ROOT/scripts/deep-compression-smoke-box-setup.sh" >>"$LOG" 2>&1
+
 say "provisioning Hermes and phase routes"
-timeout 25m "${SSH[@]}" 'bash -s' < "$REPO_ROOT/scripts/provision-box.sh" >>"$LOG" 2>&1
+timeout 25m "${SSH[@]}" 'STINT_TARGET_REPO=/root/stint-deep-dashboard-smoke STINT_MODEL_ID=qwen3.8-27b PHASING_DIR=/root/stint-phasing bash -s' \
+  < "$REPO_ROOT/scripts/provision-box.sh" >>"$LOG" 2>&1
 rsync -a -e "$SSH_RSYNC" \
   "$REPO_ROOT/scripts/phaseproxy.py" \
   "$REPO_ROOT/scripts/box-phase-setup.sh" \
@@ -192,7 +197,6 @@ if [ "$LANE_SMOKE" = 1 ]; then
   timeout 6m "${SSH[@]}" 'PHASING_DIR=/root/stint-phasing /root/phase-lane-concurrency-smoke.sh' >>"$LOG" 2>&1
 fi
 "${SSH[@]}" 'hermes config set compression.threshold_tokens 20000 && hermes config get compression.threshold_tokens' >>"$LOG" 2>&1
-"${SSH[@]}" '/root/deep-compression-smoke-box-setup.sh' >>"$LOG" 2>&1
 "${SSH[@]}" 'git config --global --add safe.directory /root/stint-deep-dashboard-smoke' >>"$LOG" 2>&1
 
 dashboard_recorder() {
@@ -213,7 +217,7 @@ set +e
 "$STINT_BIN" deep start \
   --mission "$MISSION_PATH" \
   --repo /root/stint-deep-dashboard-smoke \
-  --worker hermes --provider custom:qwen-stint-medium --model qwen3.8-27b \
+  --provider custom:qwen-stint-medium --model qwen3.8-27b \
   --reasoning medium --task-timeout 15m --max-attempts 1 --hours 0.5 \
   "${DEEP_ACTION_ARGS[@]}" \
   >>"$COORDINATOR_LOG" 2>&1

@@ -9,7 +9,7 @@ the concise recovery point.
 
 - Repository: `Marguelgtz/Stint`, default branch `main`.
 - Starting main: `9634bf762a2dc9021747eb786db7fd23ccab84e9`.
-- Current main after #147: `25cbd2aac05b351408e501409ca7fb705251a21c`; landed-main CI run `35942221471` passed all five required jobs. #146 refreshed grounding docs; #147 hardened the Deep Work GPU smoke launcher and added CI coverage. Stint runtime/product code remains at #143 (`089607965715bd9435cc0e3b671b4f34c594e446`).
+- Current main after #150: `1e58eb48447dd1dc095bafa7b68f1118932c2b1e`; landed-main CI run `35944655152` passed all five required jobs. #150 adds a hard-bounded one-run GPU budget override; runtime tuple/startup remains at #143 (`089607965715bd9435cc0e3b671b4f34c594e446`).
 - The user's original dirty checkout at `792bb508dfcd7d64e293359dfbed7b497b10dafa` and its untracked files/local binary remain untouched. Work used isolated `/tmp` worktrees.
 - Current main preserves Hermes-on-box Deep Work, both dashboards, NInfer lane semantics, paid-session/provider safety, exact-head CI, and Spark path observation. See the ledger for historical source comparisons.
 
@@ -50,6 +50,9 @@ Grounding and runtime slices merged after the starting point:
 | #145 | `b0295dac85fc4ef620feddcab9118f803c8fe123` | refresh upstream runtime/model compatibility review and canonical grounding snapshot | `35940170909` |
 | #146 | `839247dd385d60f86f04a8cedd91a578ba9936a0` | refresh canonical grounding after #145 | `35941172359` |
 | #147 | `25cbd2aac05b351408e501409ca7fb705251a21c` | bound Deep Work GPU smoke to one RTX 4090 candidate, `$0.40/hour`, and `$0.60` total; default two-client lane check and fix launcher acceptance defects | `35942221471` |
+| #148 | `a3af6fe910093bbfa5e38975da1eec1be1475a1b` | record #147 landing and refresh exact open-PR snapshot | `35942732849` |
+| #149 | `6bbbadbfb282e0ddc90f0f08e1f5e32da8bbf413` | fail fast on completed perf streams without visible content instead of repeating expensive prompts | `35943380226` |
+| #150 | `1e58eb48447dd1dc095bafa7b68f1118932c2b1e` | allow a hard-bounded one-run GPU smoke override up to `$0.50/hour` / `$0.75` rental estimate while preserving lower defaults | `35944655152` |
 
 Each listed exact landed-main run completed all five required Stint jobs. #124
 Pull-request runs `35882783534`, `35894208985`, `35898993338`, `35900956163`,
@@ -212,6 +215,36 @@ completion instruction and regression test; the fixed binary passed both
 live perf samples. The run did not exercise release-bundle deployment or a
 Deep Work workflow. It establishes a source-build READY-time baseline, not a
 release-bundle A/B result.
+
+### 2026-09-24 RTX 4090 source-build retest
+
+One explicit NInfer-only RTX 4090 (instance `52334596`, `$0.4759259/hour`) ran
+under #150's one-run ceiling (`$0.50/hour`, `$0.75` rental estimate, one
+candidate, 90-minute schedule). The source build completed 332/332 targets and
+passed binary help/library checks. The separate Qwen model artifact was
+acquired and checksum-verified. READY arrived 26m10s after rental with native
+context `262144` and two configured clients. Measured network qualification
+was 47.2 MB/s. Teardown was confirmed at 02:48:11 UTC; the 53m38s rental is
+estimated at `$0.43` (not a reconciled invoice; transfer fees are separate).
+
+The regular phased smoke passed xhigh, medium, ordinary-command and
+dangerous-command probes; the concurrent lane smoke reported
+`LANE_SMOKE_PASS concurrent=xhigh+medium lanes=2`. One-run perf samples
+processed 7,413 actual prompt tokens at 4.89s TTFT / 5.12s total and 178,904
+tokens at 122.82s TTFT / 122.86s total. Decode was unavailable for both because
+streamed updates did not match completion usage. Neither sample filled the
+native 262144-token context.
+
+Two bounded Deep Work attempts reached NInfer and the medium route. Six
+compression calls completed with zero failures and zero truncated summaries,
+but both tasks ended BLOCKED: `compression-smoke.ok` was missing and the
+coordinator verifier did not pass. Do not treat this as Deep Work acceptance.
+The run exposed launcher defects: missing `STINT_TARGET_REPO`, the removed
+`--worker` flag, and interactive teardown. The follow-up fix creates the
+fixture before provisioning, passes the repo/model environment, removes the
+obsolete flag and uses `down --yes`. The provider-free launcher regression
+fixture passes locally. Source-build remains default; release-bundle stays
+opt-in, and full-context stability / successful Deep Work remain open gates.
 
 ### Earlier fresh RTX 4090 single-stream release-bundle transfer attempt
 
@@ -392,7 +425,7 @@ bundle path, and teardown evidence remain.
 - [x] Merge #142 to record live release-bundle transfer and its incomplete inference acceptance; exact-head run `35936860289` and landed-main run `35937034112` passed all five required jobs.
 - [x] Merge #143 to prevent buffered/reasoning-only SSE output from producing false decode rates; exact-head run `35938070090` and landed-main run `35938220186` passed all five required jobs.
 - [x] Merge #144 to refresh the plan, handoff and open-PR ledger after #143; exact-head run `35938902247` and landed-main run `35939026936` passed all five required jobs.
-- [~] Complete the remaining release-bundle acceptance gates: measured network qualification on the accepted host, visible two-lane correctness, valid 8K and long-context performance, full native-context stability, and Hermes Deep Work. Keep source-build as default and release-bundle opt-in until these pass.
+- [~] Complete release-bundle acceptance and source-build Deep Work acceptance. The 2026-09-24 source-build retest measured network and passed the low-load phase-lane smoke; its decode rates were unavailable, it did not fill the native context, and both Deep Work tasks failed artifact verification. Keep source-build as default and release-bundle opt-in until the remaining gates pass.
 - [x] Merge #125 with the canonical docs and verbatim #73 history; then close only #48–#51 and #73 after their replacement/history records landed.
 - [x] Merge #131 and record its landing SHA / main CI; inspect its pull-request run and identify the synthetic-merge checkout gap.
 - [x] Repair CI in #132: required jobs check exact PR head SHA, then `unit-tests` runs again on GitHub's synthetic merge tree; exact-head, merge-tree, and landed-main checks passed.
@@ -403,27 +436,24 @@ bundle path, and teardown evidence remain.
 - [x] Merge #136 smoke-landing docs and #138 perf-prompt fix. #138 exact-head CI `35923353592` and landed-main CI `35923648426` passed all five required jobs.
 - [x] Merge #146 to refresh grounding after #145; exact-head run `35941065010` and landed-main run `35941172359` passed all five required jobs.
 - [x] Merge #147 to bound the Deep Work smoke and add provider-free preflight regression coverage; exact-head run `35942025494` and landed-main run `35942221471` passed all five required jobs. No GPU was rented.
-- [x] Refresh this plan, handoff, and current open-PR snapshot after #147 merged; the open set remains #85 and protected evidence #110–#113.
+- [x] Merge #148 to record #146/#147 and refresh the open-PR snapshot; exact-head run `35942607882` and landed-main run `35942732849` passed all five required jobs.
+- [x] Merge #149 to avoid repeating large perf prefills after completed streams with no visible answer; exact-head run `35943238305` and landed-main run `35943380226` passed all five required jobs. No GPU was rented.
+- [x] Merge #150 to hard-bound the one-run GPU smoke exception; exact-head and landed-main CI passed all five jobs, with landed-main run `35944655152`.
+- [x] Retest source-build on one RTX 4090. The two-lane and 8K/200K TTFT probes ran; Deep Work completed six compression operations but failed both artifact verifications. Confirm teardown; no 3090 used.
+- [~] Fix the Deep Work smoke launcher defects found in the run and refresh canonical grounding after the fix lands.
 
 ## Final-state rules
-Current `main` at this grounding checkpoint is
-`25cbd2aac05b351408e501409ca7fb705251a21c` after #147; its landed-main CI run
-`35942221471` passed all five required jobs. The last Stint runtime/product
-code change is #143 at `089607965715bd9435cc0e3b671b4f34c594e446`; #144–#146
-refreshed grounding docs, while #147 updates the bounded GPU smoke launcher
-and its CI safety fixture. No GPU was rented for #147. The live
-2026-09-24 RTX 4090 run completed all 56 release-bundle ranges,
-verified the pinned SHA, installed NInfer, downloaded and verified the separate
-Qwen model, reached READY with native 262144 context and two configured lanes,
-and confirmed teardown. Rental-to-READY was 31m20s, including 26m21s for model
-acquisition and 2m41s for runtime acquisition. Estimated combined prorated
-cost across the rejected and READY instances was about $0.36, not an invoice.
-The measured network floor was not rerun after the interrupted start was
-resumed. User-visible two-lane correctness, a valid long-context perf sample,
-full 262144 prompt depth, and Deep Work remain unverified. Source-build stays
-the default; release-bundle remains opt-in pending the remaining acceptance
-gates. PR #143 removes the invalid decode-rate output but was verified locally
-and in CI, not on another GPU. Estimated spend for the two 2026-09-24 offers is
-about $0.36 against the bounded $0.60 test ceiling; a repeat full acceptance run
-does not fit the remaining estimate because model acquisition alone took
-26m21s. Never use a 3090.
+Current `main` at this checkpoint is `1e58eb48447dd1dc095bafa7b68f1118932c2b1e`
+after #150; landed-main CI run `35944655152` passed all five required jobs.
+Runtime tuple/startup changes remain at #143
+(`089607965715bd9435cc0e3b671b4f34c594e446`). The release-bundle run and this
+source-build retest are separate: release transfer/SHA verification passed,
+while the source-build retest reached READY in 26m10s, measured 47.2 MB/s,
+processed 7,413 and 178,904 prompt tokens, and passed the concurrent
+xhigh/medium smoke. Decode was unavailable in both perf samples; no full
+262144-token prompt was run. Deep Work compression completed six times without
+reported compression failure or truncation, but both task verifiers failed
+because the required artifact was missing. Instance `52334596` was confirmed
+destroyed after 53m38s; prorated rental is estimated at about `$0.43`, not an
+invoice. The launcher defects are being corrected. Keep release-bundle opt-in
+and never use a 3090.
