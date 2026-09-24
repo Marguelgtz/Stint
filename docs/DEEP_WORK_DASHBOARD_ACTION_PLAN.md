@@ -255,7 +255,10 @@ truncation, missing medium route, a dead phase proxy, and an unavailable observe
    `scripts/run-deep-compression-smoke.sh` owns the isolated 90-minute lease,
    transcript, evidence capture, and teardown for this gate. Its default uses
    two clients and runs the concurrent xhigh/medium lane check; the rental is
-   capped at one RTX 4090 candidate, `$0.40/hour`, and `$0.60` total.
+   capped at one RTX 4090 candidate, `$0.40/hour`, and `$0.60` total. Explicit
+   `STINT_SMOKE_MAX_HOURLY_USD` and `STINT_SMOKE_MAX_SESSION_COST_USD` overrides
+   are hard-limited to `$0.50/hour` and a `$0.75` rental estimate for one run;
+   provider data-transfer fees may be additional.
 3. Keep `stint deep dash` open from the operator machine throughout the smoke.
 4. Record a screenshot/transcript showing the active task, completed compaction,
 medium-route observation, verifier pass, and checkpoint.
