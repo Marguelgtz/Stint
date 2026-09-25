@@ -2,6 +2,7 @@
 # Prove that a two-client NInfer box can carry xhigh and medium requests at
 # the same time. Output is intentionally reduced to exit codes and counters.
 set -u
+export PATH="$PATH:/usr/local/bin:$HOME/.local/bin"
 
 MODEL="${HERMES_MODEL:-qwen3.8-27b}"
 PHASING_DIR="${PHASING_DIR:-/root/stint-phasing}"
