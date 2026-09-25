@@ -69,6 +69,7 @@ jobs:
           python3 scripts/test_onbox_ninfer_observe.py
           python3 scripts/test_deep_agent_log_tail.py
           bash scripts/test_box_phase_setup.sh
+          bash scripts/test_phase_lane_concurrency_smoke.sh
           python3 scripts/test_onbox_r2_archive.py
       - name: Test fresh-box smoke CLI preflight without provider mutation
         run: bash scripts/test_onbox_smoke_preflight.sh
@@ -94,6 +95,7 @@ jobs:
           python3 scripts/test_onbox_ninfer_observe.py
           python3 scripts/test_deep_agent_log_tail.py
           bash scripts/test_box_phase_setup.sh
+          bash scripts/test_phase_lane_concurrency_smoke.sh
           python3 scripts/test_onbox_r2_archive.py
           bash scripts/test_onbox_smoke_preflight.sh
           bash scripts/test_deep_compression_smoke_preflight.sh
