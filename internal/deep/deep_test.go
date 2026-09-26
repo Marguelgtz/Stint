@@ -480,6 +480,52 @@ func TestExecSettingsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestVerificationSubjectPersistsAndLegacyTaskRemainsReadable(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC)
+	mission, err := ParseMission(sampleMission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := NewState(NewSessionID(now), mission, "/repo", "/worktree", now.Add(time.Hour), now.Add(50*time.Minute), 3, now)
+	state.Tasks[0].VerificationSubject = &VerificationSubject{HeadCommit: "head123", TreeSHA: "tree123"}
+	state.Tasks[0].VerificationBookkeeping = map[string]string{"deep-work/action-plan.md": "git-blob:plan123"}
+	state.Tasks[0].CheckpointCommit = "checkpoint123"
+	state.Tasks[0].CheckpointTreeSHA = "tree123"
+	if err := state.SaveDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadState(dir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := loaded.Tasks[0]
+	if task.VerificationSubject == nil || *task.VerificationSubject != *state.Tasks[0].VerificationSubject {
+		t.Fatalf("subject after state round trip = %+v", task.VerificationSubject)
+	}
+	if task.VerificationBookkeeping["deep-work/action-plan.md"] != "git-blob:plan123" || task.CheckpointTreeSHA != "tree123" {
+		t.Fatalf("separate bookkeeping/checkpoint identity after round trip = %+v", task)
+	}
+
+	legacyMission, err := ParseMission(sampleMission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := NewState(NewSessionID(now.Add(time.Minute)), legacyMission, "/repo", "/worktree", now.Add(2*time.Hour), now.Add(110*time.Minute), 3, now)
+	legacy.Tasks[0].Status = StatusVerified
+	legacy.Tasks[0].CheckpointCommit = "old-checkpoint"
+	if err := legacy.SaveDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	old, err := LoadState(dir, legacy.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Tasks[0].VerificationSubject != nil || len(old.Tasks[0].VerificationBookkeeping) != 0 || old.Tasks[0].CheckpointTreeSHA != "" {
+		t.Fatalf("legacy task acquired synthetic execution identity: %+v", old.Tasks[0])
+	}
+}
+
 func TestCoordinatorPidLiveness(t *testing.T) {
 	dir := t.TempDir()
 	if alive, pid := CoordinatorAlive(dir, "s1"); alive || pid != 0 {

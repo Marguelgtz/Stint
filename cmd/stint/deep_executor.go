@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"time"
 )
+
+var errExecutorQuiescenceUnconfirmed = errors.New("executor process-group quiescence is unconfirmed")
 
 // execInput is one bounded coding-agent invocation.
 type execInput struct {

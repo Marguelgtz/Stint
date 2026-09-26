@@ -19,7 +19,7 @@ const (
 	IncidentExecutorInvoke = "executor-invoke"   // one bounded coding-agent invocation started
 	IncidentExecutorError  = "executor-error"    // the invocation errored (not: it produced unverified work)
 	IncidentVerifyRun      = "verify-run"        // verifier detail includes command and typed outcome (passed/failed/timed_out/error)
-	IncidentCheckpointFail = "checkpoint-failed" // the verified-task checkpoint commit failed
+	IncidentCheckpointFail = "checkpoint-failed" // exact-state verification/checkpoint binding failed
 	IncidentExternalStop   = "external-stop"     // another process changed the durable phase mid-run
 	IncidentStateSave      = "state-save-failed"
 	IncidentLanded         = "landed"  // or stopped: the detail carries the reason

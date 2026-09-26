@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -118,6 +119,104 @@ func (c *deepCoordinator) stillExecuting() (bool, error) {
 	return fresh.Phase == deep.PhaseExecuting, nil
 }
 
+// afterInvocationState refreshes a concurrently landed session. When the
+// operator requested a stop during this task, the landing path leaves a
+// durable quiescence flag; this invocation's owner may clear it only after
+// the executor returned with its process group known to be quiescent.
+func (c *deepCoordinator) afterInvocationState(taskID string) (bool, error) {
+	fresh, err := deep.LoadState(c.stateDir, c.state.SessionID)
+	if err != nil {
+		return false, err
+	}
+	if fresh.Phase == deep.PhaseExecuting {
+		return true, nil
+	}
+	*c.state = fresh
+	changed := false
+	for i := range c.state.Tasks {
+		if c.state.Tasks[i].ID == taskID && c.state.Tasks[i].Status == deep.StatusActive {
+			c.state.Tasks[i].Status = deep.StatusIncomplete
+			c.state.Tasks[i].Blocker = "stopped mid-task (" + c.state.LandingReason + ")"
+			changed = true
+		}
+	}
+	if fresh.ExecutionQuiescenceUnconfirmed && fresh.ExecutionQuiescenceTaskID == taskID {
+		c.state.ExecutionQuiescenceUnconfirmed = false
+		c.state.ExecutionQuiescenceTaskID = ""
+		changed = true
+	}
+	if changed {
+		if err := c.save(); err != nil {
+			return false, fmt.Errorf("persist executor quiescence after external landing: %w", err)
+		}
+	}
+	return false, nil
+}
+
+func (c *deepCoordinator) persistUnquiescedExecutor(taskID string, result execResult, execErr error) error {
+	fresh, err := deep.LoadState(c.stateDir, c.state.SessionID)
+	if err != nil {
+		return fmt.Errorf("read durable state after unconfirmed executor quiescence: %w", err)
+	}
+	*c.state = fresh
+	for i := range c.state.Tasks {
+		if c.state.Tasks[i].ID != taskID {
+			continue
+		}
+		task := &c.state.Tasks[i]
+		task.Status = deep.StatusNeedsHuman
+		task.Blocker = "executor process quiescence is unconfirmed; verification and further work are stopped"
+		task.ExecutionError = execErr.Error()
+		task.LastResult = result.summary() + " | executor error: " + execErr.Error()
+		task.VerificationCommand = ""
+		task.VerificationResult = verificationResult{Outcome: verificationExecutionErr, Error: "not run because executor writers may still be active"}.Summary()
+		task.VerificationOutput = ""
+		task.VerificationSubject = nil
+		task.VerificationBookkeeping = nil
+		task.CheckpointCommit = ""
+		task.CheckpointTreeSHA = ""
+		task.VerifiedAt = nil
+		c.state.ExecutionQuiescenceUnconfirmed = true
+		c.state.ExecutionQuiescenceTaskID = taskID
+		if err := c.save(); err != nil {
+			return fmt.Errorf("persist unconfirmed executor quiescence for task %s: %w", taskID, err)
+		}
+		return fmt.Errorf("task %s cannot be verified because %w", taskID, execErr)
+	}
+	return fmt.Errorf("task %s disappeared from durable state after execution", taskID)
+}
+
+func (c *deepCoordinator) persistUnquiescedVerifier(taskID, command string, result verificationResult) error {
+	fresh, err := deep.LoadState(c.stateDir, c.state.SessionID)
+	if err != nil {
+		return fmt.Errorf("read durable state after unconfirmed verifier quiescence: %w", err)
+	}
+	*c.state = fresh
+	for i := range c.state.Tasks {
+		if c.state.Tasks[i].ID != taskID {
+			continue
+		}
+		task := &c.state.Tasks[i]
+		task.Status = deep.StatusNeedsHuman
+		task.Blocker = "verifier process quiescence is unconfirmed; checkpointing and further work are stopped"
+		task.VerificationCommand = command
+		task.VerificationResult = result.Summary()
+		task.VerificationOutput = strings.TrimSpace(tailLine(result.Output, 3))
+		task.VerificationSubject = nil
+		task.VerificationBookkeeping = nil
+		task.CheckpointCommit = ""
+		task.CheckpointTreeSHA = ""
+		task.VerifiedAt = nil
+		c.state.ExecutionQuiescenceUnconfirmed = true
+		c.state.ExecutionQuiescenceTaskID = taskID
+		if err := c.save(); err != nil {
+			return fmt.Errorf("persist unconfirmed verifier quiescence for task %s: %w", taskID, err)
+		}
+		return fmt.Errorf("task %s cannot be checkpointed because verifier process quiescence is unconfirmed", taskID)
+	}
+	return fmt.Errorf("task %s disappeared from durable state after verification", taskID)
+}
+
 // repoSummary is the durable git truth folded into reconstructed task
 // context so a fresh invocation can continue without conversational memory.
 func (c *deepCoordinator) repoSummary() deep.RepoSummary {
@@ -168,6 +267,13 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	t.ConfiguredTimeoutSec = int(c.taskTimeout.Seconds())
 	t.EffectiveTimeoutSec = int(effectiveTimeout.Seconds())
 	t.TimeoutDecision = timeoutDecision
+	// Evidence from an earlier attempt must never be reused by a new
+	// verification/checkpoint cycle.
+	t.VerificationSubject = nil
+	t.VerificationBookkeeping = nil
+	t.CheckpointCommit = ""
+	t.CheckpointTreeSHA = ""
+	t.VerifiedAt = nil
 	if err := c.save(); err != nil {
 		return fmt.Errorf("persist active task %s before invoking Hermes: %w", t.ID, err)
 	}
@@ -183,6 +289,38 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		c.incident(deep.IncidentExecutorError, t.ID, execErr.Error())
 	}
 	c.logf("task %s attempt %d result: %s", t.ID, t.Attempts, res.summary())
+	if errors.Is(execErr, errExecutorQuiescenceUnconfirmed) {
+		return c.persistUnquiescedExecutor(t.ID, res, execErr)
+	}
+	continuing, err := c.afterInvocationState(t.ID)
+	if err != nil {
+		return fmt.Errorf("refresh durable state after task %s executor: %w", t.ID, err)
+	}
+	if !continuing {
+		c.logf("task %s: executor quiesced after an external landing request; verification is deferred to resumed landing", t.ID)
+		return nil
+	}
+
+	// Capture the exact Git-visible worktree state after the executor returns
+	// and immediately before verification. Stint bookkeeping that is not
+	// already tracked or staged is fingerprinted separately from the product
+	// tree by the Git backend.
+	subject, subjectErr := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+	if subjectErr != nil {
+		c.logf("task %s: capture verification subject: %v", t.ID, subjectErr)
+		c.incident(deep.IncidentCheckpointFail, t.ID, "could not capture verification subject: "+subjectErr.Error())
+	} else {
+		t.VerificationSubject = &subject.Subject
+		t.VerificationBookkeeping = subject.Bookkeeping
+	}
+	continuing, err = c.afterInvocationState(t.ID)
+	if err != nil {
+		return fmt.Errorf("refresh durable state before task %s verification: %w", t.ID, err)
+	}
+	if !continuing {
+		c.logf("task %s: external landing began before verification; verification is deferred", t.ID)
+		return nil
+	}
 
 	verifyResult, verifyCmd := c.accept(ctx, t)
 	if verifyCmd != "" {
@@ -197,42 +335,59 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	t.VerificationCommand = verifyCmd
 	t.VerificationOutput = strings.TrimSpace(tailLine(verifyResult.Output, 3))
 	t.VerificationResult = verifyResult.Summary()
+	if verifyResult.QuiescenceUnconfirmed {
+		return c.persistUnquiescedVerifier(t.ID, verifyCmd, verifyResult)
+	}
 
 	executionSucceeded := execErr == nil && res.completed && res.exitCode == 0
 
 	switch {
 	case executionSucceeded && verifyResult.Passed():
-		if msg, err := c.git.commitAll(c.state.WorktreePath, fmt.Sprintf("deep: %s %s verified", c.state.SessionID, t.ID)); err != nil {
-			c.logf("checkpoint commit for %s: %v (%s)", t.ID, err, msg)
-			c.incident(deep.IncidentCheckpointFail, t.ID, "checkpoint commit failed: "+err.Error())
+		if subjectErr != nil {
 			t.Status = deep.StatusNeedsHuman
-			t.Blocker = "independent verification passed, but checkpoint commit failed: " + err.Error()
+			t.Blocker = "verification passed, but the exact repository subject could not be captured: " + subjectErr.Error()
+			if saveErr := c.save(); saveErr != nil {
+				return fmt.Errorf("persist missing verification subject for task %s: %w", t.ID, saveErr)
+			}
+			return fmt.Errorf("verification subject unavailable for task %s: %w", t.ID, subjectErr)
+		}
+		currentSubject, err := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+		if err == nil && !sameVerificationSnapshot(subject, currentSubject) {
+			err = fmt.Errorf("repository changed after verification; verified subject %s/%s no longer matches %s/%s", subject.Subject.HeadCommit, subject.Subject.TreeSHA, currentSubject.Subject.HeadCommit, currentSubject.Subject.TreeSHA)
+		}
+		if err != nil {
+			t.Status = deep.StatusNeedsHuman
+			t.Blocker = "verification evidence was invalidated before checkpoint creation: " + err.Error()
+			c.incident(deep.IncidentCheckpointFail, t.ID, t.Blocker)
+			if saveErr := c.save(); saveErr != nil {
+				return fmt.Errorf("persist invalidated verification for task %s: %w", t.ID, saveErr)
+			}
+			return fmt.Errorf("verification subject changed for task %s: %w", t.ID, err)
+		}
+		head, tree, err := c.git.checkpointSubject(c.state.WorktreePath, taskCheckpointMessage(*t), subject)
+		if err != nil {
+			c.logf("checkpoint for %s failed: %v", t.ID, err)
+			c.incident(deep.IncidentCheckpointFail, t.ID, "verified subject could not be checkpointed exactly: "+err.Error())
+			t.Status = deep.StatusNeedsHuman
+			t.Blocker = "verification passed, but an exact-state checkpoint could not be created: " + err.Error()
 			if saveErr := c.save(); saveErr != nil {
 				return fmt.Errorf("persist checkpoint failure for task %s: %w", t.ID, saveErr)
 			}
-			return fmt.Errorf("checkpoint commit failed for task %s: %w", t.ID, err)
-		} else if head, err := c.git.headCommit(c.state.WorktreePath); err != nil {
-			c.logf("checkpoint HEAD for %s: %v", t.ID, err)
-			c.incident(deep.IncidentCheckpointFail, t.ID, "read checkpoint HEAD failed: "+err.Error())
-			t.Status = deep.StatusNeedsHuman
-			t.Blocker = "independent verification passed, but checkpoint identity could not be read: " + err.Error()
-			if saveErr := c.save(); saveErr != nil {
-				return fmt.Errorf("persist missing-checkpoint state for task %s: %w", t.ID, saveErr)
-			}
-			return fmt.Errorf("checkpoint HEAD unavailable for task %s: %w", t.ID, err)
+			return fmt.Errorf("exact-state checkpoint failed for task %s: %w", t.ID, err)
 		} else {
-			head = strings.TrimSpace(head)
-			if head == "" {
-				err := fmt.Errorf("git returned an empty checkpoint HEAD")
+			head, tree = strings.TrimSpace(head), strings.TrimSpace(tree)
+			if head == "" || tree == "" || tree != subject.Subject.TreeSHA {
+				err := fmt.Errorf("checkpoint identity does not match verified tree")
 				t.Status = deep.StatusNeedsHuman
-				t.Blocker = "independent verification passed, but checkpoint identity is empty"
+				t.Blocker = "verification passed, but checkpoint identity does not match its subject"
 				c.incident(deep.IncidentCheckpointFail, t.ID, err.Error())
 				if saveErr := c.save(); saveErr != nil {
-					return fmt.Errorf("persist empty-checkpoint state for task %s: %w", t.ID, saveErr)
+					return fmt.Errorf("persist invalid-checkpoint state for task %s: %w", t.ID, saveErr)
 				}
 				return fmt.Errorf("checkpoint identity unavailable for task %s", t.ID)
 			}
 			t.CheckpointCommit = head
+			t.CheckpointTreeSHA = tree
 			ts := c.now()
 			t.Status = deep.StatusVerified
 			t.VerifiedAt = &ts
@@ -257,7 +412,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	// The invocation and verify span the longest gap of the session: an
 	// external stop or landing must win, or this process's save would
 	// resurrect a stopped session from stale in-memory state.
-	executing, err = c.stillExecuting()
+	executing, err = c.afterInvocationState(t.ID)
 	if err != nil {
 		return fmt.Errorf("read durable Deep Work state after task %s: %w", t.ID, err)
 	}
@@ -411,6 +566,10 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 		fresh, err := deep.LoadState(c.stateDir, c.state.SessionID)
 		if err != nil {
 			return fmt.Errorf("read durable Deep Work state: %w", err)
+		}
+		if fresh.ExecutionQuiescenceUnconfirmed {
+			*c.state = fresh
+			return fmt.Errorf("Deep Work is blocked because executor writers may still be active (task %s)", fresh.ExecutionQuiescenceTaskID)
 		}
 		if fresh.Phase != deep.PhaseExecuting {
 			if fresh.Phase == deep.PhaseLanding {

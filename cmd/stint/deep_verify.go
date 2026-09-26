@@ -31,6 +31,9 @@ type verificationResult struct {
 	CompletedAt time.Time
 	Output      string
 	Error       string
+	// QuiescenceUnconfirmed is set when a remote transport/protocol failure
+	// prevents Stint from knowing whether verifier descendants can still write.
+	QuiescenceUnconfirmed bool
 }
 
 func (r verificationResult) Passed() bool { return r.Outcome == verificationPassed }

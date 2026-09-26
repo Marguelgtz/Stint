@@ -210,10 +210,10 @@ func TestDeepLoopContinuation(t *testing.T) {
 	}
 }
 
-// A worker may commit its own verified changes before returning. The coordinator
-// must add a distinct acceptance marker and record that exact SHA so every task
-// can become one unambiguous layer in the on-box PR stack.
-func TestVerifiedTaskRecordsCoordinatorCheckpointAfterWorkerCommit(t *testing.T) {
+// A worker may commit its own verified changes before returning. When that
+// commit already represents the exact verified tree, the task checkpoint
+// reuses it instead of creating an empty coordinator marker.
+func TestVerifiedTaskReusesWorkerCommitWhenTreeMatches(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
 	env.state.Tasks = env.state.Tasks[:1]
 	var workerHead string
@@ -238,8 +238,8 @@ func TestVerifiedTaskRecordsCoordinatorCheckpointAfterWorkerCommit(t *testing.T)
 		t.Fatalf("run: %v", err)
 	}
 	checkpoint := env.state.Tasks[0].CheckpointCommit
-	if checkpoint == "" || checkpoint == workerHead {
-		t.Fatalf("checkpointCommit = %q, want a coordinator commit after worker HEAD %q", checkpoint, workerHead)
+	if checkpoint == "" || checkpoint != workerHead {
+		t.Fatalf("checkpointCommit = %q, want existing worker HEAD %q", checkpoint, workerHead)
 	}
 	persisted, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
 	if err != nil {
@@ -248,22 +248,315 @@ func TestVerifiedTaskRecordsCoordinatorCheckpointAfterWorkerCommit(t *testing.T)
 	if got := persisted.Tasks[0].CheckpointCommit; got != checkpoint {
 		t.Fatalf("persisted checkpointCommit = %q, want %q", got, checkpoint)
 	}
-	cmd := exec.Command("git", "show", "-s", "--format=%P%x00%s", checkpoint)
+	if persisted.Tasks[0].VerificationSubject == nil {
+		t.Fatal("persisted task has no verification subject")
+	}
+	if persisted.Tasks[0].CheckpointTreeSHA == "" || persisted.Tasks[0].CheckpointTreeSHA != persisted.Tasks[0].VerificationSubject.TreeSHA {
+		t.Fatalf("checkpoint tree %q does not match verification subject %+v", persisted.Tasks[0].CheckpointTreeSHA, persisted.Tasks[0].VerificationSubject)
+	}
+	cmd := exec.Command("git", "rev-parse", checkpoint+"^{tree}")
 	cmd.Dir = env.wt
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("inspect checkpoint commit: %v (%s)", err, out)
+		t.Fatalf("inspect checkpoint tree: %v (%s)", err, out)
 	}
-	parts := strings.SplitN(strings.TrimSpace(string(out)), "\x00", 2)
-	if len(parts) != 2 || parts[0] != workerHead || parts[1] != "deep: "+env.state.SessionID+" T-001 verified" {
-		t.Fatalf("checkpoint marker = %q, want parent %s and coordinator subject", strings.TrimSpace(string(out)), workerHead)
+	if got := strings.TrimSpace(string(out)); got != persisted.Tasks[0].VerificationSubject.TreeSHA {
+		t.Fatalf("checkpoint tree = %q, want verified tree %q", got, persisted.Tasks[0].VerificationSubject.TreeSHA)
 	}
 	finalHead, err := env.coord.git.headCommit(env.wt)
 	if err != nil {
 		t.Fatalf("final HEAD: %v", err)
 	}
-	if finalHead == checkpoint {
-		t.Fatal("landing handoff should be a later commit than the task checkpoint")
+	if finalHead != checkpoint {
+		t.Fatalf("landing added a marker-only commit %s after task checkpoint %s", finalHead, checkpoint)
+	}
+}
+
+func TestNoOpCheckpointReusesHeadWithoutEmptyCommit(t *testing.T) {
+	repo := newTestRepo(t)
+	git := newGitRunner()
+	before, err := git.repoHead(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject, err := git.verificationSubject(repo, nil)
+	if err != nil {
+		t.Fatalf("capture no-op subject: %v", err)
+	}
+	countBefore, err := exec.Command("git", "-C", repo, "rev-list", "--count", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, tree, err := git.checkpointSubject(repo, "deep(T-001): no-op checkpoint", subject)
+	if err != nil {
+		t.Fatalf("checkpoint no-op subject: %v", err)
+	}
+	if checkpoint != before || tree != subject.Subject.TreeSHA {
+		t.Fatalf("no-op checkpoint = %q/%q, want existing HEAD/tree %q/%q", checkpoint, tree, before, subject.Subject.TreeSHA)
+	}
+	countAfter, err := exec.Command("git", "-C", repo, "rev-list", "--count", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(countAfter)) != strings.TrimSpace(string(countBefore)) {
+		t.Fatalf("no-op task created a Git commit: count %s -> %s", strings.TrimSpace(string(countBefore)), strings.TrimSpace(string(countAfter)))
+	}
+}
+
+func TestMutationAfterVerificationInvalidatesSubjectBeforeCheckpoint(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	env.coord.verify = func(_ context.Context, command, workdir string) verificationResult {
+		if err := os.WriteFile(filepath.Join(workdir, "mutated-after-verifier.txt"), []byte("new state"), 0o644); err != nil {
+			t.Fatalf("mutate repository after verifier: %v", err)
+		}
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	err := env.coord.runTask(context.Background(), 0, env.clock.now)
+	if err == nil || !strings.Contains(err.Error(), "verification subject changed") {
+		t.Fatalf("runTask error = %v, want subject-mutation failure", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status != deep.StatusNeedsHuman || task.CheckpointCommit != "" || task.CheckpointTreeSHA != "" {
+		t.Fatalf("mutated verification accepted a checkpoint: status=%s commit=%q tree=%q", task.Status, task.CheckpointCommit, task.CheckpointTreeSHA)
+	}
+	if task.VerificationSubject == nil || !strings.Contains(task.VerificationResult, "verification passed") {
+		t.Fatalf("did not preserve the original passing evidence and subject: %+v", task)
+	}
+	head, err := env.coord.git.headCommit(env.wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head != env.state.BaseCommit {
+		t.Fatalf("mutated state received a checkpoint commit: HEAD=%s baseline=%s", head, env.state.BaseCommit)
+	}
+}
+
+type mutateAtCheckpointGit struct {
+	gitOps
+	worktree string
+	path     string
+}
+
+func (g mutateAtCheckpointGit) checkpointSubject(dir, message string, snapshot verificationSnapshot) (string, string, error) {
+	if err := os.WriteFile(filepath.Join(g.worktree, g.path), []byte("mutated at checkpoint boundary\n"), 0o644); err != nil {
+		return "", "", err
+	}
+	return g.gitOps.checkpointSubject(dir, message, snapshot)
+}
+
+func TestMutationAtCheckpointBoundaryCannotReuseVerifiedSubject(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	env.coord.git = mutateAtCheckpointGit{gitOps: env.coord.git, worktree: env.wt, path: "mutated-at-checkpoint.txt"}
+	err := env.coord.runTask(context.Background(), 0, env.clock.now)
+	if err == nil || !strings.Contains(err.Error(), "exact-state checkpoint failed") {
+		t.Fatalf("runTask error = %v, want checkpoint-boundary mutation failure", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status != deep.StatusNeedsHuman || task.CheckpointCommit != "" || task.CheckpointTreeSHA != "" {
+		t.Fatalf("checkpoint-boundary mutation was accepted: status=%s commit=%q tree=%q", task.Status, task.CheckpointCommit, task.CheckpointTreeSHA)
+	}
+}
+
+func TestHeadChangeAfterVerificationInvalidatesSubjectEvenWithSameTree(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	env.coord.verify = func(_ context.Context, command, workdir string) verificationResult {
+		cmd := exec.Command("git", "add", "-A")
+		cmd.Dir = workdir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("stage worktree after verifier: %v (%s)", err, out)
+		}
+		cmd = exec.Command("git", "commit", "-m", "external same-tree commit")
+		cmd.Dir = workdir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("commit same tree after verifier: %v (%s)", err, out)
+		}
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	err := env.coord.runTask(context.Background(), 0, env.clock.now)
+	if err == nil || !strings.Contains(err.Error(), "verification subject changed") {
+		t.Fatalf("runTask error = %v, want HEAD-identity mismatch", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status != deep.StatusNeedsHuman || task.CheckpointCommit != "" || task.VerificationSubject == nil {
+		t.Fatalf("same-tree HEAD change was accepted: %+v", task)
+	}
+}
+
+func TestVerificationSubjectUsesWorktreeContentOverStagedBlob(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	env.fake.after = func() {
+		readme := filepath.Join(env.wt, "README.md")
+		if err := os.WriteFile(readme, []byte("staged version\n"), 0o644); err != nil {
+			t.Fatalf("write staged README: %v", err)
+		}
+		cmd := exec.Command("git", "add", "README.md")
+		cmd.Dir = env.wt
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("stage README: %v (%s)", err, out)
+		}
+		if err := os.WriteFile(readme, []byte("worktree version\n"), 0o644); err != nil {
+			t.Fatalf("write unstaged README: %v", err)
+		}
+	}
+	env.coord.verify = func(_ context.Context, command, workdir string) verificationResult {
+		contents, err := os.ReadFile(filepath.Join(workdir, "README.md"))
+		if err != nil || string(contents) != "worktree version\n" {
+			t.Fatalf("verifier worktree README = %q, err=%v", contents, err)
+		}
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status != deep.StatusVerified || task.VerificationSubject == nil || task.CheckpointTreeSHA != task.VerificationSubject.TreeSHA {
+		t.Fatalf("tracked worktree change was not checkpointed exactly: %+v", task)
+	}
+	contents, err := exec.Command("git", "-C", env.wt, "show", task.CheckpointCommit+":README.md").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "worktree version\n" {
+		t.Fatalf("checkpoint captured staged content %q, want verifier-visible worktree content", contents)
+	}
+	message, err := exec.Command("git", "-C", env.wt, "show", "-s", "--format=%s", task.CheckpointCommit).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(message)), "deep(T-001): add helper.go"; got != want {
+		t.Fatalf("semantic checkpoint message = %q, want %q", got, want)
+	}
+}
+
+func TestVerificationSubjectRejectsDirtySubmoduleWorktree(t *testing.T) {
+	repo := newTestRepo(t)
+	submodule := newTestRepo(t)
+	cmd := exec.Command("git", "-C", repo, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "deps/inner")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("add local submodule: %v (%s)", err, out)
+	}
+	cmd = exec.Command("git", "-C", repo, "add", "-A")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("stage superproject submodule: %v (%s)", err, out)
+	}
+	cmd = exec.Command("git", "-C", repo, "commit", "-m", "add submodule")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("commit superproject submodule: %v (%s)", err, out)
+	}
+	cleanSnapshot, err := newGitRunner().verificationSubject(repo, nil)
+	if err != nil {
+		t.Fatalf("capture clean initialized submodule: %v", err)
+	}
+	if cleanSnapshot.Subject.TreeSHA == "" {
+		t.Fatal("clean submodule was missing from the product tree")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "deps", "inner", "dirty.txt"), []byte("uncommitted nested input\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newGitRunner().verificationSubject(repo, nil); err == nil || !strings.Contains(err.Error(), "dirty submodule") {
+		t.Fatalf("dirty submodule subject error = %v, want fail-closed dirty-submodule error", err)
+	}
+}
+
+func TestUntrackedActionPlanIsSeparateFromProductCheckpoint(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	const planPath = "plans/current.md"
+	env.coord.execCfg.actionPlan = planPath
+	env.fake.after = func() {
+		if err := os.MkdirAll(filepath.Join(env.wt, "plans"), 0o755); err != nil {
+			t.Fatalf("create plan directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(env.wt, planPath), []byte("run bookkeeping plan\n"), 0o644); err != nil {
+			t.Fatalf("write action plan: %v", err)
+		}
+	}
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status != deep.StatusVerified || task.VerificationSubject == nil {
+		t.Fatalf("task did not bind a verified subject: %+v", task)
+	}
+	if got := task.VerificationBookkeeping[planPath]; !strings.HasPrefix(got, "git-blob:") {
+		t.Fatalf("action-plan identity = %q, want separate Git blob identity", got)
+	}
+	if task.CheckpointTreeSHA != task.VerificationSubject.TreeSHA {
+		t.Fatalf("checkpoint tree %q differs from product subject %q", task.CheckpointTreeSHA, task.VerificationSubject.TreeSHA)
+	}
+	listed, err := exec.Command("git", "-C", env.wt, "ls-tree", "-r", "--name-only", task.CheckpointCommit, "--", planPath).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(listed)) != "" {
+		t.Fatalf("untracked Stint action plan entered product checkpoint: %q", listed)
+	}
+	status, err := env.coord.git.statusShort(env.wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, "?? plans/") {
+		t.Fatalf("bookkeeping file should remain outside the product checkpoint, status=%q", status)
+	}
+	if err := env.coord.land(context.Background(), "test landing"); err != nil {
+		t.Fatalf("land: %v", err)
+	}
+	listed, err = exec.Command("git", "-C", env.wt, "ls-tree", "-r", "--name-only", env.state.LandingCommit, "--", planPath, deepWorktreeHandoff).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(listed)) != "" {
+		t.Fatalf("Stint run bookkeeping entered landing product tree: %q", listed)
+	}
+}
+
+func TestStagedActionPlanIsIncludedInProductCheckpoint(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	const planPath = "plans/current.md"
+	env.coord.execCfg.actionPlan = planPath
+	env.fake.after = func() {
+		if err := os.MkdirAll(filepath.Join(env.wt, "plans"), 0o755); err != nil {
+			t.Fatalf("create plan directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(env.wt, planPath), []byte("intentional mission output\n"), 0o644); err != nil {
+			t.Fatalf("write action plan: %v", err)
+		}
+		cmd := exec.Command("git", "add", "--", planPath)
+		cmd.Dir = env.wt
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("stage intentional action-plan output: %v (%s)", err, out)
+		}
+	}
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status != deep.StatusVerified || task.VerificationSubject == nil {
+		t.Fatalf("task did not bind a verified subject: %+v", task)
+	}
+	if _, ok := task.VerificationBookkeeping[planPath]; ok {
+		t.Fatalf("Git-visible action plan was incorrectly classified as bookkeeping: %+v", task.VerificationBookkeeping)
+	}
+	listed, err := exec.Command("git", "-C", env.wt, "ls-tree", "-r", "--name-only", task.CheckpointCommit, "--", planPath).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(listed)) != planPath {
+		t.Fatalf("staged action-plan output missing from product checkpoint: %q", listed)
 	}
 }
 
@@ -426,6 +719,14 @@ func TestRunVerifyCmd(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "sentinel")); !os.IsNotExist(err) {
 		t.Errorf("invalid command executed before rejection; sentinel stat error = %v", err)
 	}
+	lateWriter := filepath.Join(dir, "late-verifier-write")
+	command := "(sleep 0.2; printf late > " + shellQuote(lateWriter) + ") & true"
+	quiesced := runVerifyCmd(context.Background(), command, dir)
+	returnedAt := time.Now()
+	if !quiesced.Passed() {
+		t.Fatalf("verifier with background writer = %+v, want passed", quiesced)
+	}
+	assertNoDelayedMutationAfterReturn(t, lateWriter, returnedAt)
 }
 
 func TestLandingDeadline(t *testing.T) {
@@ -504,6 +805,117 @@ func TestDeepLandingResumesAfterWorktreeHandoffFailure(t *testing.T) {
 	}
 }
 
+func TestDeepLandingRerunsFinalVerifierWhenSubjectChangedOnResume(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	verifyCalls := 0
+	env.coord.finalVerify = func(context.Context, string) verificationResult {
+		verifyCalls++
+		return verificationResult{Outcome: verificationPassed, Output: "checks passed"}
+	}
+	env.coord.worktreeWrite = func(string, []byte) error { return errors.New("box write failed") }
+	if err := env.coord.land(context.Background(), "test landing"); err == nil {
+		t.Fatal("land succeeded after worktree handoff write failed")
+	}
+	firstSubject := env.state.LandingVerificationSubject
+	if firstSubject == nil || !env.state.LandingVerifyDone {
+		t.Fatalf("final verifier result lacks a durable subject: %+v", env.state)
+	}
+	productFile := filepath.Join(env.wt, "README.md")
+	if err := os.WriteFile(productFile, []byte("# changed after final verification\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env.coord.worktreeWrite = nil
+	if err := env.coord.land(context.Background(), "retry landing"); err != nil {
+		t.Fatalf("resume landing after product mutation: %v", err)
+	}
+	if verifyCalls != 2 {
+		t.Fatalf("final verifier ran %d times, want rerun after subject changed", verifyCalls)
+	}
+	if env.state.LandingVerificationSubject == nil || env.state.LandingVerificationSubject.TreeSHA == firstSubject.TreeSHA {
+		t.Fatalf("resumed final verification did not bind the changed tree: first=%+v current=%+v", firstSubject, env.state.LandingVerificationSubject)
+	}
+	if env.state.LandingCheckpointTreeSHA != env.state.LandingVerificationSubject.TreeSHA {
+		t.Fatalf("landing checkpoint tree %q differs from final verifier tree %q", env.state.LandingCheckpointTreeSHA, env.state.LandingVerificationSubject.TreeSHA)
+	}
+}
+
+func TestDeepLandingDoesNotReuseLegacyFinalVerificationWithoutSubject(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Phase = deep.PhaseLanding
+	env.state.LandingVerifyDone = true
+	env.state.LandingVerify = "passed (legacy result without subject)"
+	if err := env.state.SaveDir(env.coord.stateDir); err != nil {
+		t.Fatal(err)
+	}
+	verifyCalls := 0
+	env.coord.finalVerify = func(context.Context, string) verificationResult {
+		verifyCalls++
+		return verificationResult{Outcome: verificationPassed}
+	}
+	if err := env.coord.land(context.Background(), "resume legacy landing"); err != nil {
+		t.Fatalf("land: %v", err)
+	}
+	if verifyCalls != 1 || env.state.LandingVerificationSubject == nil || env.state.LandingCheckpointTreeSHA != env.state.LandingVerificationSubject.TreeSHA {
+		t.Fatalf("legacy final verification was reused without provenance: calls=%d state=%+v", verifyCalls, env.state)
+	}
+}
+
+func TestDeepLandingRejectsMutationDuringFinalVerification(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.coord.finalVerify = func(context.Context, string) verificationResult {
+		if err := os.WriteFile(filepath.Join(env.wt, "README.md"), []byte("# changed while verifying\n"), 0o644); err != nil {
+			t.Errorf("mutate product during verification: %v", err)
+		}
+		return verificationResult{Outcome: verificationPassed}
+	}
+	if err := env.coord.land(context.Background(), "test landing"); err == nil || !strings.Contains(err.Error(), "changed during final verification") {
+		t.Fatalf("land error = %v, want exact-subject mutation failure", err)
+	}
+	if env.state.Phase != deep.PhaseLanding || env.state.LandingVerifyDone || env.state.LandingVerificationSubject != nil || env.state.LandingCommit != "" {
+		t.Fatalf("mutation was persisted as a final verification/checkpoint: %+v", env.state)
+	}
+}
+
+func TestDeepLandingStopsWhenFinalVerifierQuiescenceIsUnknown(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.coord.finalVerify = func(context.Context, string) verificationResult {
+		return verificationResult{Outcome: verificationExecutionErr, Error: "remote channel lost", QuiescenceUnconfirmed: true}
+	}
+	if err := env.coord.land(context.Background(), "test landing"); err == nil || !strings.Contains(err.Error(), "final verifier process quiescence is unconfirmed") {
+		t.Fatalf("land error = %v, want final verifier quiescence block", err)
+	}
+	if !env.state.ExecutionQuiescenceUnconfirmed || env.state.ExecutionQuiescenceTaskID != "mission-final-verifier" || env.state.LandingVerifyDone || env.state.LandingCommit != "" {
+		t.Fatalf("unquiesced final verifier was treated as stable: %+v", env.state)
+	}
+}
+
+func TestDeepLandingDoesNotRewriteGitVisibleHandoffInput(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	path := filepath.Join(env.wt, deepWorktreeHandoff)
+	if err := os.WriteFile(path, []byte("product-owned handoff input\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.coord.git.commitAll(env.wt, "add product-owned handoff input"); err != nil {
+		t.Fatal(err)
+	}
+	env.coord.finalVerify = func(context.Context, string) verificationResult {
+		return verificationResult{Outcome: verificationPassed}
+	}
+	if err := env.coord.land(context.Background(), "test landing"); err != nil {
+		t.Fatalf("land: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "product-owned handoff input\n" {
+		t.Fatalf("landing rewrote a Git-visible handoff input: %q", data)
+	}
+	if env.state.LandingCheckpointTreeSHA != env.state.LandingVerificationSubject.TreeSHA {
+		t.Fatalf("checkpoint tree %q differs from verified tree %q", env.state.LandingCheckpointTreeSHA, env.state.LandingVerificationSubject.TreeSHA)
+	}
+}
+
 func TestDeepLandingReusesCheckpointAfterFinalStateSaveFailure(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
 	env.coord.persist = func(dir string, state deep.DeepState) error {
@@ -558,7 +970,9 @@ type failingCommitGit struct {
 	err error
 }
 
-func (g failingCommitGit) commitAll(string, string) (string, error) { return "", g.err }
+func (g failingCommitGit) checkpointSubject(string, string, verificationSnapshot) (string, string, error) {
+	return "", "", g.err
+}
 
 func TestDeepLoopDoesNotVerifyTaskWhenCheckpointFails(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
@@ -579,12 +993,63 @@ func TestDeepLoopDoesNotVerifyTaskWhenCheckpointFails(t *testing.T) {
 	}
 }
 
+func TestDeepLoopRefusesVerificationWhenExecutorQuiescenceIsUnknown(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.fake.scriptErr = map[int]error{1: errExecutorQuiescenceUnconfirmed}
+	verifyCalls := 0
+	env.coord.verify = func(context.Context, string, string) verificationResult {
+		verifyCalls++
+		return verificationResult{Outcome: verificationPassed}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err == nil || !strings.Contains(err.Error(), "quiescence is unconfirmed") {
+		t.Fatalf("runTask error = %v, want explicit quiescence failure", err)
+	}
+	if verifyCalls != 0 {
+		t.Fatalf("task verifier ran %d times while executor writers may still be active", verifyCalls)
+	}
+	if !env.state.ExecutionQuiescenceUnconfirmed || env.state.ExecutionQuiescenceTaskID != "T-001" || env.state.Tasks[0].Status != deep.StatusNeedsHuman {
+		t.Fatalf("unconfirmed executor state was not durably blocked: %+v", env.state)
+	}
+	if err := env.coord.run(context.Background()); err == nil || !strings.Contains(err.Error(), "executor writers may still be active") {
+		t.Fatalf("resume error = %v, want global fail-closed block", err)
+	}
+	if env.fake.calls != 1 || verifyCalls != 0 {
+		t.Fatalf("after resume: executor calls=%d verifier calls=%d, want 1/0", env.fake.calls, verifyCalls)
+	}
+}
+
+func TestDeepLoopBlocksCheckpointWhenVerifierQuiescenceIsUnknown(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	verifyCalls := 0
+	env.coord.verify = func(context.Context, string, string) verificationResult {
+		verifyCalls++
+		return verificationResult{Outcome: verificationExecutionErr, Error: "remote transport lost", QuiescenceUnconfirmed: true}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err == nil || !strings.Contains(err.Error(), "verifier process quiescence is unconfirmed") {
+		t.Fatalf("runTask error = %v, want verifier quiescence block", err)
+	}
+	if verifyCalls != 1 || env.state.Tasks[0].Status != deep.StatusNeedsHuman || !env.state.ExecutionQuiescenceUnconfirmed || env.state.Tasks[0].CheckpointCommit != "" {
+		t.Fatalf("unquiesced verifier produced unsafe task state: calls=%d state=%+v", verifyCalls, env.state)
+	}
+}
+
 // An external stop that lands the session while a task's invocation is in
 // flight must win: the in-flight task's saves may not resurrect the stopped
 // session from stale in-memory state (the zombie-proof invariant behind
 // `stint deep resume`).
 func TestDeepLoopExternalStopBeatsInFlightTask(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
+	executorActive := true
+	verifiedWhileExecutorActive := false
+	finalVerifyCalls := 0
+	finalVerify := func(context.Context, string) verificationResult {
+		finalVerifyCalls++
+		if executorActive {
+			verifiedWhileExecutorActive = true
+		}
+		return verificationResult{Outcome: verificationPassed}
+	}
+	env.coord.finalVerify = finalVerify
 	stopperState, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -594,6 +1059,7 @@ func TestDeepLoopExternalStopBeatsInFlightTask(t *testing.T) {
 		state:       &stopperState,
 		taskTimeout: time.Minute,
 		verify:      env.coord.verify,
+		finalVerify: finalVerify,
 		now:         func() time.Time { return env.clock.now },
 		logf:        func(string, ...any) {},
 		out:         io.Discard,
@@ -601,6 +1067,7 @@ func TestDeepLoopExternalStopBeatsInFlightTask(t *testing.T) {
 	}
 	env.fake.after = func() {
 		_ = stopper.land(context.Background(), "stopped by user")
+		executorActive = false
 	}
 	if err := env.coord.run(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
@@ -617,6 +1084,9 @@ func TestDeepLoopExternalStopBeatsInFlightTask(t *testing.T) {
 	}
 	if fresh.Tasks[0].Status == deep.StatusVerified {
 		t.Errorf("in-flight outcome was persisted after the stop: %s", fresh.Tasks[0].Status)
+	}
+	if verifiedWhileExecutorActive || finalVerifyCalls != 1 {
+		t.Errorf("final verifier ran while executor active=%t and was called %d times; want one post-quiescence run", verifiedWhileExecutorActive, finalVerifyCalls)
 	}
 }
 

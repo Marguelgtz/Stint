@@ -29,7 +29,7 @@ func (f *fakeRemote) run(ctx context.Context, cmd string) (string, error) {
 	case strings.Contains(cmd, "hermes chat"):
 		// The on-box Hermes run: agent text, then the exit-code marker.
 		return "worker: wrote the S0 spec and fixtures\n" + hermesExitMarker + "0", nil
-	case strings.Contains(cmd, "sh -c 'true'"):
+	case strings.Contains(cmd, "stint-verifier"):
 		return "PASS\n" + verifyExitMarker + "0\n", nil
 	case strings.Contains(cmd, "rev-parse HEAD"):
 		return "base123\n", nil
@@ -48,13 +48,22 @@ func (f *fakeRemote) run(ctx context.Context, cmd string) (string, error) {
 // coordinator run can be exercised end-to-end over the fake box.
 type stubGit struct{}
 
-func (stubGit) repoHead(dir string) (string, error)                  { return "base123", nil }
-func (stubGit) headCommit(dir string) (string, error)                { return "base123", nil }
-func (stubGit) headSubject(dir string) (string, error)               { return "baseline", nil }
-func (stubGit) cleanTracked(dir string) (bool, string)               { return true, "" }
-func (stubGit) logOneline(dir string, n int) (string, error)         { return "", nil }
-func (stubGit) statusShort(dir string) (string, error)               { return "", nil }
-func (stubGit) diffStat(dir, base string) (string, error)            { return "", nil }
+func (stubGit) repoHead(dir string) (string, error)          { return "base123", nil }
+func (stubGit) headCommit(dir string) (string, error)        { return "base123", nil }
+func (stubGit) headSubject(dir string) (string, error)       { return "baseline", nil }
+func (stubGit) cleanTracked(dir string) (bool, string)       { return true, "" }
+func (stubGit) logOneline(dir string, n int) (string, error) { return "", nil }
+func (stubGit) statusShort(dir string) (string, error)       { return "", nil }
+func (stubGit) diffStat(dir, base string) (string, error)    { return "", nil }
+func (stubGit) verificationSubject(string, []string) (verificationSnapshot, error) {
+	return verificationSnapshot{
+		Subject:     deep.VerificationSubject{HeadCommit: "base123", TreeSHA: "tree123"},
+		Bookkeeping: map[string]string{deepWorktreeHandoff: "absent"},
+	}, nil
+}
+func (stubGit) checkpointSubject(string, string, verificationSnapshot) (string, string, error) {
+	return "base123", "tree123", nil
+}
 func (stubGit) worktreeAdd(repo, worktree, branch string) error      { return nil }
 func (stubGit) branchExists(repo, branch string) bool                { return true }
 func (stubGit) worktreeUsable(worktree string) bool                  { return true }
@@ -73,6 +82,54 @@ func TestShellQuote(t *testing.T) {
 		if got := shellQuote(in); got != want {
 			t.Errorf("shellQuote(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestRemoteVerificationSubjectAndCheckpointMatchProductTree(t *testing.T) {
+	repo := newTestRepo(t)
+	const planPath = "plans/O'Brien action.md"
+	if err := os.MkdirAll(filepath.Join(repo, "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(planPath)), []byte("run bookkeeping\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("product change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	remote := func(ctx context.Context, command string) (string, error) {
+		cmd := exec.CommandContext(ctx, "sh", "-c", command)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	remoteGit := &remoteGit{remote: remote}
+	snapshot, err := remoteGit.verificationSubject(repo, []string{planPath, deepWorktreeHandoff})
+	if err != nil {
+		t.Fatalf("remote verification subject: %v", err)
+	}
+	if snapshot.Bookkeeping[planPath] == "" || snapshot.Bookkeeping[deepWorktreeHandoff] != "absent" {
+		t.Fatalf("remote bookkeeping identity = %+v", snapshot.Bookkeeping)
+	}
+	localSnapshot, err := newGitRunner().verificationSubject(repo, []string{planPath, deepWorktreeHandoff})
+	if err != nil {
+		t.Fatalf("local verification subject: %v", err)
+	}
+	if !sameVerificationSnapshot(snapshot, localSnapshot) {
+		t.Fatalf("remote subject %+v differs from local subject %+v", snapshot, localSnapshot)
+	}
+	checkpoint, tree, err := remoteGit.checkpointSubject(repo, "deep(T-001): add feature", snapshot)
+	if err != nil {
+		t.Fatalf("remote checkpoint: %v", err)
+	}
+	if tree != snapshot.Subject.TreeSHA {
+		t.Fatalf("remote checkpoint tree %q differs from subject %q", tree, snapshot.Subject.TreeSHA)
+	}
+	listed, err := exec.Command("git", "-C", repo, "ls-tree", "-r", "--name-only", checkpoint, "--", planPath).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(listed)) != "" {
+		t.Fatalf("untracked remote bookkeeping entered checkpoint: %q", listed)
 	}
 }
 
@@ -106,8 +163,9 @@ func TestHermesExecutorSuccess(t *testing.T) {
 	line := fr.calls[0]
 	for _, want := range []string{
 		"mktemp /tmp/stint-deep-prompt.XXXXXX", "base64 -d", "cd '/root/repo/.stint-deep/x'",
-		"hermes chat --query-file", "--oneshot --provider custom -m 'qwen3.8-27b'", "trap 'rm -f",
-		hermesExitMarker,
+		"setsid --wait sh -c", "timeout --foreground -k 1", "hermes chat --query-file", "--oneshot --provider custom",
+		"qwen3.8-27b", "trap 'for stint_tmp", "rm -f \"$stint_tmp\"", hermesSetupFailureMarker,
+		hermesInvocationStartMarker, hermesExitMarker,
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("box line missing %q:\n%s", want, line)
@@ -132,7 +190,7 @@ func TestHermesExecutorReasoningProviderTemplate(t *testing.T) {
 		t.Fatalf("remote calls = %d, want 1", len(fr.calls))
 	}
 	line := fr.calls[0]
-	for _, want := range []string{"custom:qwen-stint-xhigh", "--reasoning 'xhigh'"} {
+	for _, want := range []string{"custom:qwen-stint-xhigh", "--reasoning", "xhigh"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("box line missing %q:\n%s", want, line)
 		}
@@ -170,6 +228,171 @@ func TestHermesExecutorSSHFailure(t *testing.T) {
 	}
 	if res.exitCode != -1 {
 		t.Errorf("exitCode=%d, want -1 on SSH failure", res.exitCode)
+	}
+	if !errors.Is(err, errExecutorQuiescenceUnconfirmed) {
+		t.Fatalf("SSH failure error = %v, want unconfirmed quiescence", err)
+	}
+}
+
+func TestHermesExecutorSetupFailureBeforeLaunchIsQuiescent(t *testing.T) {
+	workdir := filepath.Join(t.TempDir(), "missing-worktree")
+	var remoteOutput string
+	e := newHermesExecutor(func(ctx context.Context, command string) (string, error) {
+		out, err := exec.CommandContext(ctx, "sh", "-c", command).CombinedOutput()
+		remoteOutput = string(out)
+		return remoteOutput, err
+	})
+	res, err := e.run(context.Background(), execInput{workdir: workdir, prompt: "p", timeout: time.Minute})
+	if err == nil || errors.Is(err, errExecutorQuiescenceUnconfirmed) {
+		t.Fatalf("pre-launch setup result = %+v, err=%v; want ordinary setup failure with known quiescence", res, err)
+	}
+	if !strings.Contains(err.Error(), "setup failed before process launch") || res.completed || res.exitCode == -1 {
+		t.Fatalf("pre-launch setup result = %+v, err=%v", res, err)
+	}
+	if want := hermesSetupFailureMarker + "2\n"; remoteOutput != want {
+		t.Fatalf("pre-launch protocol output = %q, want exactly %q", remoteOutput, want)
+	}
+	if strings.Contains(remoteOutput, hermesInvocationStartMarker) {
+		t.Fatalf("pre-launch failure emitted invocation-start frame: %q", remoteOutput)
+	}
+}
+
+func TestHermesSetupFailureCannotBeSpoofedByInvocationOutput(t *testing.T) {
+	t.Run("ordinary output followed by real exit marker", func(t *testing.T) {
+		output := hermesInvocationStartMarker + "\n" + hermesSetupFailureMarker + "127\nworker output\n" + hermesExitMarker + "0\n"
+		e := newHermesExecutor(func(context.Context, string) (string, error) { return output, nil })
+		res, err := e.run(context.Background(), execInput{workdir: "/wt", prompt: "p", timeout: time.Minute})
+		if err != nil || !res.completed || res.exitCode != 0 {
+			t.Fatalf("ordinary Hermes output was interpreted as setup failure: result=%+v err=%v", res, err)
+		}
+		if !strings.Contains(res.outputText, hermesSetupFailureMarker+"127") || errors.Is(err, errExecutorQuiescenceUnconfirmed) {
+			t.Fatalf("ordinary setup-marker text was lost or treated as protocol state: result=%+v err=%v", res, err)
+		}
+	})
+
+	t.Run("forged setup marker without completion frame", func(t *testing.T) {
+		output := hermesInvocationStartMarker + "\n" + hermesSetupFailureMarker + "127\n"
+		e := newHermesExecutor(func(context.Context, string) (string, error) { return output, nil })
+		res, err := e.run(context.Background(), execInput{workdir: "/wt", prompt: "p", timeout: time.Minute})
+		if !errors.Is(err, errExecutorQuiescenceUnconfirmed) || res.completed {
+			t.Fatalf("incomplete invocation protocol was downgraded to setup failure: result=%+v err=%v", res, err)
+		}
+	})
+}
+
+func TestHermesTransportFailureWithPartialExitMarkerRemainsUnconfirmed(t *testing.T) {
+	partial := hermesInvocationStartMarker + "\nworker started\n" + hermesExitMarker + "0\n"
+	e := newHermesExecutor(func(context.Context, string) (string, error) {
+		return partial, errors.New("SSH transport lost after partial output")
+	})
+	res, err := e.run(context.Background(), execInput{workdir: "/wt", prompt: "p", timeout: time.Minute})
+	if !errors.Is(err, errExecutorQuiescenceUnconfirmed) || res.completed || res.exitCode != -1 {
+		t.Fatalf("partial valid-looking exit marker masked transport error: result=%+v err=%v", res, err)
+	}
+}
+
+func TestRemoteHermesPrelaunchFailureDoesNotPoisonSessionQuiescence(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	env.coord.executor = newHermesExecutor(func(context.Context, string) (string, error) {
+		return hermesSetupFailureMarker + "127\n", nil
+	})
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("run task after pre-launch setup failure: %v", err)
+	}
+	fresh, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.ExecutionQuiescenceUnconfirmed || fresh.ExecutionQuiescenceTaskID != "" {
+		t.Fatalf("pre-launch setup failure poisoned durable quiescence state: unconfirmed=%t task=%q", fresh.ExecutionQuiescenceUnconfirmed, fresh.ExecutionQuiescenceTaskID)
+	}
+	if fresh.Tasks[0].ExecutionError == "" || !strings.Contains(fresh.Tasks[0].ExecutionError, "setup failed before process launch") {
+		t.Fatalf("pre-launch failure was not preserved as an ordinary executor error: %+v", fresh.Tasks[0])
+	}
+}
+
+func TestRemoteHermesTransportLossAfterStartPersistsQuiescenceBlock(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	partial := hermesInvocationStartMarker + "\nworker started\n"
+	env.coord.executor = newHermesExecutor(func(context.Context, string) (string, error) {
+		return partial, errors.New("SSH transport lost before cleanup confirmation")
+	})
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err == nil || !strings.Contains(err.Error(), "quiescence is unconfirmed") {
+		t.Fatalf("runTask after post-start transport loss = %v, want fail-closed quiescence error", err)
+	}
+	fresh, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh.ExecutionQuiescenceUnconfirmed || fresh.ExecutionQuiescenceTaskID != "T-001" || fresh.Tasks[0].CheckpointCommit != "" {
+		t.Fatalf("post-start transport loss did not persist hard quiescence block: %+v", fresh)
+	}
+}
+
+func TestHermesExecutorsQuiesceDelayedWriters(t *testing.T) {
+	t.Run("local", func(t *testing.T) {
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "late-write")
+		hermes := filepath.Join(dir, "hermes")
+		script := "#!/bin/sh\n(sleep 0.2; printf late > " + shellQuote(marker) + ") &\nexit 0\n"
+		if err := os.WriteFile(hermes, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		result, err := newLocalHermesExecutor(hermes).run(context.Background(), execInput{
+			workdir: dir, prompt: "finish", timeout: time.Minute,
+		})
+		returnedAt := time.Now()
+		if err != nil || !result.completed {
+			t.Fatalf("local executor result = %+v, err=%v", result, err)
+		}
+		assertNoDelayedMutationAfterReturn(t, marker, returnedAt)
+	})
+
+	t.Run("remote", func(t *testing.T) {
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "late-write")
+		hermes := filepath.Join(dir, "hermes")
+		script := "#!/bin/sh\n(sleep 0.2; printf late > " + shellQuote(marker) + ") &\nexit 0\n"
+		if err := os.WriteFile(hermes, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		remote := func(ctx context.Context, command string) (string, error) {
+			out, err := exec.CommandContext(ctx, "sh", "-c", command).CombinedOutput()
+			return string(out), err
+		}
+		result, err := newHermesExecutor(remote).run(context.Background(), execInput{
+			workdir: dir, prompt: "finish", timeout: time.Minute,
+		})
+		returnedAt := time.Now()
+		if err != nil || !result.completed {
+			t.Fatalf("remote executor result = %+v, err=%v", result, err)
+		}
+		assertNoDelayedMutationAfterReturn(t, marker, returnedAt)
+	})
+}
+
+func assertNoDelayedMutationAfterReturn(t *testing.T, marker string, returnedAt time.Time) {
+	t.Helper()
+	before, beforeErr := os.Stat(marker)
+	if beforeErr != nil && !os.IsNotExist(beforeErr) {
+		t.Fatalf("stat delayed-writer marker at executor return: %v", beforeErr)
+	}
+	time.Sleep(300 * time.Millisecond)
+	after, afterErr := os.Stat(marker)
+	if afterErr != nil && !os.IsNotExist(afterErr) {
+		t.Fatalf("stat delayed-writer marker after executor return: %v", afterErr)
+	}
+	if os.IsNotExist(beforeErr) && afterErr == nil {
+		t.Fatalf("executor descendant created %q after the executor returned", marker)
+	}
+	if afterErr == nil && after.ModTime().After(returnedAt) {
+		t.Fatalf("executor descendant modified %q after the executor returned at %s", marker, returnedAt.Format(time.RFC3339Nano))
+	}
+	if beforeErr == nil && afterErr == nil && (before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime())) {
+		t.Fatalf("executor descendant continued modifying %q after return: before=%v after=%v", marker, before.ModTime(), after.ModTime())
 	}
 }
 
@@ -245,7 +468,7 @@ func TestRunVerifyCmdRemote(t *testing.T) {
 	if !passed.Passed() || passed.ExitCode != 0 || !strings.Contains(passed.Output, "PASS") {
 		t.Errorf("verify of `true` result = %+v", passed)
 	}
-	if len(fr.calls) != 1 || !strings.HasPrefix(fr.calls[0], "cd '/root/repo/.stint-deep/x' ||") || !strings.Contains(fr.calls[0], "sh -c 'true'") {
+	if len(fr.calls) != 1 || !strings.HasPrefix(fr.calls[0], "cd '/root/repo/.stint-deep/x' ||") || !strings.Contains(fr.calls[0], "'true'") || !strings.Contains(fr.calls[0], "setsid --wait sh -c") {
 		t.Errorf("unexpected remote verify line: %q", fr.calls)
 	}
 	// A failing verifier keeps its process exit distinct from SSH transport.
@@ -255,6 +478,12 @@ func TestRunVerifyCmdRemote(t *testing.T) {
 	failed := runVerifyCmdRemote(context.Background(), failing, "bash scripts/verify-cp1", "/wt")
 	if failed.Outcome != verificationFailed || !failed.HasExitCode || failed.ExitCode != 7 || !strings.Contains(failed.Output, "boom") {
 		t.Errorf("nonzero verifier result = %+v, want failed exit 7 with output", failed)
+	}
+	remoteBoundedTimeout := runVerifyCmdRemote(context.Background(), func(context.Context, string) (string, error) {
+		return verifyExitMarker + "124\n", nil
+	}, "true", "/wt")
+	if remoteBoundedTimeout.Outcome != verificationTimedOut || remoteBoundedTimeout.ExitCode != 124 || !remoteBoundedTimeout.HasExitCode {
+		t.Errorf("remote timeout marker result = %+v, want typed timeout with exit 124", remoteBoundedTimeout)
 	}
 	transport := func(ctx context.Context, cmd string) (string, error) {
 		return "ssh disconnected", errors.New("connection lost")
@@ -291,6 +520,14 @@ func TestRunVerifyCmdRemote(t *testing.T) {
 	if setupFailure.Outcome != verificationExecutionErr || !strings.Contains(setupFailure.Error, "could not enter verifier worktree") {
 		t.Errorf("remote worktree setup result = %+v, want execution_error", setupFailure)
 	}
+	lateWriter := filepath.Join(t.TempDir(), "late-remote-verifier-write")
+	remoteQuiesced := runVerifyCmdRemote(context.Background(), realRemote,
+		"(sleep 0.2; printf late > "+shellQuote(lateWriter)+") & true", t.TempDir())
+	returnedAt := time.Now()
+	if !remoteQuiesced.Passed() {
+		t.Fatalf("remote verifier with delayed writer = %+v, want passed", remoteQuiesced)
+	}
+	assertNoDelayedMutationAfterReturn(t, lateWriter, returnedAt)
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	remoteTimeout := runVerifyCmdRemote(timeoutCtx, func(ctx context.Context, _ string) (string, error) {
@@ -403,7 +640,7 @@ func TestDeepLoopRemoteHermesEndToEnd(t *testing.T) {
 		if strings.Contains(c, "hermes chat") {
 			hermesCalls++
 		}
-		if strings.Contains(c, "sh -c 'true'") {
+		if strings.Contains(c, "stint-verifier") && strings.Contains(c, "'true'") {
 			verifyCalls++
 		}
 	}
@@ -417,7 +654,8 @@ func TestDeepLoopRemoteHermesEndToEnd(t *testing.T) {
 		t.Errorf("handoff path not recorded")
 	}
 	// The worktree handoff file must have been written OVER THE BOX
-	// (base64 over SSH), so the on-box branch's final commit includes it.
+	// (base64 over SSH). It remains a generated summary and is excluded from
+	// the product tree unless it is already Git-visible.
 	handoffWrite := 0
 	for _, c := range fr.calls {
 		if strings.Contains(c, "DEEP_WORK_HANDOFF.md") {

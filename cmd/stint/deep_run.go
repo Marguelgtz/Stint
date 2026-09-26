@@ -82,8 +82,9 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 		coord.finalVerify = func(ctx context.Context, command string) verificationResult {
 			return runVerifyCmdRemote(ctx, cfg.remote, command, state.WorktreePath)
 		}
-		// The worktree handoff file must be written on the box too, so the
-		// subsequent (remote) commitAll includes it in the branch.
+		// The worktree handoff file must be written on the box too. It is a
+		// generated summary and stays outside the product checkpoint unless it
+		// is already part of Git-visible repository state.
 		coord.worktreeWrite = func(path string, data []byte) error {
 			return writeRemoteFile(cfg.remote, path, data)
 		}

@@ -14,10 +14,12 @@ func (s *DeepState) ReopenAfterLanding(now time.Time) bool {
 		return false
 	}
 	record := LandingRecord{
-		At:           now.UTC(),
-		Reason:       s.LandingReason,
-		Commit:       s.LandingCommit,
-		Verification: s.LandingVerify,
+		At:                  now.UTC(),
+		Reason:              s.LandingReason,
+		Commit:              s.LandingCommit,
+		CheckpointTreeSHA:   s.LandingCheckpointTreeSHA,
+		Verification:        s.LandingVerify,
+		VerificationSubject: s.LandingVerificationSubject,
 	}
 	if s.LandedAt != nil {
 		record.At = s.LandedAt.UTC()
@@ -30,8 +32,11 @@ func (s *DeepState) ReopenAfterLanding(now time.Time) bool {
 	s.LandedAt = nil
 	s.LandingReason = ""
 	s.LandingCommit = ""
+	s.LandingCheckpointTreeSHA = ""
 	s.LandingVerify = ""
 	s.LandingVerifyDone = false
+	s.LandingVerificationSubject = nil
+	s.LandingVerificationBookkeeping = nil
 	s.LandingHandoff = ""
 	return true
 }
