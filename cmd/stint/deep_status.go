@@ -141,7 +141,7 @@ func runDeepStop(args []string) error {
 		stateDir:    paths.StateDir,
 		state:       &state,
 		taskTimeout: time.Minute,
-		verify: func(ctx context.Context, command, workdir string) (string, bool, error) {
+		verify: func(ctx context.Context, command, workdir string) verificationResult {
 			return runVerifyCmd(ctx, command, workdir)
 		},
 		logf: func(format string, args ...any) { deep.AppendLog(paths.StateDir, state, format, args...) },

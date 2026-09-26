@@ -18,7 +18,7 @@ const (
 	IncidentPolicy         = "policy"            // the session's worker command policy, at coordinator start/resume
 	IncidentExecutorInvoke = "executor-invoke"   // one bounded coding-agent invocation started
 	IncidentExecutorError  = "executor-error"    // the invocation errored (not: it produced unverified work)
-	IncidentVerifyRun      = "verify-run"        // a verification command ran; result=pass|fail in the detail
+	IncidentVerifyRun      = "verify-run"        // verifier detail includes command and typed outcome (passed/failed/timed_out/error)
 	IncidentCheckpointFail = "checkpoint-failed" // the verified-task checkpoint commit failed
 	IncidentExternalStop   = "external-stop"     // another process changed the durable phase mid-run
 	IncidentStateSave      = "state-save-failed"

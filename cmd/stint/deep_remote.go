@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
+	"github.com/Marguelgtz/Stint/internal/deep"
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
@@ -171,18 +173,90 @@ func (g *remoteGit) commitAll(dir, message string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// runVerifyCmdRemote runs the verification command on the box in the on-box
-// worktree with the same 3-minute bound as the local variant and returns its
-// combined output tail and pass/fail (command exit 0).
-func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir string) (string, bool, error) {
+const (
+	verifyExitMarker  = "__STINT_VERIFY_EXIT__="
+	verifySetupMarker = "__STINT_VERIFY_SETUP__="
+)
+
+// runVerifyCmdRemote executes the same validated raw shell command as the
+// local verifier and transports its exit status separately from SSH status.
+func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir string) verificationResult {
+	started := time.Now().UTC()
+	if err := deep.ValidateVerifyCommand(command); err != nil {
+		return verificationResult{Command: command, Outcome: verificationInvalid, StartedAt: started, CompletedAt: time.Now().UTC(), Error: err.Error()}
+	}
 	vctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	line := fmt.Sprintf("cd %s && sh -c %s", shellQuote(workdir), shellQuote(command))
+	line := fmt.Sprintf("cd %s || { status=$?; printf '\\n%s%%s\\n' \"$status\"; exit 0; }; if sh -c %s; then status=0; else status=$?; fi; printf '\\n%s%%s\\n' \"$status\"; exit 0",
+		shellQuote(workdir), verifySetupMarker, shellQuote(command), verifyExitMarker)
 	out, err := remote(vctx, line)
+	result := verificationResult{Command: command, StartedAt: started, CompletedAt: time.Now().UTC()}
+	if setupCode, body, ok := takeVerifierMarker(out, verifySetupMarker); ok {
+		result.Outcome = verificationExecutionErr
+		result.Error = "could not enter verifier worktree (cd exit " + setupCode + ")"
+		result.Output = truncateVerifierOutput(body)
+		return result
+	}
+	if exitCode, body, ok := takeVerifierMarker(out, verifyExitMarker); ok {
+		result.Output = truncateVerifierOutput(body)
+		if parsed, parseErr := strconv.Atoi(exitCode); parseErr != nil {
+			result.Outcome = verificationExecutionErr
+			result.Error = "remote verifier returned an invalid exit marker"
+			return result
+		} else {
+			result.ExitCode = parsed
+			result.HasExitCode = true
+		}
+		if result.ExitCode == 0 {
+			result.Outcome = verificationPassed
+		} else {
+			result.Outcome = verificationFailed
+		}
+		return result
+	}
 	if len(out) > 4000 {
 		out = out[len(out)-4000:]
 	}
-	return out, err == nil, nil
+	result.Output = out
+	if errors.Is(vctx.Err(), context.DeadlineExceeded) {
+		result.Outcome = verificationTimedOut
+		result.Error = vctx.Err().Error()
+	} else if errors.Is(vctx.Err(), context.Canceled) {
+		result.Outcome = verificationCanceled
+		result.Error = vctx.Err().Error()
+	} else {
+		result.Outcome = verificationExecutionErr
+		if err != nil {
+			result.Error = "remote verification transport failed: " + err.Error()
+		} else {
+			result.Error = "remote verification returned no exit marker"
+		}
+	}
+	return result
+}
+
+func takeVerifierMarker(output, marker string) (code, body string, found bool) {
+	index := strings.LastIndex(output, marker)
+	if index < 0 {
+		return "", output, false
+	}
+	codeStart := index + len(marker)
+	codeEnd := strings.IndexByte(output[codeStart:], '\n')
+	if codeEnd >= 0 {
+		codeEnd += codeStart
+	} else {
+		codeEnd = len(output)
+	}
+	code = strings.TrimSpace(strings.TrimSuffix(output[codeStart:codeEnd], "\r"))
+	body = strings.TrimRight(output[:index], "\r\n")
+	return code, body, true
+}
+
+func truncateVerifierOutput(out string) string {
+	if len(out) > 4000 {
+		return out[len(out)-4000:]
+	}
+	return out
 }
 
 // hermesExitMarker delimits the Hermes invocation's exit code in the remote

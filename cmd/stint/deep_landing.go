@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -145,9 +146,13 @@ func (g *gitRunner) commitAll(dir, message string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// runVerifyCmd runs the mission's verification command in the worktree with
-// a bounded timeout and returns its combined output tail and pass/fail.
-func runVerifyCmd(ctx context.Context, command, workdir string) (string, bool, error) {
+// runVerifyCmd runs the mission's raw shell command in the worktree with a
+// bounded timeout and preserves the concrete verifier outcome.
+func runVerifyCmd(ctx context.Context, command, workdir string) verificationResult {
+	started := time.Now().UTC()
+	if err := deep.ValidateVerifyCommand(command); err != nil {
+		return verificationResult{Command: command, Outcome: verificationInvalid, StartedAt: started, CompletedAt: time.Now().UTC(), Error: err.Error()}
+	}
 	vctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(vctx, "sh", "-c", command)
@@ -159,7 +164,33 @@ func runVerifyCmd(ctx context.Context, command, workdir string) (string, bool, e
 	if len(out) > 4000 {
 		out = out[len(out)-4000:]
 	}
-	return out, err == nil, nil
+	result := verificationResult{Command: command, StartedAt: started, CompletedAt: time.Now().UTC(), Output: out}
+	if err == nil {
+		result.Outcome = verificationPassed
+		result.ExitCode = 0
+		result.HasExitCode = true
+		return result
+	}
+	if errors.Is(vctx.Err(), context.DeadlineExceeded) {
+		result.Outcome = verificationTimedOut
+		result.Error = vctx.Err().Error()
+		return result
+	}
+	if errors.Is(vctx.Err(), context.Canceled) {
+		result.Outcome = verificationCanceled
+		result.Error = vctx.Err().Error()
+		return result
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		result.Outcome = verificationFailed
+		result.ExitCode = exitErr.ExitCode()
+		result.HasExitCode = true
+		return result
+	}
+	result.Outcome = verificationExecutionErr
+	result.Error = err.Error()
+	return result
 }
 
 // land is a resumable transaction. It persists PhaseLanding before any
@@ -214,21 +245,24 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 		if c.state.Verify != "" {
 			run := c.finalVerify
 			if run == nil {
-				run = func(ctx context.Context, command string) (string, bool, error) {
+				run = func(ctx context.Context, command string) verificationResult {
 					return runVerifyCmd(ctx, command, c.state.WorktreePath)
 				}
 			}
-			out, ok, verifyErr := run(ctx, c.state.Verify)
-			label := "FAILED"
-			if ok && verifyErr == nil {
-				label = "passed"
+			result := run(ctx, c.state.Verify)
+			if result.Passed() {
+				finalVerify = "passed"
+			} else {
+				finalVerify = "FAILED (" + string(result.Outcome) + ")"
 			}
-			finalVerify = label
-			if strings.TrimSpace(out) != "" {
-				finalVerify += "\n" + strings.TrimSpace(out)
+			if result.HasExitCode {
+				finalVerify += fmt.Sprintf(" (exit %d)", result.ExitCode)
 			}
-			if verifyErr != nil {
-				finalVerify += "\nerror: " + verifyErr.Error()
+			if strings.TrimSpace(result.Output) != "" {
+				finalVerify += "\n" + strings.TrimSpace(result.Output)
+			}
+			if result.Error != "" {
+				finalVerify += "\nerror: " + result.Error
 			}
 		}
 		c.state.LandingVerify = finalVerify
