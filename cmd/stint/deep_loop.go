@@ -48,6 +48,10 @@ type deepCoordinator struct {
 	out           io.Writer
 	git           gitOps
 	persist       func(string, deep.DeepState) error
+	// completeLanding is the durable landing-transition seam. Production uses
+	// the RunEvent-backed operation; tests inject the crash boundary after Git
+	// has created the checkpoint but before its lifecycle event is recorded.
+	completeLanding func(string, *deep.DeepState, string, string, time.Time) error
 }
 
 // execInputFor builds the per-task invocation from the session-wide config.

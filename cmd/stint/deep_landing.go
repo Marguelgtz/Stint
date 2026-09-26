@@ -249,7 +249,10 @@ func summarizeLandingVerification(result verificationResult) string {
 // session landed. Landing never touches compute: the existing watchdog owns
 // the hard deadline.
 func (c *deepCoordinator) land(ctx context.Context, reason string) error {
-	if c.state.Phase == deep.PhaseLanded || c.state.Phase == deep.PhaseStopped {
+	if c.state.Phase == deep.PhaseLanded {
+		return c.refreshLandedSummary()
+	}
+	if c.state.Phase == deep.PhaseStopped {
 		return nil
 	}
 	fresh, err := deep.LoadState(c.stateDir, c.state.SessionID)
@@ -258,6 +261,9 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	}
 	if fresh.Phase == deep.PhaseLanded || fresh.Phase == deep.PhaseStopped {
 		*c.state = fresh
+		if fresh.Phase == deep.PhaseLanded {
+			return c.refreshLandedSummary()
+		}
 		return nil
 	}
 	*c.state = fresh
@@ -267,13 +273,26 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	if c.state.ExecutionQuiescenceUnconfirmed {
 		return fmt.Errorf("cannot verify or checkpoint while executor writers may still be active (task %s); quiescence must be confirmed first", c.state.ExecutionQuiescenceTaskID)
 	}
-	if c.state.LandingReason == "" {
-		c.state.LandingReason = reason
-	}
 	if c.state.Phase == deep.PhaseExecuting {
-		c.state.Phase = deep.PhaseLanding
+		landingReason := c.state.LandingReason
+		if landingReason == "" {
+			landingReason = reason
+		}
+		if c.state.RunEventSchemaVersion != 0 {
+			if err := deep.BeginLanding(c.stateDir, c.state, landingReason, c.now()); err != nil {
+				return fmt.Errorf("persist landing transition: %w", err)
+			}
+		} else {
+			c.state.LandingReason = landingReason
+			c.state.Phase = deep.PhaseLanding
+			if err := c.save(); err != nil {
+				return fmt.Errorf("persist landing transition: %w", err)
+			}
+		}
+	} else if c.state.LandingReason == "" {
+		c.state.LandingReason = reason
 		if err := c.save(); err != nil {
-			return fmt.Errorf("persist landing transition: %w", err)
+			return fmt.Errorf("persist resumed landing reason: %w", err)
 		}
 	}
 	reason = c.state.LandingReason
@@ -428,42 +447,37 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 		return fmt.Errorf("landing checkpoint SHA is empty")
 	}
 
-	priorLandingCommit := c.state.LandingCommit
-	priorLandingTree := c.state.LandingCheckpointTreeSHA
-	priorPhase := c.state.Phase
-	priorLandedAt := c.state.LandedAt
-	priorOutcome := c.state.MissionOutcome
-	priorHandoff := c.state.LandingHandoff
-	restoreLandingState := func() {
-		c.state.LandingCommit = priorLandingCommit
-		c.state.LandingCheckpointTreeSHA = priorLandingTree
-		c.state.Phase = priorPhase
-		c.state.LandedAt = priorLandedAt
-		c.state.MissionOutcome = priorOutcome
-		c.state.LandingHandoff = priorHandoff
-	}
-	c.state.LandingCommit = head
-	c.state.LandingCheckpointTreeSHA = checkpointTree
-	c.state.Phase = deep.PhaseLanded
-	c.state.LandedAt = &now
-	c.state.MissionOutcome = deep.DetermineMissionOutcome(*c.state)
-	c.state.LandingHandoff = updateHandoffLandingResult(c.state.LandingHandoff, c.state.MissionOutcome, reason)
-	if c.state.LandingHandoff != priorHandoff {
-		handoff = []byte(c.state.LandingHandoff)
-		if err := writeAtomicFile(handoffPath, handoff); err != nil {
-			restoreLandingState()
-			return fmt.Errorf("update durable handoff with mission outcome: %w", err)
+	outcomeState := *c.state
+	outcomeState.LandingCommit = head
+	outcomeState.LandingCheckpointTreeSHA = checkpointTree
+	outcomeState.Phase = deep.PhaseLanded
+	outcomeState.LandedAt = &now
+	outcome := deep.DetermineMissionOutcome(outcomeState)
+	landedState := *c.state
+	landedState.MissionOutcome = outcome
+	landedState.LandingHandoff = updateHandoffLandingResult(landedState.LandingHandoff, outcome, reason)
+	if landedState.RunEventSchemaVersion != 0 {
+		complete := c.completeLanding
+		if complete == nil {
+			complete = deep.CompleteLanding
 		}
-		if handoffIsBookkeeping {
-			if err := worktreeWrite(filepath.Join(c.state.WorktreePath, deepWorktreeHandoff), handoff); err != nil {
-				restoreLandingState()
-				return fmt.Errorf("update worktree handoff with mission outcome: %w", err)
-			}
+		if err := complete(c.stateDir, &landedState, head, checkpointTree, now); err != nil {
+			return fmt.Errorf("persist landed state and checkpoint SHA: %w", err)
+		}
+		*c.state = landedState
+	} else {
+		landedState.LandingCommit = head
+		landedState.LandingCheckpointTreeSHA = checkpointTree
+		landedState.Phase = deep.PhaseLanded
+		landedState.LandedAt = &now
+		landedState.MissionOutcome = outcome
+		*c.state = landedState
+		if err := c.save(); err != nil {
+			return fmt.Errorf("persist landed state and checkpoint SHA: %w", err)
 		}
 	}
-	if err := c.save(); err != nil {
-		restoreLandingState()
-		return fmt.Errorf("persist landed state and checkpoint SHA: %w", err)
+	if err := c.refreshLandedSummary(); err != nil {
+		return err
 	}
 	c.incident(deep.IncidentLanded, "", fmt.Sprintf("%s (checkpoint %s)", reason, head))
 	c.logf("landed: %s", handoffPath)
@@ -474,5 +488,44 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	fmt.Fprintf(c.out, "  worktree: %s (branch %s)\n", c.state.WorktreePath, c.state.Branch)
 	fmt.Fprintf(c.out, "  landing checkpoint: %s\n", head)
 	fmt.Fprintf(c.out, "  review locally: branch %s — merge or discard when ready.\n", c.state.Branch)
+	return nil
+}
+
+// refreshLandedSummary repairs the generated handoff projection after an
+// interrupted terminal write. RunEvent/deep.json remain authoritative; a
+// summary write failure never rolls back a durable landing event.
+func (c *deepCoordinator) refreshLandedSummary() error {
+	if c.state.LandingHandoff == "" {
+		return nil
+	}
+	updated := updateHandoffLandingResult(c.state.LandingHandoff, c.state.MissionOutcome, c.state.LandingReason)
+	if updated != c.state.LandingHandoff {
+		previous := c.state.LandingHandoff
+		c.state.LandingHandoff = updated
+		if err := c.save(); err != nil {
+			c.state.LandingHandoff = previous
+			return fmt.Errorf("persist generated landed handoff projection: %w", err)
+		}
+	}
+	if c.state.HandoffPath != "" {
+		if err := writeAtomicFile(c.state.HandoffPath, []byte(c.state.LandingHandoff)); err != nil {
+			return fmt.Errorf("write generated landed handoff: %w", err)
+		}
+	}
+	bookkeepingPaths := c.verificationBookkeepingPaths()
+	snapshot, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+	if err != nil {
+		return nil // the durable state and state-dir handoff remain authoritative
+	}
+	if _, isBookkeeping := snapshot.Bookkeeping[deepWorktreeHandoff]; !isBookkeeping {
+		return nil
+	}
+	worktreeWrite := c.worktreeWrite
+	if worktreeWrite == nil {
+		worktreeWrite = func(path string, data []byte) error { return os.WriteFile(path, data, 0o644) }
+	}
+	if err := worktreeWrite(filepath.Join(c.state.WorktreePath, deepWorktreeHandoff), []byte(c.state.LandingHandoff)); err != nil {
+		return fmt.Errorf("write generated worktree handoff: %w", err)
+	}
 	return nil
 }
