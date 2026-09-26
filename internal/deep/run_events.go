@@ -568,6 +568,11 @@ func validateRunEvent(event RunEvent) error {
 		if event.FromPhase != event.ToPhase || (event.FromPhase != PhaseExecuting && event.FromPhase != PhaseLanding) || event.ExecutorRun == nil {
 			return errors.New("executor-result event has invalid phase or missing run record")
 		}
+		if event.ExecutorRun.Outcome != ExecutorOutcomeSucceeded && event.ExecutorRun.Outcome != ExecutorOutcomeFailed &&
+			event.ExecutorRun.Outcome != ExecutorOutcomeTimedOut && event.ExecutorRun.Outcome != ExecutorOutcomeCanceled &&
+			event.ExecutorRun.Outcome != ExecutorOutcomeQuiescenceUnconfirmed {
+			return errors.New("executor-result event has an invalid outcome")
+		}
 		if err := validateExecutorRun(*event.ExecutorRun, false); err != nil {
 			return fmt.Errorf("invalid executor-result record: %w", err)
 		}
@@ -747,7 +752,7 @@ func sameExecutorStart(start, result ExecutorRun) bool {
 	return start.ID == result.ID && start.StartEventID == result.StartEventID && start.StartedInEpochID == result.StartedInEpochID &&
 		start.TaskID == result.TaskID && start.Attempt == result.Attempt && start.StartedAt.Equal(result.StartedAt) &&
 		start.ConfiguredTimeoutSeconds == result.ConfiguredTimeoutSeconds && start.EffectiveTimeoutSeconds == result.EffectiveTimeoutSeconds &&
-		start.RemainingDeadlineSeconds == result.RemainingDeadlineSeconds && start.Runtime == result.Runtime &&
+		start.RemainingDeadlineSeconds == result.RemainingDeadlineSeconds && start.TimeoutDecision == result.TimeoutDecision && start.Runtime == result.Runtime &&
 		start.ComputeProvider == result.ComputeProvider && start.ComputeInstance == result.ComputeInstance &&
 		sameVerificationSubject(start.RepositoryBefore, result.RepositoryBefore)
 }
@@ -929,8 +934,49 @@ func validateProjectionAtWatermark(state DeepState, event RunEvent) error {
 			state.MissionOutcome != DetermineMissionOutcome(state) {
 			return errors.New("deep.json landing result disagrees with its watermark event")
 		}
+	case RunEventExecutorStarted:
+		if event.ExecutorRun == nil {
+			return errors.New("executor-start watermark event has no run record")
+		}
+		task, ok := findTask(&state, event.ExecutorRun.TaskID)
+		if !ok || task.Status != StatusActive || task.Attempts != event.ExecutorRun.Attempt ||
+			task.ExecutorRunID != event.ExecutorRun.ID || task.ExecutorRunProcessed {
+			return errors.New("deep.json active task disagrees with its executor-start watermark event")
+		}
+	case RunEventExecutorResult:
+		if event.ExecutorRun == nil {
+			return errors.New("executor-result watermark event has no run record")
+		}
+		task, ok := findTask(&state, event.ExecutorRun.TaskID)
+		if !ok || task.ExecutorRunID != event.ExecutorRun.ID || task.Attempts != event.ExecutorRun.Attempt ||
+			task.LastResult != executorProjectedLastResult(*event.ExecutorRun) || task.ExecutionError != event.ExecutorRun.Error {
+			return errors.New("deep.json task result disagrees with its executor-result watermark event")
+		}
+		if event.ExecutorRun.Outcome == ExecutorOutcomeQuiescenceUnconfirmed &&
+			(!state.ExecutionQuiescenceUnconfirmed || state.ExecutionQuiescenceTaskID != task.ID || task.Status != StatusNeedsHuman) {
+			return errors.New("deep.json quiescence block disagrees with its executor-result watermark event")
+		}
+	case RunEventExecutorRecoveryRequired:
+		if event.ExecutorRun == nil {
+			return errors.New("executor-recovery watermark event has no run record")
+		}
+		task, ok := findTask(&state, event.ExecutorRun.TaskID)
+		if !ok || task.ExecutorRunID != event.ExecutorRun.ID || task.Attempts != event.ExecutorRun.Attempt ||
+			task.Status != StatusNeedsHuman || task.ExecutionError != event.Reason ||
+			task.LastResult != "executor outcome unknown | "+event.Reason ||
+			!state.ExecutionQuiescenceUnconfirmed || state.ExecutionQuiescenceTaskID != task.ID {
+			return errors.New("deep.json recovery block disagrees with its executor-recovery watermark event")
+		}
 	}
 	return nil
+}
+
+func executorProjectedLastResult(run ExecutorRun) string {
+	result := run.ResultSummary
+	if run.Error != "" {
+		result += " | executor error: " + run.Error
+	}
+	return result
 }
 
 func applyRunEvent(state *DeepState, event RunEvent) error {

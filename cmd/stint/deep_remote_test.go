@@ -216,6 +216,9 @@ func TestHermesExecutorNonZeroExit(t *testing.T) {
 	if res.exitCode != 124 {
 		t.Errorf("exitCode=%d, want 124 (timeout)", res.exitCode)
 	}
+	if !res.timedOut || res.finishReason != "timed out" {
+		t.Errorf("timeout marker was not preserved: timedOut=%t finish=%q", res.timedOut, res.finishReason)
+	}
 }
 
 func TestHermesExecutorSSHFailure(t *testing.T) {

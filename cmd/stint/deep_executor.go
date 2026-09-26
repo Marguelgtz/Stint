@@ -32,6 +32,7 @@ type execInput struct {
 type execResult struct {
 	exitCode     int
 	completed    bool // Hermes process exited successfully; task acceptance is separate
+	timedOut     bool
 	finishReason string
 	outputText   string // final worker report text
 	duration     time.Duration

@@ -17,6 +17,8 @@ const (
 	ExecutorOutcomeStarted               ExecutorOutcome = "started"
 	ExecutorOutcomeSucceeded             ExecutorOutcome = "succeeded"
 	ExecutorOutcomeFailed                ExecutorOutcome = "failed"
+	ExecutorOutcomeTimedOut              ExecutorOutcome = "timed_out"
+	ExecutorOutcomeCanceled              ExecutorOutcome = "canceled"
 	ExecutorOutcomeQuiescenceUnconfirmed ExecutorOutcome = "quiescence_unconfirmed"
 	ExecutorOutcomeUnknown               ExecutorOutcome = "unknown"
 )
@@ -43,6 +45,7 @@ type ExecutorRun struct {
 	ConfiguredTimeoutSeconds int                  `json:"configuredTimeoutSeconds"`
 	EffectiveTimeoutSeconds  int                  `json:"effectiveTimeoutSeconds"`
 	RemainingDeadlineSeconds int                  `json:"remainingDeadlineSeconds,omitempty"`
+	TimeoutDecision          string               `json:"timeoutDecision,omitempty"`
 	Runtime                  ExecutorRuntime      `json:"runtime"`
 	ComputeProvider          string               `json:"computeProvider,omitempty"`
 	ComputeInstance          int64                `json:"computeInstanceId,omitempty"`
@@ -57,6 +60,7 @@ type ExecutorRun struct {
 	DurationMilliseconds     int64                `json:"durationMilliseconds,omitempty"`
 	RepositoryAfter          *VerificationSubject `json:"repositoryAfter,omitempty"`
 	RepositoryAfterError     string               `json:"repositoryAfterError,omitempty"`
+	ArtifactRefs             []string             `json:"artifactRefs,omitempty"`
 }
 
 func NewExecutorRunID() (string, error) {
@@ -75,6 +79,9 @@ func BeginExecutorRun(stateDir string, state *DeepState, run ExecutorRun) (Execu
 	}
 	if state.Phase != PhaseExecuting {
 		return ExecutorRun{}, fmt.Errorf("cannot start executor in phase %q", state.Phase)
+	}
+	if state.ExecutionQuiescenceUnconfirmed {
+		return ExecutorRun{}, errors.New("cannot start executor while process quiescence is unconfirmed")
 	}
 	if run.ID == "" || run.StartedAt.IsZero() || run.TaskID == "" || run.Attempt < 1 {
 		return ExecutorRun{}, errors.New("executor start requires identity, task, attempt, and timestamp")
@@ -97,6 +104,9 @@ func BeginExecutorRun(stateDir string, state *DeepState, run ExecutorRun) (Execu
 	}
 	if task.Status.Terminal() {
 		return ExecutorRun{}, fmt.Errorf("cannot start executor for terminal task %q", run.TaskID)
+	}
+	if task.ExecutorRunID != "" && !task.ExecutorRunProcessed {
+		return ExecutorRun{}, fmt.Errorf("cannot start another executor for task %q before its prior result is processed", run.TaskID)
 	}
 	if binding := state.ComputeBinding; binding != nil {
 		run.ComputeProvider, run.ComputeInstance = binding.Provider, binding.InstanceID
@@ -124,7 +134,8 @@ func CompleteExecutorRun(stateDir string, state *DeepState, run ExecutorRun) err
 	if run.ID == "" || run.StartEventID != executorEventID(run.ID, "started") || run.TaskID == "" || run.Attempt < 1 || run.EndedAt.IsZero() {
 		return errors.New("executor result requires its start identity, task, attempt, and end timestamp")
 	}
-	if run.Outcome != ExecutorOutcomeSucceeded && run.Outcome != ExecutorOutcomeFailed && run.Outcome != ExecutorOutcomeQuiescenceUnconfirmed {
+	if run.Outcome != ExecutorOutcomeSucceeded && run.Outcome != ExecutorOutcomeFailed && run.Outcome != ExecutorOutcomeTimedOut &&
+		run.Outcome != ExecutorOutcomeCanceled && run.Outcome != ExecutorOutcomeQuiescenceUnconfirmed {
 		return fmt.Errorf("invalid executor result outcome %q", run.Outcome)
 	}
 	run.EndedAt = run.EndedAt.UTC()
@@ -254,7 +265,7 @@ func applyExecutorStarted(task *Task, run ExecutorRun) {
 	task.VerifiedAt = nil
 	task.ConfiguredTimeoutSec = run.ConfiguredTimeoutSeconds
 	task.EffectiveTimeoutSec = run.EffectiveTimeoutSeconds
-	task.TimeoutDecision = ""
+	task.TimeoutDecision = run.TimeoutDecision
 }
 
 func applyExecutorResult(state *DeepState, run ExecutorRun) error {
@@ -262,12 +273,9 @@ func applyExecutorResult(state *DeepState, run ExecutorRun) error {
 	if !ok || task.ExecutorRunID != run.ID || task.Attempts != run.Attempt {
 		return fmt.Errorf("executor result %q does not match the projected task attempt", run.ID)
 	}
-	task.LastResult = run.ResultSummary
+	task.LastResult = executorProjectedLastResult(run)
 	task.ExecutionError = run.Error
 	task.ExecutorRunProcessed = false
-	if run.Error != "" {
-		task.LastResult += " | executor error: " + run.Error
-	}
 	if run.Outcome == ExecutorOutcomeQuiescenceUnconfirmed {
 		task.Status = StatusNeedsHuman
 		task.Blocker = "executor process quiescence is unconfirmed; verification and further work are stopped"
@@ -300,6 +308,9 @@ func validateExecutorRun(run ExecutorRun, starting bool) error {
 		run.RemainingDeadlineSeconds < 0 || run.RemainingDeadlineSeconds > 7*24*60*60 {
 		return errors.New("executor run timeout context is invalid")
 	}
+	if len(run.TimeoutDecision) > maxRunEventTextBytes || strings.ContainsRune(run.TimeoutDecision, '\x00') {
+		return errors.New("executor timeout decision exceeds its limit or contains NUL")
+	}
 	for _, value := range []string{run.Runtime.Worker, run.Runtime.Provider, run.Runtime.Model, run.Runtime.Reasoning, run.ComputeProvider} {
 		if len(value) > 128 || strings.ContainsAny(value, "\x00\r\n") {
 			return errors.New("executor runtime identity is invalid")
@@ -314,7 +325,7 @@ func validateExecutorRun(run ExecutorRun, starting bool) error {
 	}
 	if starting {
 		if run.Outcome != ExecutorOutcomeStarted || !run.EndedAt.IsZero() || run.Error != "" || run.ResultSummary != "" ||
-			run.RepositoryAfter != nil || run.RepositoryAfterError != "" {
+			run.RepositoryAfter != nil || run.RepositoryAfterError != "" || len(run.ArtifactRefs) != 0 {
 			return errors.New("executor start contains result-only fields")
 		}
 		return nil
@@ -325,12 +336,26 @@ func validateExecutorRun(run ExecutorRun, starting bool) error {
 		len(run.ResultSummary) > maxExecutorRunSummaryBytes || len(run.RepositoryAfterError) > maxRunEventTextBytes {
 		return errors.New("executor result facts exceed limits or are invalid")
 	}
+	if len(run.ArtifactRefs) > 8 {
+		return errors.New("executor result has too many artifact references")
+	}
+	for _, ref := range run.ArtifactRefs {
+		if ref == "" || len(ref) > 256 || strings.ContainsAny(ref, "\x00\r\n") {
+			return errors.New("executor artifact reference is empty or invalid")
+		}
+	}
 	if run.RepositoryAfter != nil && (run.RepositoryAfter.HeadCommit == "" || run.RepositoryAfter.TreeSHA == "" ||
 		len(run.RepositoryAfter.HeadCommit) > 128 || len(run.RepositoryAfter.TreeSHA) > 128) {
 		return errors.New("executor post-run repository identity is invalid")
 	}
 	if run.Outcome == ExecutorOutcomeQuiescenceUnconfirmed && run.RepositoryAfter != nil {
 		return errors.New("unconfirmed executor quiescence cannot claim a stable post-run repository identity")
+	}
+	if run.Outcome == ExecutorOutcomeSucceeded && (!run.Completed || run.ExitCode != 0 || run.Error != "") {
+		return errors.New("successful executor outcome disagrees with completion facts")
+	}
+	if run.Outcome == ExecutorOutcomeTimedOut && run.Error == "" {
+		return errors.New("timed-out executor outcome requires a timeout error")
 	}
 	return nil
 }

@@ -50,6 +50,12 @@ func TestExecutorRunStartAndResultAreCanonicalFacts(t *testing.T) {
 	if state.RunEventWatermark != 3 || state.Tasks[0].ExecutorRunID != run.ID || state.Tasks[0].LastResult != run.ResultSummary || state.Tasks[0].ExecutorRunProcessed {
 		t.Fatalf("executor result projection = task %+v watermark %d", state.Tasks[0], state.RunEventWatermark)
 	}
+	drift := state
+	drift.Tasks = append([]Task(nil), state.Tasks...)
+	drift.Tasks[0].LastResult = "contradictory executor result"
+	if err := drift.SaveDir(stateDir); err == nil || !strings.Contains(err.Error(), "contradicts its watermark event") {
+		t.Fatalf("SaveDir accepted executor projection drift: %v", err)
+	}
 	loaded, ok, err := LoadExecutorRun(stateDir, state.SessionID, run.ID)
 	if err != nil || !ok || loaded.Outcome != ExecutorOutcomeSucceeded || loaded.RepositoryAfter == nil || loaded.RepositoryAfter.TreeSHA != "tree-after" {
 		t.Fatalf("load executor result = %+v found=%t err=%v", loaded, ok, err)

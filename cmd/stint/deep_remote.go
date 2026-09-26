@@ -544,8 +544,11 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 	if code, body, ok := takeTrailingVerifierMarker(out, hermesExitMarker); ok {
 		res.exitCode = code
 		res.completed = code == 0
+		res.timedOut = code == 124
 		res.outputText = strings.TrimSpace(stripHermesInvocationStartMarker(body))
-		if res.completed {
+		if res.timedOut {
+			res.finishReason = "timed out"
+		} else if res.completed {
 			res.finishReason = "completed"
 		} else {
 			res.finishReason = fmt.Sprintf("exit %d", code)
@@ -704,6 +707,7 @@ func (e *localHermesExecutor) run(ctx context.Context, in execInput) (execResult
 	res := execResult{
 		duration:   time.Since(start),
 		exitCode:   processExitCode(cmd),
+		timedOut:   errors.Is(ctx.Err(), context.DeadlineExceeded),
 		outputText: strings.TrimSpace(string(out)),
 		stderrTail: tailLine(string(errOutput), 5),
 	}

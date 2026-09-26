@@ -36,6 +36,18 @@ func (s *DeepState) SaveDir(stateDir string) error {
 					!sameLifecycleProjection(*s, recovered) {
 					return fmt.Errorf("journal-backed lifecycle state must be changed through a RunEvent transition")
 				}
+				if recovered.RunEventWatermark > 0 {
+					events, _, err := readRunEventsLocked(dir, s.SessionID)
+					if err != nil {
+						return err
+					}
+					if recovered.RunEventWatermark > uint64(len(events)) {
+						return errors.New("Deep Work projection watermark is ahead of the run journal")
+					}
+					if err := validateProjectionAtWatermark(*s, events[recovered.RunEventWatermark-1]); err != nil {
+						return fmt.Errorf("Deep Work projection contradicts its watermark event: %w", err)
+					}
+				}
 			}
 		} else if s.ProjectionRevision != 0 {
 			return fmt.Errorf("stale Deep Work projection revision %d; no durable projection exists", s.ProjectionRevision)
