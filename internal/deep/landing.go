@@ -19,6 +19,8 @@ func (s *DeepState) ReopenAfterLanding(now time.Time) bool {
 		Commit:              s.LandingCommit,
 		CheckpointTreeSHA:   s.LandingCheckpointTreeSHA,
 		Verification:        s.LandingVerify,
+		MissionOutcome:      s.MissionOutcome,
+		VerificationOutcome: s.LandingVerificationOutcome,
 		VerificationSubject: s.LandingVerificationSubject,
 	}
 	if s.LandedAt != nil {
@@ -29,12 +31,14 @@ func (s *DeepState) ReopenAfterLanding(now time.Time) bool {
 	}
 	s.PreviousLandings = append(s.PreviousLandings, record)
 	s.Phase = PhaseExecuting
+	s.MissionOutcome = MissionOutcomePending
 	s.LandedAt = nil
 	s.LandingReason = ""
 	s.LandingCommit = ""
 	s.LandingCheckpointTreeSHA = ""
 	s.LandingVerify = ""
 	s.LandingVerifyDone = false
+	s.LandingVerificationOutcome = VerificationNotRun
 	s.LandingVerificationSubject = nil
 	s.LandingVerificationBookkeeping = nil
 	s.LandingHandoff = ""

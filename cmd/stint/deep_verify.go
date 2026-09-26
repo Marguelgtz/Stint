@@ -8,16 +8,16 @@ import (
 	"github.com/Marguelgtz/Stint/internal/deep"
 )
 
-type verificationOutcome string
+type verificationOutcome = deep.VerificationOutcome
 
 const (
-	verificationNotRun       verificationOutcome = "not_run"
-	verificationPassed       verificationOutcome = "passed"
-	verificationFailed       verificationOutcome = "failed"
-	verificationTimedOut     verificationOutcome = "timed_out"
-	verificationExecutionErr verificationOutcome = "execution_error"
-	verificationInvalid      verificationOutcome = "invalid_command"
-	verificationCanceled     verificationOutcome = "canceled"
+	verificationNotRun       = deep.VerificationNotRun
+	verificationPassed       = deep.VerificationPassed
+	verificationFailed       = deep.VerificationFailed
+	verificationTimedOut     = deep.VerificationTimedOut
+	verificationExecutionErr = deep.VerificationExecutionErr
+	verificationInvalid      = deep.VerificationInvalid
+	verificationCanceled     = deep.VerificationCanceled
 )
 
 // verificationResult preserves how a verifier ended instead of collapsing
