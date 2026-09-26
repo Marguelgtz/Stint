@@ -28,9 +28,12 @@ const (
 type RunEventType string
 
 const (
-	RunEventEpochStarted   RunEventType = "run.epoch_started"
-	RunEventLandingStarted RunEventType = "run.landing_started"
-	RunEventLanded         RunEventType = "run.landed"
+	RunEventEpochStarted             RunEventType = "run.epoch_started"
+	RunEventLandingStarted           RunEventType = "run.landing_started"
+	RunEventLanded                   RunEventType = "run.landed"
+	RunEventExecutorStarted          RunEventType = "executor.started"
+	RunEventExecutorResult           RunEventType = "executor.result"
+	RunEventExecutorRecoveryRequired RunEventType = "executor.recovery_required"
 )
 
 type RunEventBoundary string
@@ -56,8 +59,8 @@ type RunTaskSummary struct {
 }
 
 // RunEvent is a bounded, versioned fact in one Deep Work run's append-only
-// history. B1 records run/epoch and landing lifecycle transitions; executor
-// and verifier facts are added by the later execution-record layer.
+// history. B1 records run/epoch and landing transitions; B2 adds executor
+// invocation facts. Verification remains a separate record layer.
 type RunEvent struct {
 	SchemaVersion    int              `json:"schemaVersion"`
 	EventID          string           `json:"eventId"`
@@ -78,6 +81,7 @@ type RunEvent struct {
 	TaskSummary      *RunTaskSummary  `json:"taskSummary,omitempty"`
 	CheckpointCommit string           `json:"checkpointCommit,omitempty"`
 	CheckpointTree   string           `json:"checkpointTreeSha,omitempty"`
+	ExecutorRun      *ExecutorRun     `json:"executorRun,omitempty"`
 }
 
 // NewExecutionEpochID returns a random opaque identity for one execution
@@ -553,6 +557,28 @@ func validateRunEvent(event RunEvent) error {
 			strings.ContainsAny(event.CheckpointCommit, "\x00\r\n") || strings.ContainsAny(event.CheckpointTree, "\x00\r\n") {
 			return errors.New("landed event has invalid phase or checkpoint identity")
 		}
+	case RunEventExecutorStarted:
+		if event.FromPhase != PhaseExecuting || event.ToPhase != PhaseExecuting || event.ExecutorRun == nil {
+			return errors.New("executor-start event has invalid phase or missing run record")
+		}
+		if err := validateExecutorRun(*event.ExecutorRun, true); err != nil {
+			return fmt.Errorf("invalid executor-start record: %w", err)
+		}
+	case RunEventExecutorResult:
+		if event.FromPhase != event.ToPhase || (event.FromPhase != PhaseExecuting && event.FromPhase != PhaseLanding) || event.ExecutorRun == nil {
+			return errors.New("executor-result event has invalid phase or missing run record")
+		}
+		if err := validateExecutorRun(*event.ExecutorRun, false); err != nil {
+			return fmt.Errorf("invalid executor-result record: %w", err)
+		}
+	case RunEventExecutorRecoveryRequired:
+		if event.FromPhase != event.ToPhase || (event.FromPhase != PhaseExecuting && event.FromPhase != PhaseLanding) ||
+			event.ExecutorRun == nil || event.ExecutorRun.Outcome != ExecutorOutcomeUnknown || event.Reason == "" {
+			return errors.New("executor-recovery event has invalid phase, outcome, or missing run record")
+		}
+		if err := validateExecutorRun(*event.ExecutorRun, false); err != nil {
+			return fmt.Errorf("invalid executor-recovery record: %w", err)
+		}
 	default:
 		return fmt.Errorf("unknown run event type %q", event.Type)
 	}
@@ -561,6 +587,9 @@ func validateRunEvent(event RunEvent) error {
 	}
 	if event.Type != RunEventLanded && (event.CheckpointCommit != "" || event.CheckpointTree != "") {
 		return errors.New("non-landed event contains checkpoint identity")
+	}
+	if event.Type != RunEventExecutorStarted && event.Type != RunEventExecutorResult && event.Type != RunEventExecutorRecoveryRequired && event.ExecutorRun != nil {
+		return errors.New("non-executor event contains an executor run record")
 	}
 	return nil
 }
@@ -629,14 +658,17 @@ func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string)
 		}
 		return nil
 	}
-	if event.EpochID != last.EpochID {
-		return errors.New("lifecycle event epoch does not match current run epoch")
-	}
 	if last.Type == RunEventLanded {
-		return errors.New("lifecycle event follows terminal landing without a new epoch")
+		return errors.New("event follows terminal landing without a new epoch")
+	}
+	if event.EpochID != last.EpochID && event.Type != RunEventExecutorRecoveryRequired {
+		return errors.New("event epoch does not match the current run epoch")
 	}
 	if event.FromPhase != phase {
 		return fmt.Errorf("event %q expects phase %q after prior event phase %q", event.Type, event.FromPhase, phase)
+	}
+	if err := validateExecutorEventTransition(prior, event); err != nil {
+		return err
 	}
 	if event.Type == RunEventLandingStarted && phase != PhaseExecuting {
 		return errors.New("landing-start event does not follow an executing epoch")
@@ -651,6 +683,73 @@ func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string)
 		}
 	}
 	return nil
+}
+
+func validateExecutorEventTransition(prior []RunEvent, event RunEvent) error {
+	switch event.Type {
+	case RunEventExecutorStarted:
+		if event.EpochID != prior[len(prior)-1].EpochID || event.FromPhase != PhaseExecuting {
+			return errors.New("executor start must belong to the active executing epoch")
+		}
+		for _, old := range prior {
+			if old.ExecutorRun == nil {
+				continue
+			}
+			if old.ExecutorRun.ID == event.ExecutorRun.ID {
+				return fmt.Errorf("executor run %q already has journal history", event.ExecutorRun.ID)
+			}
+			if old.Type == RunEventExecutorStarted {
+				if _, closed := executorRunClosed(prior, old.ExecutorRun.ID); !closed {
+					return fmt.Errorf("executor run %q is still unmatched", old.ExecutorRun.ID)
+				}
+			}
+		}
+	case RunEventExecutorResult:
+		start, ok := executorStart(prior, event.ExecutorRun.ID)
+		if !ok || event.EpochID != start.EpochID || !sameExecutorStart(*start.ExecutorRun, *event.ExecutorRun) {
+			return errors.New("executor result does not match a start event in the same epoch")
+		}
+		if _, closed := executorRunClosed(prior, event.ExecutorRun.ID); closed {
+			return errors.New("executor result follows an already closed invocation")
+		}
+	case RunEventExecutorRecoveryRequired:
+		start, ok := executorStart(prior, event.ExecutorRun.ID)
+		if !ok || !sameExecutorStart(*start.ExecutorRun, *event.ExecutorRun) {
+			return errors.New("executor recovery does not match a durable start event")
+		}
+		if _, closed := executorRunClosed(prior, event.ExecutorRun.ID); closed {
+			return errors.New("executor recovery follows an already closed invocation")
+		}
+	}
+	return nil
+}
+
+func executorStart(events []RunEvent, id string) (*RunEvent, bool) {
+	for i := range events {
+		if events[i].Type == RunEventExecutorStarted && events[i].ExecutorRun != nil && events[i].ExecutorRun.ID == id {
+			return &events[i], true
+		}
+	}
+	return nil, false
+}
+
+func executorRunClosed(events []RunEvent, id string) (RunEvent, bool) {
+	for _, event := range events {
+		if (event.Type == RunEventExecutorResult || event.Type == RunEventExecutorRecoveryRequired) &&
+			event.ExecutorRun != nil && event.ExecutorRun.ID == id {
+			return event, true
+		}
+	}
+	return RunEvent{}, false
+}
+
+func sameExecutorStart(start, result ExecutorRun) bool {
+	return start.ID == result.ID && start.StartEventID == result.StartEventID && start.StartedInEpochID == result.StartedInEpochID &&
+		start.TaskID == result.TaskID && start.Attempt == result.Attempt && start.StartedAt.Equal(result.StartedAt) &&
+		start.ConfiguredTimeoutSeconds == result.ConfiguredTimeoutSeconds && start.EffectiveTimeoutSeconds == result.EffectiveTimeoutSeconds &&
+		start.RemainingDeadlineSeconds == result.RemainingDeadlineSeconds && start.Runtime == result.Runtime &&
+		start.ComputeProvider == result.ComputeProvider && start.ComputeInstance == result.ComputeInstance &&
+		sameVerificationSubject(start.RepositoryBefore, result.RepositoryBefore)
 }
 
 // activeLandingReason returns the reason that opened the current interrupted
@@ -882,6 +981,36 @@ func applyRunEvent(state *DeepState, event RunEvent) error {
 		state.LandingCommit = event.CheckpointCommit
 		state.LandingCheckpointTreeSHA = event.CheckpointTree
 		state.MissionOutcome = DetermineMissionOutcome(*state)
+	case RunEventExecutorStarted:
+		if state.Phase != event.FromPhase || event.EpochID != state.ExecutionEpochID || event.ExecutorRun == nil {
+			return errors.New("executor-start event does not follow the current executing epoch")
+		}
+		task, ok := findTask(state, event.ExecutorRun.TaskID)
+		if !ok || event.ExecutorRun.Attempt != task.Attempts+1 || task.Status.Terminal() {
+			return errors.New("executor-start event does not follow the projected task attempt")
+		}
+		applyExecutorStarted(task, *event.ExecutorRun)
+	case RunEventExecutorResult:
+		if event.EpochID != state.ExecutionEpochID || event.ExecutorRun == nil {
+			return errors.New("executor-result event does not belong to the current epoch")
+		}
+		if err := applyExecutorResult(state, *event.ExecutorRun); err != nil {
+			return err
+		}
+	case RunEventExecutorRecoveryRequired:
+		if event.ExecutorRun == nil {
+			return errors.New("executor-recovery event has no run record")
+		}
+		task, ok := findTask(state, event.ExecutorRun.TaskID)
+		if !ok || task.ExecutorRunID != event.ExecutorRun.ID || task.Attempts != event.ExecutorRun.Attempt {
+			return errors.New("executor-recovery event does not match the projected task attempt")
+		}
+		task.Status = StatusNeedsHuman
+		task.Blocker = "executor invocation has no durable result; process quiescence is unknown, so verification and retries are stopped"
+		task.ExecutionError = event.Reason
+		task.LastResult = "executor outcome unknown | " + event.Reason
+		state.ExecutionQuiescenceUnconfirmed = true
+		state.ExecutionQuiescenceTaskID = task.ID
 	default:
 		return fmt.Errorf("cannot apply run event type %q", event.Type)
 	}
