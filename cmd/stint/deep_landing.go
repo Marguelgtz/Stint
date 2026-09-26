@@ -271,7 +271,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 		return fmt.Errorf("cannot land Deep Work session from phase %q", c.state.Phase)
 	}
 	if c.state.ExecutionQuiescenceUnconfirmed {
-		return fmt.Errorf("cannot verify or checkpoint while executor writers may still be active (task %s); quiescence must be confirmed first", c.state.ExecutionQuiescenceTaskID)
+		return fmt.Errorf("cannot verify or checkpoint while executor or verifier writers may still be active (task %s); quiescence must be confirmed first", c.state.ExecutionQuiescenceTaskID)
 	}
 	if c.state.Phase == deep.PhaseExecuting {
 		landingReason := c.state.LandingReason
@@ -329,12 +329,25 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	if verifyRequired {
 		evidenceReusable := landingEvidenceMatches(verificationSnapshot, c.state.LandingVerificationSubject, c.state.LandingVerificationBookkeeping) &&
 			c.state.LandingVerificationOutcome.Recorded()
+		journaled := c.state.RunEventSchemaVersion == deep.RunEventSchemaVersion
+		if journaled {
+			evidenceReusable = false
+			if c.state.LandingVerificationRunID != "" {
+				previous, found, loadErr := deep.LoadVerificationRun(c.stateDir, c.state.SessionID, c.state.LandingVerificationRunID)
+				if loadErr != nil {
+					return fmt.Errorf("load durable final verification result: %w", loadErr)
+				}
+				evidenceReusable = found && previous.Purpose == deep.VerificationPurposeMissionEnd &&
+					previous.Outcome.Recorded() && previous.CommandSHA256 == deep.VerificationCommandIdentity(c.state.Verify) &&
+					verificationRunMatchesSnapshot(previous, verificationSnapshot)
+			}
+		}
 		if !evidenceReusable {
 			// A legacy done bit has no subject provenance. Clear it durably before
 			// rerunning so a crash cannot make the old result look reusable. A
 			// subject-bearing A2 result without a typed A3 outcome is also rerun:
 			// its prose summary is not canonical verifier state.
-			if c.state.LandingVerifyDone || c.state.LandingVerificationOutcome != deep.VerificationNotRun || c.state.LandingVerificationSubject != nil || c.state.LandingVerificationBookkeeping != nil {
+			if !journaled && (c.state.LandingVerifyDone || c.state.LandingVerificationOutcome != deep.VerificationNotRun || c.state.LandingVerificationSubject != nil || c.state.LandingVerificationBookkeeping != nil) {
 				c.state.LandingVerify = ""
 				c.state.LandingVerifyDone = false
 				c.state.LandingVerificationOutcome = deep.VerificationNotRun
@@ -350,35 +363,53 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 					return runVerifyCmd(ctx, command, c.state.WorktreePath)
 				}
 			}
-			result := run(ctx, c.state.Verify)
-			if result.QuiescenceUnconfirmed {
-				c.state.ExecutionQuiescenceUnconfirmed = true
-				c.state.ExecutionQuiescenceTaskID = "mission-final-verifier"
-				if err := c.save(); err != nil {
-					return fmt.Errorf("final verifier quiescence is unconfirmed and the block could not be persisted: %w", err)
+			if journaled {
+				invoke := func(ctx context.Context, command, _ string) verificationResult { return run(ctx, command) }
+				result, durableRun, err := c.runJournaledVerification(ctx, deep.VerificationPurposeMissionEnd, "", 0, "mission",
+					c.state.Verify, verificationSnapshot, 3*time.Minute, invoke)
+				if err != nil {
+					return fmt.Errorf("final verification could not be durably completed: %w", err)
 				}
-				return fmt.Errorf("landing stopped because final verifier process quiescence is unconfirmed")
-			}
-			afterVerify, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
-			if err != nil {
-				return fmt.Errorf("capture repository state after final verification: %w", err)
-			}
-			if afterVerify.Subject != verificationSnapshot.Subject || !sameMetadata(
-				landingVerificationBookkeeping(verificationSnapshot.Bookkeeping),
-				landingVerificationBookkeeping(afterVerify.Bookkeeping),
-			) {
-				return fmt.Errorf("repository changed during final verification; verified subject %s/%s no longer matches %s/%s",
-					verificationSnapshot.Subject.HeadCommit, verificationSnapshot.Subject.TreeSHA,
-					afterVerify.Subject.HeadCommit, afterVerify.Subject.TreeSHA)
-			}
-			c.state.LandingVerify = summarizeLandingVerification(result)
-			c.state.LandingVerifyDone = true
-			c.state.LandingVerificationOutcome = result.Outcome
-			verifiedSubject := verificationSnapshot.Subject
-			c.state.LandingVerificationSubject = &verifiedSubject
-			c.state.LandingVerificationBookkeeping = landingVerificationBookkeeping(verificationSnapshot.Bookkeeping)
-			if err := c.save(); err != nil {
-				return fmt.Errorf("persist final verification result and subject: %w", err)
+				if result.QuiescenceUnconfirmed {
+					return fmt.Errorf("landing stopped because final verifier process quiescence is unconfirmed")
+				}
+				if durableRun.SubjectAfter == nil || *durableRun.SubjectAfter != verificationSnapshot.Subject || !sameMetadata(
+					landingVerificationBookkeeping(verificationSnapshot.Bookkeeping), durableRun.BookkeepingAfter,
+				) {
+					return fmt.Errorf("repository changed or could not be identified during final verification; verified subject %s/%s is not stable",
+						verificationSnapshot.Subject.HeadCommit, verificationSnapshot.Subject.TreeSHA)
+				}
+			} else {
+				result := run(ctx, c.state.Verify)
+				if result.QuiescenceUnconfirmed {
+					c.state.ExecutionQuiescenceUnconfirmed = true
+					c.state.ExecutionQuiescenceTaskID = "mission-final-verifier"
+					if err := c.save(); err != nil {
+						return fmt.Errorf("final verifier quiescence is unconfirmed and the block could not be persisted: %w", err)
+					}
+					return fmt.Errorf("landing stopped because final verifier process quiescence is unconfirmed")
+				}
+				afterVerify, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+				if err != nil {
+					return fmt.Errorf("capture repository state after final verification: %w", err)
+				}
+				if afterVerify.Subject != verificationSnapshot.Subject || !sameMetadata(
+					landingVerificationBookkeeping(verificationSnapshot.Bookkeeping),
+					landingVerificationBookkeeping(afterVerify.Bookkeeping),
+				) {
+					return fmt.Errorf("repository changed during final verification; verified subject %s/%s no longer matches %s/%s",
+						verificationSnapshot.Subject.HeadCommit, verificationSnapshot.Subject.TreeSHA,
+						afterVerify.Subject.HeadCommit, afterVerify.Subject.TreeSHA)
+				}
+				c.state.LandingVerify = summarizeLandingVerification(result)
+				c.state.LandingVerifyDone = true
+				c.state.LandingVerificationOutcome = result.Outcome
+				verifiedSubject := verificationSnapshot.Subject
+				c.state.LandingVerificationSubject = &verifiedSubject
+				c.state.LandingVerificationBookkeeping = landingVerificationBookkeeping(verificationSnapshot.Bookkeeping)
+				if err := c.save(); err != nil {
+					return fmt.Errorf("persist final verification result and subject: %w", err)
+				}
 			}
 		}
 	} else if !c.state.LandingVerifyDone || c.state.LandingVerify != "" || c.state.LandingVerificationOutcome != deep.VerificationNotRun || c.state.LandingVerificationSubject != nil || c.state.LandingVerificationBookkeeping != nil {

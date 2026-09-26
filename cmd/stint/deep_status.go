@@ -129,6 +129,15 @@ func runDeepStop(args []string) error {
 	if err != nil {
 		return err
 	}
+	if state.Phase != deep.PhaseLanded && state.Phase != deep.PhaseStopped {
+		if alive, _ := deep.CoordinatorAlive(paths.StateDir, state.SessionID); !alive {
+			if unmatched, recoverErr := deep.RecoverUnmatchedVerificationRun(paths.StateDir, &state, time.Now().UTC()); recoverErr != nil {
+				return fmt.Errorf("recover interrupted verification before landing: %w", recoverErr)
+			} else if unmatched != nil {
+				fmt.Fprintf(os.Stderr, "Deep Work is blocked: verification %s has no durable result and process quiescence is unknown.\n", unmatched.ID)
+			}
+		}
+	}
 	switch state.Phase {
 	case deep.PhaseLanded, deep.PhaseStopped:
 		fmt.Printf("Deep Work %s already %s (mission outcome: %s).\n", state.SessionID, state.Phase, deep.DisplayMissionOutcome(state.MissionOutcome, state.Phase))
