@@ -11,7 +11,7 @@ type Phase string
 const (
 	PhaseExecuting Phase = "executing"
 	PhaseLanding   Phase = "landing"
-	PhaseLanded    Phase = "landed"
+	PhaseLanded    Phase = "landed" // operational stopping/handoff boundary; see MissionOutcome
 	PhaseStopped   Phase = "stopped"
 )
 

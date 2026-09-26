@@ -246,10 +246,12 @@ func TestPrepareDeepOnBoxResumeStartsFreshLandingEpoch(t *testing.T) {
 	state.Phase = deep.PhaseLanded
 	state.LandedAt = &landedAt
 	state.LandingReason = "time budget exhausted"
+	state.MissionOutcome = deep.MissionOutcomeFailed
 	state.LandingCommit = strings.Repeat("a", 40)
 	state.LandingCheckpointTreeSHA = strings.Repeat("b", 40)
 	state.LandingVerify = "passed\nold verification"
 	state.LandingVerifyDone = true
+	state.LandingVerificationOutcome = deep.VerificationFailed
 	state.LandingVerificationSubject = &deep.VerificationSubject{HeadCommit: strings.Repeat("c", 40), TreeSHA: strings.Repeat("b", 40)}
 	state.LandingVerificationBookkeeping = map[string]string{"plan.md": "git-blob:abc"}
 	state.LandingHandoff = "old handoff"
@@ -257,14 +259,14 @@ func TestPrepareDeepOnBoxResumeStartsFreshLandingEpoch(t *testing.T) {
 	if _, err := prepareDeepOnBoxResume(state, compute, &deepOnBoxFlags{resume: true}, env.coord.git, env.clock.now); err != nil {
 		t.Fatalf("resume landed session: %v", err)
 	}
-	if state.Phase != deep.PhaseExecuting || state.LandedAt != nil || state.LandingReason != "" || state.LandingCommit != "" || state.LandingCheckpointTreeSHA != "" || state.LandingVerifyDone || state.LandingVerify != "" || state.LandingVerificationSubject != nil || state.LandingVerificationBookkeeping != nil || state.LandingHandoff != "" {
+	if state.Phase != deep.PhaseExecuting || state.MissionOutcome != deep.MissionOutcomePending || state.LandedAt != nil || state.LandingReason != "" || state.LandingCommit != "" || state.LandingCheckpointTreeSHA != "" || state.LandingVerifyDone || state.LandingVerify != "" || state.LandingVerificationOutcome != deep.VerificationNotRun || state.LandingVerificationSubject != nil || state.LandingVerificationBookkeeping != nil || state.LandingHandoff != "" {
 		t.Fatalf("resumed landing fields remain stale: %+v", state)
 	}
 	if len(state.PreviousLandings) != 1 {
 		t.Fatalf("previous landing history = %+v", state.PreviousLandings)
 	}
 	previous := state.PreviousLandings[0]
-	if previous.Reason != "time budget exhausted" || previous.Commit != strings.Repeat("a", 40) || previous.CheckpointTreeSHA != strings.Repeat("b", 40) || previous.Verification != "passed\nold verification" || previous.VerificationSubject == nil || previous.VerificationSubject.HeadCommit != strings.Repeat("c", 40) || previous.HandoffSHA256 == "" {
+	if previous.Reason != "time budget exhausted" || previous.Commit != strings.Repeat("a", 40) || previous.CheckpointTreeSHA != strings.Repeat("b", 40) || previous.Verification != "passed\nold verification" || previous.MissionOutcome != deep.MissionOutcomeFailed || previous.VerificationOutcome != deep.VerificationFailed || previous.VerificationSubject == nil || previous.VerificationSubject.HeadCommit != strings.Repeat("c", 40) || previous.HandoffSHA256 == "" {
 		t.Fatalf("previous landing evidence was not preserved: %+v", previous)
 	}
 }

@@ -133,11 +133,15 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 	if err := coord.run(context.Background()); err != nil {
 		return err
 	}
-	fmt.Println("Deep Work session landed.")
+	outcome := deep.DisplayMissionOutcome(state.MissionOutcome, state.Phase)
+	fmt.Printf("Deep Work reached its landing boundary (mission outcome: %s).\n", outcome)
 	if state.HandoffPath != "" {
 		fmt.Printf("  handoff:  %s\n", state.HandoffPath)
 	}
 	fmt.Println("  inspect:  stint deep status")
+	if state.MissionOutcome == deep.MissionOutcomeFailed {
+		return fmt.Errorf("Deep Work mission failed its required final verification; see handoff: %s", state.HandoffPath)
+	}
 	return nil
 }
 
