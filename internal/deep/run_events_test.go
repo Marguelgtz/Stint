@@ -15,6 +15,7 @@ func journalFixture(t *testing.T) (string, DeepState, time.Time) {
 	now := time.Date(2026, 9, 26, 14, 0, 0, 0, time.UTC)
 	mission := Mission{Name: "journal fixture", Objective: "record lifecycle", Tasks: []Task{{ID: "T-1", Objective: "work", Status: StatusQueued}}}
 	state := NewState("run-20260926", mission, "/repo", "/repo/.stint-deep/run-20260926", now.Add(time.Hour), now.Add(50*time.Minute), 2, now)
+	state.ComputeBinding = &ComputeBinding{Provider: "vast", InstanceID: 1234, BoundAt: now}
 	return t.TempDir(), state, now
 }
 
@@ -61,9 +62,56 @@ func TestRunJournalSequencesLifecycleAcrossResumeEpochs(t *testing.T) {
 	if events[0].EpochID != firstEpoch || events[3].EpochID == firstEpoch || events[3].Boundary != RunEventBoundaryResume {
 		t.Fatalf("resume event did not create a new epoch in the same run: first=%+v resumed=%+v", events[0], events[3])
 	}
+	if events[0].ComputeProvider != "vast" || events[0].ComputeInstance != 1234 || events[3].ComputeProvider != "vast" || events[3].ComputeInstance != 1234 {
+		t.Fatalf("epoch events did not preserve bounded compute identity: start=%+v resume=%+v", events[0], events[3])
+	}
+	if events[0].TaskSummary == nil || events[0].TaskSummary.Total != 1 || events[0].TaskSummary.Queued != 1 ||
+		events[2].TaskSummary == nil || events[2].TaskSummary.Queued != 1 {
+		t.Fatalf("lifecycle events did not preserve bounded task state: start=%+v landing=%+v", events[0], events[2])
+	}
 	loaded, err := LoadState(stateDir, state.SessionID)
 	if err != nil || loaded.RunEventWatermark != 4 || loaded.ExecutionEpochID != state.ExecutionEpochID {
 		t.Fatalf("LoadState after resume = watermark %d epoch %q err %v", loaded.RunEventWatermark, loaded.ExecutionEpochID, err)
+	}
+}
+
+func TestRunJournalComparesEarlierVerificationSubjectByValue(t *testing.T) {
+	stateDir, state, now := journalFixture(t)
+	state.Verify = "final-check"
+	if err := BeginNewRun(stateDir, &state, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := BeginLanding(stateDir, &state, "first landing", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	state.LandingVerifyDone = true
+	state.LandingVerificationOutcome = VerificationPassed
+	state.LandingVerificationSubject = &VerificationSubject{HeadCommit: "verified-head", TreeSHA: "verified-tree"}
+	if err := state.SaveDir(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := CompleteLanding(stateDir, &state, "verified-checkpoint", "verified-tree", now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := BeginResumeEpoch(stateDir, &state, PhaseLanded, now.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	// JSON round-tripping gives the previous landing's VerificationSubject a
+	// different pointer. Durable comparisons must compare its value so later
+	// projection writes and lifecycle transitions remain possible.
+	loaded, err := LoadState(stateDir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.PreviousLandings) != 1 || loaded.PreviousLandings[0].VerificationSubject == nil {
+		t.Fatalf("resume did not preserve verification provenance: %+v", loaded.PreviousLandings)
+	}
+	if err := loaded.SaveDir(stateDir); err != nil {
+		t.Fatalf("save state after resuming a landing with subject provenance: %v", err)
+	}
+	if err := BeginLanding(stateDir, &loaded, "second landing", now.Add(4*time.Minute)); err != nil {
+		t.Fatalf("begin second landing: %v", err)
 	}
 }
 
@@ -136,21 +184,56 @@ func TestRunJournalLegacyResumeStartsAtExplicitBoundary(t *testing.T) {
 	}
 }
 
+func TestRunJournalLegacyActiveResumeAddsCurrentOutcomeWithoutHistory(t *testing.T) {
+	for _, phase := range []Phase{PhaseExecuting, PhaseLanding} {
+		t.Run(string(phase), func(t *testing.T) {
+			stateDir, state, now := journalFixture(t)
+			state.Phase = phase
+			state.MissionOutcome = ""
+			if phase == PhaseLanding {
+				state.LandingReason = "legacy interrupted landing"
+			}
+			if err := state.SaveDir(stateDir); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := LoadState(stateDir, state.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := BeginResumeEpoch(stateDir, &loaded, phase, now.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			recovered, err := LoadState(stateDir, state.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recovered.MissionOutcome != MissionOutcomePending || recovered.RunEventWatermark != 1 {
+				t.Fatalf("legacy resume projection = outcome %q phase %q watermark %d", recovered.MissionOutcome, recovered.Phase, recovered.RunEventWatermark)
+			}
+			events, _, err := readRunEventsLocked(DeepDir(stateDir, state.SessionID), state.SessionID)
+			if err != nil || len(events) != 1 || events[0].Boundary != RunEventBoundaryLegacyResume {
+				t.Fatalf("legacy resume synthesized history: events=%+v err=%v", events, err)
+			}
+		})
+	}
+}
+
 func TestRunJournalReplaysEventWhenProjectionPersistenceFails(t *testing.T) {
 	stateDir, state, now := journalFixture(t)
 	if err := BeginNewRun(stateDir, &state, now); err != nil {
 		t.Fatal(err)
 	}
 	event := RunEvent{
-		EventID:    landingEventID(state.RunID, state.ExecutionEpochID, "started"),
-		RunID:      state.RunID,
-		EpochID:    state.ExecutionEpochID,
-		OccurredAt: now.Add(time.Minute),
-		Actor:      "deep-coordinator",
-		Type:       RunEventLandingStarted,
-		FromPhase:  PhaseExecuting,
-		ToPhase:    PhaseLanding,
-		Reason:     "crash-boundary fixture",
+		EventID:     landingEventID(state.RunID, state.ExecutionEpochID, "started"),
+		RunID:       state.RunID,
+		EpochID:     state.ExecutionEpochID,
+		OccurredAt:  now.Add(time.Minute),
+		Actor:       "deep-coordinator",
+		Type:        RunEventLandingStarted,
+		FromPhase:   PhaseExecuting,
+		ToPhase:     PhaseLanding,
+		Reason:      "crash-boundary fixture",
+		TaskSummary: summarizeRunTasks(state.Tasks),
 	}
 	err := appendAndProjectRunEvent(stateDir, &state, event, func(string, DeepState) error {
 		return errors.New("injected projection persistence failure")
@@ -174,6 +257,66 @@ func TestRunJournalReplaysEventWhenProjectionPersistenceFails(t *testing.T) {
 	events, _, err := readRunEventsLocked(DeepDir(stateDir, state.SessionID), state.SessionID)
 	if err != nil || len(events) != 2 {
 		t.Fatalf("replay duplicated event: count=%d err=%v", len(events), err)
+	}
+}
+
+func TestRunJournalReplaysResumeAfterProjectionFailureWithContext(t *testing.T) {
+	stateDir, state, now := journalFixture(t)
+	if err := BeginNewRun(stateDir, &state, now); err != nil {
+		t.Fatal(err)
+	}
+	state.Exec = &ExecSettings{Worker: "hermes-onbox", Provider: "provider-v2", Model: "model-v2", TaskTimeoutSec: 420}
+	state.ComputeBinding = &ComputeBinding{Provider: "vast", InstanceID: 4321, BoundAt: now}
+	state.Deadline = now.Add(2 * time.Hour)
+	state.LandBefore = now.Add(90 * time.Minute)
+	newEpoch, err := NewExecutionEpochID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := RunEvent{
+		EventID:         epochStartedEventID(state.RunID, newEpoch),
+		RunID:           state.RunID,
+		EpochID:         newEpoch,
+		OccurredAt:      now.Add(time.Minute),
+		Actor:           "deep-coordinator",
+		Type:            RunEventEpochStarted,
+		Boundary:        RunEventBoundaryResume,
+		FromPhase:       PhaseExecuting,
+		ToPhase:         PhaseExecuting,
+		Deadline:        state.Deadline,
+		LandBefore:      state.LandBefore,
+		ComputeProvider: "vast",
+		ComputeInstance: 4321,
+		TaskSummary:     summarizeRunTasks(state.Tasks),
+	}
+
+	projectionWrites := 0
+	preparedWatermark := state.RunEventWatermark
+	err = appendAndProjectRunEvent(stateDir, &state, event, func(dir string, projection DeepState) error {
+		projectionWrites++
+		if projection.RunEventWatermark == preparedWatermark {
+			return writeProjectionLocked(dir, projection)
+		}
+		return errors.New("injected post-event projection failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "is durable but deep.json projection update failed") {
+		t.Fatalf("resume projection failure = %v, want a durable-event recovery error", err)
+	}
+	if projectionWrites != 2 {
+		t.Fatalf("projection writes around resume event = %d, want prepared context and replayable transition", projectionWrites)
+	}
+	loaded, err := LoadState(stateDir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.RunEventWatermark != 2 || loaded.ExecutionEpochID != newEpoch || loaded.Phase != PhaseExecuting {
+		t.Fatalf("resumed projection = phase %q epoch %q watermark %d", loaded.Phase, loaded.ExecutionEpochID, loaded.RunEventWatermark)
+	}
+	if loaded.Exec == nil || loaded.Exec.Model != "model-v2" || loaded.ComputeBinding == nil || loaded.ComputeBinding.InstanceID != 4321 {
+		t.Fatalf("resume context was lost while replaying its epoch event: exec=%+v binding=%+v", loaded.Exec, loaded.ComputeBinding)
+	}
+	if !loaded.Deadline.Equal(state.Deadline) || !loaded.LandBefore.Equal(state.LandBefore) {
+		t.Fatalf("resume deadline context was not restored: deadline=%s landBefore=%s", loaded.Deadline, loaded.LandBefore)
 	}
 }
 

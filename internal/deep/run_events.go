@@ -41,6 +41,20 @@ const (
 	RunEventBoundaryLegacyResume RunEventBoundary = "legacy_resume"
 )
 
+// RunTaskSummary preserves bounded task-state context at lifecycle boundaries
+// without copying objectives, prompts, or attempt output into the journal.
+type RunTaskSummary struct {
+	Total      int `json:"total"`
+	Queued     int `json:"queued"`
+	Active     int `json:"active"`
+	Verified   int `json:"verified"`
+	Incomplete int `json:"incomplete"`
+	Blocked    int `json:"blocked"`
+	NeedsHuman int `json:"needsHuman"`
+	Dropped    int `json:"dropped"`
+	Other      int `json:"other"`
+}
+
 // RunEvent is a bounded, versioned fact in one Deep Work run's append-only
 // history. B1 records run/epoch and landing lifecycle transitions; executor
 // and verifier facts are added by the later execution-record layer.
@@ -59,6 +73,9 @@ type RunEvent struct {
 	Reason           string           `json:"reason,omitempty"`
 	Deadline         time.Time        `json:"deadline,omitempty"`
 	LandBefore       time.Time        `json:"landBefore,omitempty"`
+	ComputeProvider  string           `json:"computeProvider,omitempty"`
+	ComputeInstance  int64            `json:"computeInstanceId,omitempty"`
+	TaskSummary      *RunTaskSummary  `json:"taskSummary,omitempty"`
 	CheckpointCommit string           `json:"checkpointCommit,omitempty"`
 	CheckpointTree   string           `json:"checkpointTreeSha,omitempty"`
 }
@@ -125,18 +142,20 @@ func BeginNewRun(stateDir string, state *DeepState, at time.Time) error {
 		at = state.StartedAt
 	}
 	event := RunEvent{
-		EventID:    epochStartedEventID(state.RunID, state.ExecutionEpochID),
-		RunID:      state.RunID,
-		EpochID:    state.ExecutionEpochID,
-		OccurredAt: at.UTC(),
-		Actor:      "deep-coordinator",
-		Type:       RunEventEpochStarted,
-		Boundary:   RunEventBoundaryNewRun,
-		FromPhase:  PhaseInitializing,
-		ToPhase:    PhaseExecuting,
-		Deadline:   state.Deadline.UTC(),
-		LandBefore: state.LandBefore.UTC(),
+		EventID:     epochStartedEventID(state.RunID, state.ExecutionEpochID),
+		RunID:       state.RunID,
+		EpochID:     state.ExecutionEpochID,
+		OccurredAt:  at.UTC(),
+		Actor:       "deep-coordinator",
+		Type:        RunEventEpochStarted,
+		Boundary:    RunEventBoundaryNewRun,
+		FromPhase:   PhaseInitializing,
+		ToPhase:     PhaseExecuting,
+		Deadline:    state.Deadline.UTC(),
+		LandBefore:  state.LandBefore.UTC(),
+		TaskSummary: summarizeRunTasks(state.Tasks),
 	}
+	setRunEventComputeIdentity(&event, state.ComputeBinding)
 	return appendAndProjectRunEvent(stateDir, state, event, writeProjectionLocked)
 }
 
@@ -173,20 +192,55 @@ func BeginResumeEpoch(stateDir string, state *DeepState, fromPhase Phase, at tim
 		}
 	}
 	event := RunEvent{
-		EventID:    epochStartedEventID(runID, epoch),
-		RunID:      runID,
-		EpochID:    epoch,
-		OccurredAt: at.UTC(),
-		Actor:      "deep-coordinator",
-		Type:       RunEventEpochStarted,
-		Boundary:   boundary,
-		FromPhase:  fromPhase,
-		ToPhase:    toPhase,
-		Reason:     reason,
-		Deadline:   state.Deadline.UTC(),
-		LandBefore: state.LandBefore.UTC(),
+		EventID:     epochStartedEventID(runID, epoch),
+		RunID:       runID,
+		EpochID:     epoch,
+		OccurredAt:  at.UTC(),
+		Actor:       "deep-coordinator",
+		Type:        RunEventEpochStarted,
+		Boundary:    boundary,
+		FromPhase:   fromPhase,
+		ToPhase:     toPhase,
+		Reason:      reason,
+		Deadline:    state.Deadline.UTC(),
+		LandBefore:  state.LandBefore.UTC(),
+		TaskSummary: summarizeRunTasks(state.Tasks),
 	}
+	setRunEventComputeIdentity(&event, state.ComputeBinding)
 	return appendAndProjectRunEvent(stateDir, state, event, writeProjectionLocked)
+}
+
+func setRunEventComputeIdentity(event *RunEvent, binding *ComputeBinding) {
+	if binding == nil {
+		return
+	}
+	event.ComputeProvider = binding.Provider
+	event.ComputeInstance = binding.InstanceID
+}
+
+func summarizeRunTasks(tasks []Task) *RunTaskSummary {
+	summary := &RunTaskSummary{Total: len(tasks)}
+	for _, task := range tasks {
+		switch task.Status {
+		case StatusQueued:
+			summary.Queued++
+		case StatusActive:
+			summary.Active++
+		case StatusVerified:
+			summary.Verified++
+		case StatusIncomplete:
+			summary.Incomplete++
+		case StatusBlocked:
+			summary.Blocked++
+		case StatusNeedsHuman:
+			summary.NeedsHuman++
+		case StatusDropped:
+			summary.Dropped++
+		default:
+			summary.Other++
+		}
+	}
+	return summary
 }
 
 // BeginLanding records the landing boundary before landing work proceeds.
@@ -201,15 +255,16 @@ func BeginLanding(stateDir string, state *DeepState, reason string, at time.Time
 		return errors.New("landing reason is empty or exceeds the journal limit")
 	}
 	event := RunEvent{
-		EventID:    landingEventID(state.RunID, state.ExecutionEpochID, "started"),
-		RunID:      state.RunID,
-		EpochID:    state.ExecutionEpochID,
-		OccurredAt: at.UTC(),
-		Actor:      "deep-coordinator",
-		Type:       RunEventLandingStarted,
-		FromPhase:  PhaseExecuting,
-		ToPhase:    PhaseLanding,
-		Reason:     reason,
+		EventID:     landingEventID(state.RunID, state.ExecutionEpochID, "started"),
+		RunID:       state.RunID,
+		EpochID:     state.ExecutionEpochID,
+		OccurredAt:  at.UTC(),
+		Actor:       "deep-coordinator",
+		Type:        RunEventLandingStarted,
+		FromPhase:   PhaseExecuting,
+		ToPhase:     PhaseLanding,
+		Reason:      reason,
+		TaskSummary: summarizeRunTasks(state.Tasks),
 	}
 	return appendAndProjectRunEvent(stateDir, state, event, writeProjectionLocked)
 }
@@ -237,6 +292,7 @@ func CompleteLanding(stateDir string, state *DeepState, checkpointCommit, checkp
 		FromPhase:        PhaseLanding,
 		ToPhase:          PhaseLanded,
 		Reason:           state.LandingReason,
+		TaskSummary:      summarizeRunTasks(state.Tasks),
 		CheckpointCommit: strings.TrimSpace(checkpointCommit),
 		CheckpointTree:   strings.TrimSpace(checkpointTree),
 	}
@@ -277,6 +333,25 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		}
 		if uint64(len(events)) != current.RunEventWatermark {
 			return fmt.Errorf("projection watermark %d does not match event history %d", current.RunEventWatermark, len(events))
+		}
+		if event.Type == RunEventEpochStarted && event.Boundary != RunEventBoundaryNewRun {
+			// Resume may update bounded runtime, compute, deadline, and task
+			// configuration before beginning the new epoch. Persist that
+			// pre-transition projection first so replaying the epoch event after
+			// a crash cannot lose those facts. The lifecycle fields were checked
+			// against current above, and the lock remains held across both writes.
+			if !missionOutcomeProjectionValid(*state) {
+				return errors.New("resume context has an invalid mission outcome projection")
+			}
+			prepared := *state
+			// Deadline fields belong to the epoch event itself. Keep the prior
+			// values at the old watermark; replay installs the new values with
+			// the new epoch event.
+			prepared.Deadline = current.Deadline
+			prepared.LandBefore = current.LandBefore
+			if err := project(stateDir, prepared); err != nil {
+				return fmt.Errorf("persist resume context before run epoch event: %w", err)
+			}
 		}
 		event.SchemaVersion = RunEventSchemaVersion
 		event.Sequence = uint64(len(events)) + 1
@@ -413,10 +488,16 @@ func validateRunEvent(event RunEvent) error {
 	if len(event.Reason) > maxRunEventTextBytes || strings.ContainsRune(event.Reason, '\x00') {
 		return errors.New("event reason exceeds its limit or contains NUL")
 	}
+	if event.TaskSummary == nil || !validRunTaskSummary(*event.TaskSummary) {
+		return errors.New("event task-state summary is missing or invalid")
+	}
 	switch event.Type {
 	case RunEventEpochStarted:
 		if event.ToPhase != PhaseExecuting && event.ToPhase != PhaseLanding {
 			return errors.New("epoch-start event has invalid target phase")
+		}
+		if event.Deadline.IsZero() || event.LandBefore.IsZero() {
+			return errors.New("epoch-start event requires deadline boundaries")
 		}
 		if event.ToPhase == PhaseLanding && event.Reason == "" {
 			return errors.New("resumed landing epoch requires a reason")
@@ -424,24 +505,67 @@ func validateRunEvent(event RunEvent) error {
 		if event.Boundary != RunEventBoundaryNewRun && event.Boundary != RunEventBoundaryResume && event.Boundary != RunEventBoundaryLegacyResume {
 			return errors.New("epoch-start event has invalid boundary")
 		}
-		if event.Boundary == RunEventBoundaryNewRun && event.FromPhase != PhaseInitializing {
-			return errors.New("new-run event must start from initializing phase")
+		if event.Boundary == RunEventBoundaryNewRun {
+			if event.FromPhase != PhaseInitializing || event.ToPhase != PhaseExecuting || event.Reason != "" {
+				return errors.New("new-run event must start initializing execution without a resume reason")
+			}
+		} else {
+			switch event.FromPhase {
+			case PhaseExecuting, PhaseLanding, PhaseLanded, PhaseStopped:
+			default:
+				return errors.New("resume event has invalid source phase")
+			}
+			want := PhaseExecuting
+			if event.FromPhase == PhaseLanding {
+				want = PhaseLanding
+			}
+			if event.ToPhase != want {
+				return errors.New("resume event has invalid target phase")
+			}
 		}
-		if event.Boundary != RunEventBoundaryNewRun && event.FromPhase == PhaseInitializing {
-			return errors.New("resume event cannot start from initializing phase")
+		if event.ComputeProvider == "" || event.ComputeInstance == 0 {
+			if event.ComputeProvider != "" || event.ComputeInstance != 0 {
+				return errors.New("epoch event compute identity is incomplete")
+			}
+		} else if len(event.ComputeProvider) > 64 || strings.ContainsAny(event.ComputeProvider, "\x00\r\n") || event.ComputeInstance < 0 {
+			return errors.New("epoch event compute identity is invalid")
 		}
 	case RunEventLandingStarted:
 		if event.FromPhase != PhaseExecuting || event.ToPhase != PhaseLanding || event.Reason == "" {
 			return errors.New("landing-start event has invalid phase or reason")
 		}
 	case RunEventLanded:
-		if event.FromPhase != PhaseLanding || event.ToPhase != PhaseLanded || event.CheckpointCommit == "" || event.CheckpointTree == "" {
+		if event.FromPhase != PhaseLanding || event.ToPhase != PhaseLanded || event.CheckpointCommit == "" || event.CheckpointTree == "" ||
+			len(event.CheckpointCommit) > 128 || len(event.CheckpointTree) > 128 ||
+			strings.ContainsAny(event.CheckpointCommit, "\x00\r\n") || strings.ContainsAny(event.CheckpointTree, "\x00\r\n") {
 			return errors.New("landed event has invalid phase or checkpoint identity")
 		}
 	default:
 		return fmt.Errorf("unknown run event type %q", event.Type)
 	}
+	if event.Type != RunEventEpochStarted && (event.Boundary != "" || !event.Deadline.IsZero() || !event.LandBefore.IsZero() || event.ComputeProvider != "" || event.ComputeInstance != 0) {
+		return errors.New("non-epoch event contains epoch-only context")
+	}
+	if event.Type != RunEventLanded && (event.CheckpointCommit != "" || event.CheckpointTree != "") {
+		return errors.New("non-landed event contains checkpoint identity")
+	}
 	return nil
+}
+
+func validRunTaskSummary(summary RunTaskSummary) bool {
+	const maxRunTaskCount = 1_000_000
+	counts := []int{summary.Total, summary.Queued, summary.Active, summary.Verified, summary.Incomplete,
+		summary.Blocked, summary.NeedsHuman, summary.Dropped, summary.Other}
+	var sum int
+	for _, count := range counts {
+		if count < 0 || count > maxRunTaskCount {
+			return false
+		}
+	}
+	for _, count := range counts[1:] {
+		sum += count
+	}
+	return summary.Total <= maxRunTaskCount && sum == summary.Total
 }
 
 func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string) error {
@@ -675,6 +799,7 @@ func applyRunEvent(state *DeepState, event RunEvent) error {
 			}
 		} else {
 			state.Phase = event.ToPhase
+			state.MissionOutcome = MissionOutcomePending
 			if event.ToPhase == PhaseLanding {
 				state.LandingReason = event.Reason
 			}
@@ -721,11 +846,26 @@ func sameLifecycleProjection(a, b DeepState) bool {
 		return false
 	}
 	for i := range a.PreviousLandings {
-		if a.PreviousLandings[i] != b.PreviousLandings[i] {
+		if !sameLandingRecord(a.PreviousLandings[i], b.PreviousLandings[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+func sameLandingRecord(a, b LandingRecord) bool {
+	return a.At.Equal(b.At) && a.Reason == b.Reason && a.Commit == b.Commit &&
+		a.CheckpointTreeSHA == b.CheckpointTreeSHA && a.Verification == b.Verification &&
+		a.MissionOutcome == b.MissionOutcome && a.VerificationOutcome == b.VerificationOutcome &&
+		sameVerificationSubject(a.VerificationSubject, b.VerificationSubject) &&
+		a.HandoffSHA256 == b.HandoffSHA256
+}
+
+func sameVerificationSubject(a, b *VerificationSubject) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 func sameOptionalTime(a, b *time.Time) bool {
