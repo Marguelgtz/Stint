@@ -1,6 +1,7 @@
 package deep
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -545,5 +546,155 @@ func TestRunJournalPreventsIndependentLifecycleProjectionMutation(t *testing.T) 
 	state.Phase = PhaseLanding
 	if err := state.SaveDir(stateDir); err == nil || !strings.Contains(err.Error(), "must be changed through a RunEvent") {
 		t.Fatalf("direct journal-backed lifecycle mutation = %v, want rejected", err)
+	}
+}
+
+func TestRunJournalRejectsInconsistentLandingReasonsBeforeReplay(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		make func(DeepState, time.Time) RunEvent
+		want string
+	}{
+		{
+			name: "landed reason differs from landing start",
+			make: func(state DeepState, at time.Time) RunEvent {
+				return RunEvent{
+					SchemaVersion: RunEventSchemaVersion, EventID: landingEventID(state.RunID, state.ExecutionEpochID, "completed"), RunID: state.RunID,
+					EpochID: state.ExecutionEpochID, Sequence: state.RunEventWatermark + 1, OccurredAt: at,
+					Actor: "deep-coordinator", Type: RunEventLanded, FromPhase: PhaseLanding, ToPhase: PhaseLanded,
+					Reason: "operator requested stop", TaskSummary: summarizeRunTasks(state.Tasks),
+					CheckpointCommit: "checkpoint", CheckpointTree: "tree",
+				}
+			},
+			want: "landed event reason differs from the active landing reason",
+		},
+		{
+			name: "resumed landing changes reason",
+			make: func(state DeepState, at time.Time) RunEvent {
+				newEpoch := "conflicting-resume-epoch"
+				return RunEvent{
+					SchemaVersion: RunEventSchemaVersion, EventID: epochStartedEventID(state.RunID, newEpoch), RunID: state.RunID,
+					EpochID: newEpoch, Sequence: state.RunEventWatermark + 1, OccurredAt: at,
+					Actor: "deep-coordinator", Type: RunEventEpochStarted, Boundary: RunEventBoundaryResume,
+					FromPhase: PhaseLanding, ToPhase: PhaseLanding, Reason: "operator requested stop",
+					Deadline: state.Deadline, LandBefore: state.LandBefore, ComputeProvider: "vast", ComputeInstance: 1234,
+					TaskSummary: summarizeRunTasks(state.Tasks),
+				}
+			},
+			want: "resumed landing event changes the active landing reason",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir, state, now := journalFixture(t)
+			if err := BeginNewRun(stateDir, &state, now); err != nil {
+				t.Fatal(err)
+			}
+			if err := BeginLanding(stateDir, &state, "deadline reached", now.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			prior, _, err := readRunEventsLocked(DeepDir(stateDir, state.SessionID), state.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			event := tc.make(state, now.Add(2*time.Minute))
+			if err := validateRunEvent(event); err != nil {
+				t.Fatalf("fixture event is invalid before transition validation: %v", err)
+			}
+			if err := validateEventTransition(prior, event, state.SessionID); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("inconsistent landing history = %v, want %q", err, tc.want)
+			}
+
+			// A complete but inconsistent line must be rejected during history
+			// validation, before replay writes any projection changes.
+			if err := withRunStateLock(stateDir, state.SessionID, func(dir string) error { return appendRunEventLocked(dir, event) }); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(filepath.Join(DeepDir(stateDir, state.SessionID), "deep.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadState(stateDir, state.SessionID); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("load inconsistent complete history = %v, want %q", err, tc.want)
+			}
+			after, err := os.ReadFile(filepath.Join(DeepDir(stateDir, state.SessionID), "deep.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("invalid complete history mutated the durable projection before failing")
+			}
+		})
+	}
+}
+
+func TestRunJournalReplaysInterruptedLandingWithStableReason(t *testing.T) {
+	stateDir, state, now := journalFixture(t)
+	if err := BeginNewRun(stateDir, &state, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := BeginLanding(stateDir, &state, "deadline reached", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := BeginResumeEpoch(stateDir, &state, PhaseLanding, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("resume interrupted landing: %v", err)
+	}
+	if state.LandingReason != "deadline reached" || state.Phase != PhaseLanding {
+		t.Fatalf("resume changed landing identity: phase=%q reason=%q", state.Phase, state.LandingReason)
+	}
+	if err := CompleteLanding(stateDir, &state, "checkpoint", "tree", now.Add(3*time.Minute)); err != nil {
+		t.Fatalf("complete resumed landing: %v", err)
+	}
+	loaded, err := LoadState(stateDir, state.SessionID)
+	if err != nil || loaded.Phase != PhaseLanded || loaded.LandingReason != "deadline reached" {
+		t.Fatalf("valid landing/resume history failed to replay: phase=%q reason=%q err=%v", loaded.Phase, loaded.LandingReason, err)
+	}
+}
+
+func TestLegacyInterruptedLandingResumeCannotRedefineReason(t *testing.T) {
+	stateDir, state, now := journalFixture(t)
+	state.Phase = PhaseLanding
+	state.LandingReason = "deadline reached"
+	if err := state.SaveDir(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	event := RunEvent{
+		SchemaVersion:   RunEventSchemaVersion,
+		EventID:         epochStartedEventID(state.SessionID, "legacy-conflicting-resume"),
+		RunID:           state.SessionID,
+		EpochID:         "legacy-conflicting-resume",
+		Sequence:        1,
+		OccurredAt:      now.Add(time.Minute),
+		Actor:           "deep-coordinator",
+		Type:            RunEventEpochStarted,
+		Boundary:        RunEventBoundaryLegacyResume,
+		FromPhase:       PhaseLanding,
+		ToPhase:         PhaseLanding,
+		Reason:          "operator requested stop",
+		Deadline:        state.Deadline,
+		LandBefore:      state.LandBefore,
+		ComputeProvider: "vast",
+		ComputeInstance: 1234,
+		TaskSummary:     summarizeRunTasks(state.Tasks),
+	}
+	if err := validateRunEvent(event); err != nil {
+		t.Fatal(err)
+	}
+	if err := withRunStateLock(stateDir, state.SessionID, func(dir string) error { return appendRunEventLocked(dir, event) }); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(DeepDir(stateDir, state.SessionID), "deep.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadState(stateDir, state.SessionID); err == nil || !strings.Contains(err.Error(), "legacy resumed landing reason differs") {
+		t.Fatalf("legacy resume with conflicting landing reason = %v, want immediate rejection", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("conflicting legacy resume changed durable landing projection before failing")
 	}
 }

@@ -186,8 +186,8 @@ func BeginResumeEpoch(stateDir string, state *DeepState, fromPhase Phase, at tim
 	reason := ""
 	if fromPhase == PhaseLanding {
 		toPhase = PhaseLanding
-		reason = strings.TrimSpace(state.LandingReason)
-		if reason == "" {
+		reason = state.LandingReason
+		if strings.TrimSpace(reason) == "" {
 			reason = "resumed interrupted landing"
 		}
 	}
@@ -369,6 +369,10 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		}
 		if err := validateEventTransition(events, event, state.SessionID); err != nil {
 			return err
+		}
+		if event.Type == RunEventEpochStarted && event.ToPhase == PhaseLanding &&
+			strings.TrimSpace(state.LandingReason) != "" && event.Reason != state.LandingReason {
+			return errors.New("resumed landing reason differs from the durable landing reason")
 		}
 		if err := appendRunEventLocked(dir, event); err != nil {
 			return err
@@ -617,6 +621,12 @@ func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string)
 		if event.ToPhase != want {
 			return errors.New("resume event has an invalid target phase")
 		}
+		if phase == PhaseLanding {
+			landingReason, ok := activeLandingReason(prior)
+			if !ok || event.Reason != landingReason {
+				return errors.New("resumed landing event changes the active landing reason")
+			}
+		}
 		return nil
 	}
 	if event.EpochID != last.EpochID {
@@ -634,7 +644,34 @@ func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string)
 	if event.Type == RunEventLanded && phase != PhaseLanding {
 		return errors.New("landed event does not follow a landing-start event")
 	}
+	if event.Type == RunEventLanded {
+		landingReason, ok := activeLandingReason(prior)
+		if !ok || event.Reason != landingReason {
+			return errors.New("landed event reason differs from the active landing reason")
+		}
+	}
 	return nil
+}
+
+// activeLandingReason returns the reason that opened the current interrupted
+// landing, following it through any resume epochs. A new executing epoch or a
+// completed landing ends that reason's scope.
+func activeLandingReason(events []RunEvent) (string, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		switch event.Type {
+		case RunEventLanded:
+			return "", false
+		case RunEventLandingStarted:
+			return event.Reason, true
+		case RunEventEpochStarted:
+			if event.ToPhase == PhaseLanding {
+				return event.Reason, true
+			}
+			return "", false
+		}
+	}
+	return "", false
 }
 
 func appendRunEventLocked(dir string, event RunEvent) error {
@@ -712,6 +749,10 @@ func recoverProjectionLocked(stateDir, dir string, state DeepState, persist bool
 	}
 	if state.RunEventWatermark > uint64(len(events)) {
 		return DeepState{}, journalExists, fmt.Errorf("deep.json event watermark %d is ahead of durable journal sequence %d", state.RunEventWatermark, len(events))
+	}
+	if state.RunEventSchemaVersion == 0 && len(events) > 0 && events[0].Boundary == RunEventBoundaryLegacyResume &&
+		events[0].ToPhase == PhaseLanding && strings.TrimSpace(state.LandingReason) != "" && events[0].Reason != state.LandingReason {
+		return DeepState{}, journalExists, errors.New("legacy resumed landing reason differs from the durable landing reason")
 	}
 	if len(events) == 0 {
 		if state.RunEventWatermark != 0 {
