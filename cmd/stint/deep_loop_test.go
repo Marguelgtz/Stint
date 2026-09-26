@@ -27,6 +27,8 @@ type fakeExecutor struct {
 	calls    int
 	prompts  []string
 	timeouts []time.Duration
+	inputs   []execInput
+	before   func(execInput)
 	// script maps call number (1-based) to the result for that invocation.
 	script    map[int]execResult
 	scriptErr map[int]error
@@ -39,6 +41,10 @@ func (f *fakeExecutor) run(_ context.Context, in execInput) (execResult, error) 
 	f.calls++
 	f.prompts = append(f.prompts, in.prompt)
 	f.timeouts = append(f.timeouts, in.timeout)
+	f.inputs = append(f.inputs, in)
+	if f.before != nil {
+		f.before(in)
+	}
 	r, ok := f.script[f.calls]
 	if !ok {
 		r = completedResult()

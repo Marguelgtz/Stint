@@ -59,6 +59,12 @@ type Task struct {
 	Attempts   int      `json:"attempts"`
 	Blocker    string   `json:"blocker,omitempty"`
 	LastResult string   `json:"lastResult,omitempty"`
+	// ExecutorRunID identifies the latest canonical executor invocation for
+	// journaled runs. It is separate from verification and task acceptance.
+	ExecutorRunID string `json:"executorRunId,omitempty"`
+	// ExecutorRunProcessed records that the coordinator has applied the latest
+	// executor result to this task's current verification/checkpoint cycle.
+	ExecutorRunProcessed bool `json:"executorRunProcessed,omitempty"`
 	// Attempt evidence is kept independently: a passing repository command is
 	// diagnostic evidence, not proof that a failed executor completed the task.
 	ExecutionError       string     `json:"executionError,omitempty"`

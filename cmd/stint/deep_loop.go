@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Marguelgtz/Stint/internal/deep"
 )
@@ -64,6 +65,7 @@ func (c *deepCoordinator) execInputFor(t deep.Task, timeout time.Duration) execI
 	if t.Reasoning != "" {
 		in.reasoning = t.Reasoning
 	}
+	in.provider = resolveHermesProvider(in.provider, in.reasoning)
 	// The session's command policy is part of the reconstructed context: the
 	// worker must know exactly which commands it may run and what will
 	// happen to the rest.
@@ -71,6 +73,21 @@ func (c *deepCoordinator) execInputFor(t deep.Task, timeout time.Duration) execI
 		in.prompt += sec
 	}
 	return in
+}
+
+func (c *deepCoordinator) executorRuntimeFor(t deep.Task) deep.ExecutorRuntime {
+	reasoning := c.execCfg.reasoning
+	if t.Reasoning != "" {
+		reasoning = t.Reasoning
+	}
+	runtime := deep.ExecutorRuntime{
+		Provider: resolveHermesProvider(c.execCfg.provider, reasoning),
+		Model:    c.execCfg.model, Reasoning: reasoning,
+	}
+	if c.state.Exec != nil {
+		runtime.Worker = c.state.Exec.Worker
+	}
+	return runtime
 }
 
 func (c *deepCoordinator) mission() deep.Mission {
@@ -258,65 +275,217 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		c.logf("task %s BLOCKED: %s", t.ID, prerequisite)
 		return nil
 	}
-	effectiveTimeout, timeoutDecision := c.effectiveTaskTimeout(now, *t)
-	if effectiveTimeout <= 0 {
-		return fmt.Errorf("task %s has no useful executor window: %s", t.ID, timeoutDecision)
-	}
-	t.Status = deep.StatusActive
-	// A previous timeout-window deferral is no longer the current blocker once
-	// a new invocation starts. If this attempt fails at the attempt cap, its
-	// own executor/verification evidence must determine the final blocker.
-	t.Blocker = ""
-	t.Attempts++
-	t.ConfiguredTimeoutSec = int(c.taskTimeout.Seconds())
-	t.EffectiveTimeoutSec = int(effectiveTimeout.Seconds())
-	t.TimeoutDecision = timeoutDecision
-	// Evidence from an earlier attempt must never be reused by a new
-	// verification/checkpoint cycle.
-	t.VerificationSubject = nil
-	t.VerificationBookkeeping = nil
-	t.CheckpointCommit = ""
-	t.CheckpointTreeSHA = ""
-	t.VerifiedAt = nil
-	if err := c.save(); err != nil {
-		return fmt.Errorf("persist active task %s before invoking Hermes: %w", t.ID, err)
-	}
-	c.logf("task %s attempt %d: invoking executor (configured maximum %s, effective timeout %s; %s)", t.ID, t.Attempts, c.taskTimeout, effectiveTimeout, timeoutDecision)
+	journaled := c.state.RunEventSchemaVersion == deep.RunEventSchemaVersion
+	var (
+		res              execResult
+		execErr          error
+		subject          verificationSnapshot
+		subjectErr       error
+		executorRun      deep.ExecutorRun
+		resultRecorded   bool
+		continuing       bool
+		effectiveTimeout time.Duration
+		timeoutDecision  string
+	)
 
-	tc, cancel := context.WithTimeout(ctx, effectiveTimeout)
-	defer cancel()
-	c.incident(deep.IncidentExecutorInvoke, t.ID,
-		fmt.Sprintf("attempt %d %s (configured maximum %s; effective timeout %s; %s)", t.Attempts, policySummary(c.execCfg), c.taskTimeout, effectiveTimeout, timeoutDecision))
-	res, execErr := c.executor.run(tc, c.execInputFor(*t, effectiveTimeout))
-	if execErr != nil {
-		c.logf("task %s: executor error: %v", t.ID, execErr)
-		c.incident(deep.IncidentExecutorError, t.ID, execErr.Error())
-	}
-	c.logf("task %s attempt %d result: %s", t.ID, t.Attempts, res.summary())
-	if errors.Is(execErr, errExecutorQuiescenceUnconfirmed) {
-		return c.persistUnquiescedExecutor(t.ID, res, execErr)
-	}
-	continuing, err := c.afterInvocationState(t.ID)
-	if err != nil {
-		return fmt.Errorf("refresh durable state after task %s executor: %w", t.ID, err)
-	}
-	if !continuing {
-		c.logf("task %s: executor quiesced after an external landing request; verification is deferred to resumed landing", t.ID)
-		return nil
-	}
-
-	// Capture the exact Git-visible worktree state after the executor returns
-	// and immediately before verification. Stint bookkeeping that is not
-	// already tracked or staged is fingerprinted separately from the product
-	// tree by the Git backend.
-	subject, subjectErr := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
-	if subjectErr != nil {
-		c.logf("task %s: capture verification subject: %v", t.ID, subjectErr)
-		c.incident(deep.IncidentCheckpointFail, t.ID, "could not capture verification subject: "+subjectErr.Error())
-	} else {
+	// A durable result whose task transition was interrupted is reused to
+	// continue verification. This closes the crash window without launching a
+	// duplicate executor invocation.
+	if journaled && t.ExecutorRunID != "" && !t.ExecutorRunProcessed {
+		var found bool
+		executorRun, found, err = deep.LoadExecutorRun(c.stateDir, c.state.SessionID, t.ExecutorRunID)
+		if err != nil {
+			return fmt.Errorf("load durable executor result for task %s: %w", t.ID, err)
+		}
+		if !found || executorRun.Outcome == deep.ExecutorOutcomeStarted {
+			return fmt.Errorf("task %s has an unmatched executor invocation; recovery must establish quiescence before retry", t.ID)
+		}
+		if executorRun.Outcome == deep.ExecutorOutcomeUnknown || executorRun.Outcome == deep.ExecutorOutcomeQuiescenceUnconfirmed {
+			return fmt.Errorf("task %s executor outcome or process quiescence is unresolved", t.ID)
+		}
+		res = execResult{
+			exitCode: executorRun.ExitCode, completed: executorRun.Completed,
+			finishReason: executorRun.FinishReason, duration: time.Duration(executorRun.DurationMilliseconds) * time.Millisecond,
+		}
+		if executorRun.Error != "" {
+			execErr = errors.New(executorRun.Error)
+		}
+		continuing, err = c.afterInvocationState(t.ID)
+		if err != nil {
+			return fmt.Errorf("refresh durable state before resuming task %s: %w", t.ID, err)
+		}
+		if !continuing {
+			return nil
+		}
+		subject, subjectErr = c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+		if subjectErr == nil {
+			switch {
+			case executorRun.RepositoryAfterError != "":
+				subjectErr = fmt.Errorf("executor result did not capture a stable repository state: %s", executorRun.RepositoryAfterError)
+			case executorRun.RepositoryAfter == nil:
+				subjectErr = errors.New("executor result has no post-run repository identity")
+			case subject.Subject.TreeSHA != executorRun.RepositoryAfter.TreeSHA:
+				subjectErr = fmt.Errorf("product tree changed after executor result: recorded tree %s, current tree %s", executorRun.RepositoryAfter.TreeSHA, subject.Subject.TreeSHA)
+			}
+		}
+		if subjectErr != nil {
+			t = &c.state.Tasks[idx]
+			t.Status = deep.StatusNeedsHuman
+			t.Blocker = "executor result no longer identifies the current repository state: " + subjectErr.Error()
+			t.ExecutorRunProcessed = true
+			if err := c.save(); err != nil {
+				return fmt.Errorf("persist invalidated executor result for task %s: %w", t.ID, err)
+			}
+			return fmt.Errorf("task %s cannot verify a changed or unidentified executor result: %w", t.ID, subjectErr)
+		}
+		t = &c.state.Tasks[idx]
 		t.VerificationSubject = &subject.Subject
 		t.VerificationBookkeeping = subject.Bookkeeping
+		resultRecorded = true
+	} else {
+		effectiveTimeout, timeoutDecision = c.effectiveTaskTimeout(now, *t)
+		if effectiveTimeout <= 0 {
+			return fmt.Errorf("task %s has no useful executor window: %s", t.ID, timeoutDecision)
+		}
+		attempt := t.Attempts + 1
+		if journaled {
+			before, err := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+			if err != nil {
+				return fmt.Errorf("capture repository state before executor for task %s: %w", t.ID, err)
+			}
+			runID, err := deep.NewExecutorRunID()
+			if err != nil {
+				return err
+			}
+			startedAt := c.now().UTC()
+			runtime := c.executorRuntimeFor(*t)
+			executorRun = deep.ExecutorRun{
+				ID: runID, TaskID: t.ID, Attempt: attempt, StartedAt: startedAt,
+				ConfiguredTimeoutSeconds: int(c.taskTimeout.Seconds()), EffectiveTimeoutSeconds: int(effectiveTimeout.Seconds()),
+				RemainingDeadlineSeconds: max(0, int(c.state.Deadline.Sub(startedAt).Seconds())),
+				TimeoutDecision:          timeoutDecision, Runtime: runtime, RepositoryBefore: &before.Subject,
+			}
+			executorRun, err = deep.BeginExecutorRun(c.stateDir, c.state, executorRun)
+			if err != nil {
+				return fmt.Errorf("persist executor start for task %s before launch: %w", t.ID, err)
+			}
+			t = &c.state.Tasks[idx]
+		} else {
+			t.Status = deep.StatusActive
+			t.Blocker = ""
+			t.Attempts = attempt
+			t.ConfiguredTimeoutSec = int(c.taskTimeout.Seconds())
+			t.EffectiveTimeoutSec = int(effectiveTimeout.Seconds())
+			t.TimeoutDecision = timeoutDecision
+			t.ExecutorRunID = ""
+			t.ExecutorRunProcessed = false
+			t.VerificationSubject = nil
+			t.VerificationBookkeeping = nil
+			t.CheckpointCommit = ""
+			t.CheckpointTreeSHA = ""
+			t.VerifiedAt = nil
+			if err := c.save(); err != nil {
+				return fmt.Errorf("persist active task %s before invoking Hermes: %w", t.ID, err)
+			}
+		}
+		c.logf("task %s attempt %d: invoking executor (configured maximum %s, effective timeout %s; %s)", t.ID, t.Attempts, c.taskTimeout, effectiveTimeout, timeoutDecision)
+
+		tc, cancel := context.WithTimeout(ctx, effectiveTimeout)
+		defer cancel()
+		c.incident(deep.IncidentExecutorInvoke, t.ID,
+			fmt.Sprintf("attempt %d %s (configured maximum %s; effective timeout %s; %s)", t.Attempts, policySummary(c.execCfg), c.taskTimeout, effectiveTimeout, timeoutDecision))
+		res, execErr = c.executor.run(tc, c.execInputFor(*t, effectiveTimeout))
+		if res.timedOut && execErr == nil {
+			execErr = context.DeadlineExceeded
+		}
+		if execErr == nil && tc.Err() != nil {
+			execErr = tc.Err()
+		}
+		if execErr != nil {
+			c.logf("task %s: executor error: %v", t.ID, execErr)
+			c.incident(deep.IncidentExecutorError, t.ID, execErr.Error())
+		}
+		c.logf("task %s attempt %d result: %s", t.ID, t.Attempts, res.summary())
+		if errors.Is(execErr, errExecutorQuiescenceUnconfirmed) {
+			if !journaled {
+				return c.persistUnquiescedExecutor(t.ID, res, execErr)
+			}
+			fresh, err := deep.LoadState(c.stateDir, c.state.SessionID)
+			if err != nil {
+				return fmt.Errorf("refresh state after unconfirmed executor quiescence: %w", err)
+			}
+			*c.state = fresh
+			executorRun.Outcome = deep.ExecutorOutcomeQuiescenceUnconfirmed
+			executorRun.EndedAt = c.now().UTC()
+			executorRun.ExitCode = res.exitCode
+			executorRun.Completed = res.completed
+			executorRun.FinishReason = boundedExecutionFact(res.finishReason, 512)
+			executorRun.Error = boundedExecutionFact(execErr.Error(), 512)
+			executorRun.ResultSummary = executorResultSummary(res)
+			executorRun.DurationMilliseconds = max(0, res.duration.Milliseconds())
+			if err := deep.CompleteExecutorRun(c.stateDir, c.state, executorRun); err != nil {
+				return fmt.Errorf("persist unconfirmed executor result for task %s: %w", t.ID, err)
+			}
+			return fmt.Errorf("task %s cannot be verified because executor process quiescence is unconfirmed", t.ID)
+		}
+		continuing, err = c.afterInvocationState(t.ID)
+		if err != nil {
+			return fmt.Errorf("refresh durable state after task %s executor: %w", t.ID, err)
+		}
+		// Capture the exact Git-visible state after the executor is quiescent.
+		// Stint bookkeeping is recorded separately by the Git backend.
+		subject, subjectErr = c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+		if subjectErr != nil {
+			c.logf("task %s: capture verification subject: %v", t.ID, subjectErr)
+			c.incident(deep.IncidentCheckpointFail, t.ID, "could not capture verification subject: "+subjectErr.Error())
+		} else {
+			t = &c.state.Tasks[idx]
+			t.VerificationSubject = &subject.Subject
+			t.VerificationBookkeeping = subject.Bookkeeping
+		}
+		if journaled {
+			switch {
+			case res.timedOut || errors.Is(execErr, context.DeadlineExceeded):
+				executorRun.Outcome = deep.ExecutorOutcomeTimedOut
+				executorRun.Error = boundedExecutionFact(execErr.Error(), 512)
+			case errors.Is(execErr, context.Canceled):
+				executorRun.Outcome = deep.ExecutorOutcomeCanceled
+				executorRun.Error = boundedExecutionFact(execErr.Error(), 512)
+			case execErr == nil && res.completed && res.exitCode == 0:
+				executorRun.Outcome = deep.ExecutorOutcomeSucceeded
+			default:
+				executorRun.Outcome = deep.ExecutorOutcomeFailed
+			}
+			executorRun.EndedAt = c.now().UTC()
+			executorRun.ExitCode = res.exitCode
+			executorRun.Completed = res.completed
+			executorRun.FinishReason = boundedExecutionFact(res.finishReason, 512)
+			if execErr != nil {
+				executorRun.Error = boundedExecutionFact(execErr.Error(), 512)
+			}
+			executorRun.ResultSummary = executorResultSummary(res)
+			executorRun.DurationMilliseconds = max(0, res.duration.Milliseconds())
+			if subjectErr != nil {
+				executorRun.RepositoryAfterError = boundedExecutionFact(subjectErr.Error(), 512)
+			} else {
+				executorRun.RepositoryAfter = &subject.Subject
+			}
+			if err := deep.CompleteExecutorRun(c.stateDir, c.state, executorRun); err != nil {
+				return fmt.Errorf("persist executor result for task %s before verification: %w", t.ID, err)
+			}
+			resultRecorded = true
+			t = &c.state.Tasks[idx]
+		}
+		if !continuing {
+			c.logf("task %s: executor quiesced after an external landing request; verification is deferred to resumed landing", t.ID)
+			return nil
+		}
 	}
+
+	if !continuing {
+		return nil
+	}
+	t = &c.state.Tasks[idx]
 	continuing, err = c.afterInvocationState(t.ID)
 	if err != nil {
 		return fmt.Errorf("refresh durable state before task %s verification: %w", t.ID, err)
@@ -330,16 +499,30 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	if verifyCmd != "" {
 		c.incident(deep.IncidentVerifyRun, t.ID, verifyResult.IncidentDetail())
 	}
-	t.LastResult = res.summary()
+	resultSummary := res.summary()
+	if resultRecorded && executorRun.ResultSummary != "" {
+		resultSummary = executorRun.ResultSummary
+	}
+	t.LastResult = resultSummary
 	t.ExecutionError = ""
 	if execErr != nil {
-		t.ExecutionError = execErr.Error()
-		t.LastResult += " | executor error: " + execErr.Error()
+		executionError := execErr.Error()
+		if resultRecorded {
+			executionError = executorRun.Error
+		}
+		t.ExecutionError = executionError
+		t.LastResult += " | executor error: " + executionError
 	}
 	t.VerificationCommand = verifyCmd
 	t.VerificationOutput = strings.TrimSpace(tailLine(verifyResult.Output, 3))
 	t.VerificationResult = verifyResult.Summary()
+	markExecutorResultProcessed := func() {
+		if resultRecorded {
+			t.ExecutorRunProcessed = true
+		}
+	}
 	if verifyResult.QuiescenceUnconfirmed {
+		markExecutorResultProcessed()
 		return c.persistUnquiescedVerifier(t.ID, verifyCmd, verifyResult)
 	}
 
@@ -350,6 +533,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		if subjectErr != nil {
 			t.Status = deep.StatusNeedsHuman
 			t.Blocker = "verification passed, but the exact repository subject could not be captured: " + subjectErr.Error()
+			markExecutorResultProcessed()
 			if saveErr := c.save(); saveErr != nil {
 				return fmt.Errorf("persist missing verification subject for task %s: %w", t.ID, saveErr)
 			}
@@ -363,6 +547,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 			t.Status = deep.StatusNeedsHuman
 			t.Blocker = "verification evidence was invalidated before checkpoint creation: " + err.Error()
 			c.incident(deep.IncidentCheckpointFail, t.ID, t.Blocker)
+			markExecutorResultProcessed()
 			if saveErr := c.save(); saveErr != nil {
 				return fmt.Errorf("persist invalidated verification for task %s: %w", t.ID, saveErr)
 			}
@@ -374,6 +559,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 			c.incident(deep.IncidentCheckpointFail, t.ID, "verified subject could not be checkpointed exactly: "+err.Error())
 			t.Status = deep.StatusNeedsHuman
 			t.Blocker = "verification passed, but an exact-state checkpoint could not be created: " + err.Error()
+			markExecutorResultProcessed()
 			if saveErr := c.save(); saveErr != nil {
 				return fmt.Errorf("persist checkpoint failure for task %s: %w", t.ID, saveErr)
 			}
@@ -385,6 +571,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 				t.Status = deep.StatusNeedsHuman
 				t.Blocker = "verification passed, but checkpoint identity does not match its subject"
 				c.incident(deep.IncidentCheckpointFail, t.ID, err.Error())
+				markExecutorResultProcessed()
 				if saveErr := c.save(); saveErr != nil {
 					return fmt.Errorf("persist invalid-checkpoint state for task %s: %w", t.ID, saveErr)
 				}
@@ -413,6 +600,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		}
 		c.logf("task %s BLOCKED: %s", t.ID, t.Blocker)
 	}
+	markExecutorResultProcessed()
 	// The invocation and verify span the longest gap of the session: an
 	// external stop or landing must win, or this process's save would
 	// resurrect a stopped session from stale in-memory state.
@@ -464,6 +652,22 @@ func (c *deepCoordinator) accept(ctx context.Context, t *deep.Task) (verificatio
 		result.CompletedAt = time.Now().UTC()
 	}
 	return result, command
+}
+
+func boundedExecutionFact(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= limit {
+		return value
+	}
+	for len(value) > limit {
+		_, size := utf8.DecodeLastRuneInString(value)
+		value = value[:len(value)-size]
+	}
+	return value
+}
+
+func executorResultSummary(result execResult) string {
+	return fmt.Sprintf("exit=%d finish=%q in %s", result.exitCode, result.finishReason, result.duration.Round(time.Second))
 }
 
 func blockReason(res execResult, execErr error, verification verificationResult) string {
@@ -570,6 +774,12 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 		fresh, err := deep.LoadState(c.stateDir, c.state.SessionID)
 		if err != nil {
 			return fmt.Errorf("read durable Deep Work state: %w", err)
+		}
+		if unmatched, err := deep.RecoverUnmatchedExecutorRun(c.stateDir, &fresh, c.now()); err != nil {
+			return fmt.Errorf("recover unmatched executor invocation: %w", err)
+		} else if unmatched != nil {
+			*c.state = fresh
+			return fmt.Errorf("Deep Work is blocked: executor %s for task %s has no durable result and process quiescence is unknown", unmatched.ID, unmatched.TaskID)
 		}
 		if fresh.ExecutionQuiescenceUnconfirmed {
 			*c.state = fresh
