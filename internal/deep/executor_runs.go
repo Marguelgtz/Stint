@@ -23,8 +23,9 @@ const (
 	ExecutorOutcomeUnknown               ExecutorOutcome = "unknown"
 )
 
-// ExecutorRuntime records bounded configuration identity, never prompts or
-// environment dumps. Compute binding is carried separately on the run.
+// ExecutorRuntime records bounded identity for the runtime that actually
+// received the invocation, never prompts or environment dumps. Compute
+// binding is carried separately on the run.
 type ExecutorRuntime struct {
 	Worker    string `json:"worker,omitempty"`
 	Provider  string `json:"provider,omitempty"`
@@ -160,8 +161,9 @@ func CompleteExecutorRun(stateDir string, state *DeepState, run ExecutorRun) err
 }
 
 // RecoverUnmatchedExecutorRun turns a start lacking a result into an explicit
-// hard recovery block. The missing result does not prove the process stopped;
-// verification and retries remain prohibited until an operator resolves it.
+// hard recovery block. The missing result does not prove the process stopped
+// or ended; EndedAt remains unset and the event timestamp records when
+// recovery observed the missing result.
 func RecoverUnmatchedExecutorRun(stateDir string, state *DeepState, at time.Time) (*ExecutorRun, error) {
 	if state == nil || state.RunEventSchemaVersion != RunEventSchemaVersion {
 		return nil, nil
@@ -196,12 +198,11 @@ func RecoverUnmatchedExecutorRun(stateDir string, state *DeepState, at time.Time
 		at = time.Now().UTC()
 	}
 	run.Outcome = ExecutorOutcomeUnknown
-	run.EndedAt = at.UTC()
-	run.Error = "coordinator resumed without a durable executor result; invocation outcome and process quiescence are unknown"
+	reason := "coordinator resumed without a durable executor result; invocation outcome and process quiescence are unknown"
 	event := RunEvent{
 		EventID: executorEventID(run.ID, "recovery-required"), RunID: state.RunID, EpochID: state.ExecutionEpochID,
 		OccurredAt: at.UTC(), Actor: "deep-coordinator", Type: RunEventExecutorRecoveryRequired,
-		FromPhase: state.Phase, ToPhase: state.Phase, Reason: run.Error, ExecutorRun: &run,
+		FromPhase: state.Phase, ToPhase: state.Phase, Reason: reason, ExecutorRun: &run,
 	}
 	projected := *state
 	projected.Tasks = append([]Task(nil), state.Tasks...)
@@ -297,31 +298,8 @@ func findTask(state *DeepState, id string) (*Task, bool) {
 func executorEventID(id, action string) string { return "executor/" + id + "/" + action }
 
 func validateExecutorRun(run ExecutorRun, starting bool) error {
-	if run.ID == "" || len(run.ID) > 128 || strings.ContainsAny(run.ID, "\x00\r\n") ||
-		run.StartEventID != executorEventID(run.ID, "started") || run.StartedInEpochID == "" ||
-		run.TaskID == "" || len(run.TaskID) > 128 || strings.ContainsAny(run.TaskID, "\x00\r\n") ||
-		run.Attempt < 1 || run.Attempt > 1_000_000 || run.StartedAt.IsZero() {
-		return errors.New("executor run identity or start facts are invalid")
-	}
-	if run.ConfiguredTimeoutSeconds < 0 || run.ConfiguredTimeoutSeconds > 7*24*60*60 ||
-		run.EffectiveTimeoutSeconds < 1 || run.EffectiveTimeoutSeconds > 7*24*60*60 ||
-		run.RemainingDeadlineSeconds < 0 || run.RemainingDeadlineSeconds > 7*24*60*60 {
-		return errors.New("executor run timeout context is invalid")
-	}
-	if len(run.TimeoutDecision) > maxRunEventTextBytes || strings.ContainsRune(run.TimeoutDecision, '\x00') {
-		return errors.New("executor timeout decision exceeds its limit or contains NUL")
-	}
-	for _, value := range []string{run.Runtime.Worker, run.Runtime.Provider, run.Runtime.Model, run.Runtime.Reasoning, run.ComputeProvider} {
-		if len(value) > 128 || strings.ContainsAny(value, "\x00\r\n") {
-			return errors.New("executor runtime identity is invalid")
-		}
-	}
-	if run.ComputeInstance < 0 || (run.ComputeProvider == "") != (run.ComputeInstance == 0) {
-		return errors.New("executor compute identity is incomplete")
-	}
-	if run.RepositoryBefore != nil && (run.RepositoryBefore.HeadCommit == "" || run.RepositoryBefore.TreeSHA == "" ||
-		len(run.RepositoryBefore.HeadCommit) > 128 || len(run.RepositoryBefore.TreeSHA) > 128) {
-		return errors.New("executor pre-run repository identity is invalid")
+	if err := validateExecutorStartFacts(run); err != nil {
+		return err
 	}
 	if starting {
 		if run.Outcome != ExecutorOutcomeStarted || !run.EndedAt.IsZero() || run.Error != "" || run.ResultSummary != "" ||
@@ -356,6 +334,47 @@ func validateExecutorRun(run ExecutorRun, starting bool) error {
 	}
 	if run.Outcome == ExecutorOutcomeTimedOut && run.Error == "" {
 		return errors.New("timed-out executor outcome requires a timeout error")
+	}
+	return nil
+}
+
+func validateExecutorRecovery(run ExecutorRun) error {
+	if run.Outcome != ExecutorOutcomeUnknown || !run.EndedAt.IsZero() || run.ExitCode != 0 || run.Completed ||
+		run.FinishReason != "" || run.Error != "" || run.ResultSummary != "" || run.DurationMilliseconds != 0 ||
+		run.RepositoryAfter != nil || run.RepositoryAfterError != "" || len(run.ArtifactRefs) != 0 {
+		return errors.New("executor recovery record contains unobserved terminal facts")
+	}
+	started := run
+	started.Outcome = ExecutorOutcomeStarted
+	return validateExecutorRun(started, true)
+}
+
+func validateExecutorStartFacts(run ExecutorRun) error {
+	if run.ID == "" || len(run.ID) > 128 || strings.ContainsAny(run.ID, "\x00\r\n") ||
+		run.StartEventID != executorEventID(run.ID, "started") || run.StartedInEpochID == "" ||
+		run.TaskID == "" || len(run.TaskID) > 128 || strings.ContainsAny(run.TaskID, "\x00\r\n") ||
+		run.Attempt < 1 || run.Attempt > 1_000_000 || run.StartedAt.IsZero() {
+		return errors.New("executor run identity or start facts are invalid")
+	}
+	if run.ConfiguredTimeoutSeconds < 0 || run.ConfiguredTimeoutSeconds > 7*24*60*60 ||
+		run.EffectiveTimeoutSeconds < 1 || run.EffectiveTimeoutSeconds > 7*24*60*60 ||
+		run.RemainingDeadlineSeconds < 0 || run.RemainingDeadlineSeconds > 7*24*60*60 {
+		return errors.New("executor run timeout context is invalid")
+	}
+	if len(run.TimeoutDecision) > maxRunEventTextBytes || strings.ContainsRune(run.TimeoutDecision, '\x00') {
+		return errors.New("executor timeout decision exceeds its limit or contains NUL")
+	}
+	for _, value := range []string{run.Runtime.Worker, run.Runtime.Provider, run.Runtime.Model, run.Runtime.Reasoning, run.ComputeProvider} {
+		if len(value) > 128 || strings.ContainsAny(value, "\x00\r\n") {
+			return errors.New("executor runtime identity is invalid")
+		}
+	}
+	if run.ComputeInstance < 0 || (run.ComputeProvider == "") != (run.ComputeInstance == 0) {
+		return errors.New("executor compute identity is incomplete")
+	}
+	if run.RepositoryBefore != nil && (run.RepositoryBefore.HeadCommit == "" || run.RepositoryBefore.TreeSHA == "" ||
+		len(run.RepositoryBefore.HeadCommit) > 128 || len(run.RepositoryBefore.TreeSHA) > 128) {
+		return errors.New("executor pre-run repository identity is invalid")
 	}
 	return nil
 }

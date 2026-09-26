@@ -16,6 +16,9 @@ import (
 )
 
 const (
+	// RunEventSchemaVersion identifies the event envelope and field encoding.
+	// Additive event types are permitted within v1; readers still reject any
+	// unknown complete event, and older binaries are not forward-compatible.
 	RunEventSchemaVersion = 1
 	maxRunEventLineBytes  = 16 * 1024
 	maxRunEventIDBytes    = 256
@@ -59,7 +62,9 @@ type RunTaskSummary struct {
 }
 
 // RunEvent is a bounded, versioned fact in one Deep Work run's append-only
-// history. B1 records run/epoch and landing transitions; B2 adds executor
+// history. Version 1 is an extensible envelope: additive event types may be
+// added without a version bump, while readers fail closed on unknown complete
+// events. B1 records run/epoch and landing transitions; B2 adds executor
 // invocation facts. Verification remains a separate record layer.
 type RunEvent struct {
 	SchemaVersion    int              `json:"schemaVersion"`
@@ -581,7 +586,7 @@ func validateRunEvent(event RunEvent) error {
 			event.ExecutorRun == nil || event.ExecutorRun.Outcome != ExecutorOutcomeUnknown || event.Reason == "" {
 			return errors.New("executor-recovery event has invalid phase, outcome, or missing run record")
 		}
-		if err := validateExecutorRun(*event.ExecutorRun, false); err != nil {
+		if err := validateExecutorRecovery(*event.ExecutorRun); err != nil {
 			return fmt.Errorf("invalid executor-recovery record: %w", err)
 		}
 	default:
