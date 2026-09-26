@@ -65,6 +65,7 @@ func (c *deepCoordinator) execInputFor(t deep.Task, timeout time.Duration) execI
 	if t.Reasoning != "" {
 		in.reasoning = t.Reasoning
 	}
+	in.provider = resolveHermesProvider(in.provider, in.reasoning)
 	// The session's command policy is part of the reconstructed context: the
 	// worker must know exactly which commands it may run and what will
 	// happen to the rest.
@@ -72,6 +73,21 @@ func (c *deepCoordinator) execInputFor(t deep.Task, timeout time.Duration) execI
 		in.prompt += sec
 	}
 	return in
+}
+
+func (c *deepCoordinator) executorRuntimeFor(t deep.Task) deep.ExecutorRuntime {
+	reasoning := c.execCfg.reasoning
+	if t.Reasoning != "" {
+		reasoning = t.Reasoning
+	}
+	runtime := deep.ExecutorRuntime{
+		Provider: resolveHermesProvider(c.execCfg.provider, reasoning),
+		Model:    c.execCfg.model, Reasoning: reasoning,
+	}
+	if c.state.Exec != nil {
+		runtime.Worker = c.state.Exec.Worker
+	}
+	return runtime
 }
 
 func (c *deepCoordinator) mission() deep.Mission {
@@ -342,10 +358,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 				return err
 			}
 			startedAt := c.now().UTC()
-			runtime := deep.ExecutorRuntime{Provider: c.execCfg.provider, Model: c.execCfg.model, Reasoning: c.execCfg.reasoning}
-			if c.state.Exec != nil {
-				runtime.Worker = c.state.Exec.Worker
-			}
+			runtime := c.executorRuntimeFor(*t)
 			executorRun = deep.ExecutorRun{
 				ID: runID, TaskID: t.ID, Attempt: attempt, StartedAt: startedAt,
 				ConfiguredTimeoutSeconds: int(c.taskTimeout.Seconds()), EffectiveTimeoutSeconds: int(effectiveTimeout.Seconds()),

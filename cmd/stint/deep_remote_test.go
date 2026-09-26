@@ -200,6 +200,44 @@ func TestHermesExecutorReasoningProviderTemplate(t *testing.T) {
 	}
 }
 
+func TestHermesProviderResolutionUsesSameDefaultForRemoteAndLocal(t *testing.T) {
+	t.Run("remote", func(t *testing.T) {
+		fr := &fakeRemote{}
+		_, err := newHermesExecutor(fr.run).run(context.Background(), execInput{
+			workdir: "/wt", prompt: "p", timeout: time.Minute, model: "model-test", reasoning: "medium",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(fr.calls) != 1 || !strings.Contains(fr.calls[0], "--provider custom") {
+			t.Fatalf("remote invocation did not pass normalized provider custom: %q", fr.calls)
+		}
+	})
+	t.Run("local", func(t *testing.T) {
+		dir := t.TempDir()
+		hermes := filepath.Join(dir, "hermes")
+		argsFile := filepath.Join(dir, "args")
+		script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellQuote(argsFile) + "\nexit 0\n"
+		if err := os.WriteFile(hermes, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		result, err := newLocalHermesExecutor(hermes).run(context.Background(), execInput{
+			workdir: dir, prompt: "p", timeout: time.Minute, model: "model-test", reasoning: "medium",
+		})
+		if err != nil || !result.completed {
+			t.Fatalf("local invocation = %+v err=%v", result, err)
+		}
+		args, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		argv := strings.Split(strings.TrimSpace(string(args)), "\n")
+		if index := indexOf(argv, "--provider"); index < 0 || index+1 >= len(argv) || argv[index+1] != "custom" {
+			t.Fatalf("local invocation did not pass normalized provider custom: %q", argv)
+		}
+	})
+}
+
 func TestHermesExecutorNonZeroExit(t *testing.T) {
 	fr := &fakeRemote{}
 	e := newHermesExecutor(func(ctx context.Context, cmd string) (string, error) {
@@ -403,8 +441,10 @@ func TestLocalHermesExecutorSuccess(t *testing.T) {
 	dir := t.TempDir()
 	hermes := dir + "/hermes"
 	captured := filepath.Join(dir, "captured-prompt-path")
+	capturedArgs := filepath.Join(dir, "captured-args")
 	script := "#!/bin/sh\ntest \"$2\" = --query-file || exit 11\n" +
 		"test \"$(cat \"$3\")\" = 'continue locally' || exit 12\n" +
+		"printf '%s\\n' \"$@\" > " + shellQuote(capturedArgs) + "\n" +
 		"printf '%s' \"$3\" > " + shellQuote(captured) + "\nprintf 'on-box worker output\\n'\n"
 	if err := os.WriteFile(hermes, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -422,6 +462,14 @@ func TestLocalHermesExecutorSuccess(t *testing.T) {
 	}
 	if !strings.Contains(res.outputText, "on-box worker output") {
 		t.Errorf("outputText = %q", res.outputText)
+	}
+	args, err := os.ReadFile(capturedArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := strings.Split(strings.TrimSpace(string(args)), "\n")
+	if index := indexOf(argv, "--provider"); index < 0 || index+1 >= len(argv) || argv[index+1] != "custom:qwen-stint-medium" {
+		t.Fatalf("local Hermes received unresolved provider: %q", argv)
 	}
 	promptPathBytes, err := os.ReadFile(captured)
 	if err != nil {
@@ -443,6 +491,15 @@ func TestLocalHermesExecutorSuccess(t *testing.T) {
 			t.Fatalf("temporary prompt was captured in the target worktree: %s", entry.Name())
 		}
 	}
+}
+
+func indexOf(values []string, target string) int {
+	for i, value := range values {
+		if value == target {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestLocalHermesExecutorFailure(t *testing.T) {

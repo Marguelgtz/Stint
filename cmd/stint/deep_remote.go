@@ -501,6 +501,15 @@ func newHermesExecutor(remote remoteCmd) *hermesExecutor {
 	return &hermesExecutor{remote: remote}
 }
 
+// resolveHermesProvider produces the exact provider argument passed to Hermes
+// from the configured provider and task reasoning setting.
+func resolveHermesProvider(provider, reasoning string) string {
+	if provider == "" {
+		provider = "custom"
+	}
+	return strings.ReplaceAll(provider, "{reasoning}", reasoning)
+}
+
 func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, error) {
 	if in.timeout > 0 {
 		var cancel context.CancelFunc
@@ -511,26 +520,18 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 
 	b64 := base64.StdEncoding.EncodeToString([]byte(in.prompt))
 	secs := int(in.timeout.Seconds()) - remoteExecutionCleanupReserveSeconds
-	hermesArgs := "hermes chat --query-file \"$stint_prompt_file\" --oneshot"
+	provider := resolveHermesProvider(in.provider, in.reasoning)
+	providerArg := shellQuote(provider)
+	if provider == "custom" {
+		// Preserve the established smoke/diagnostic command shape.
+		providerArg = provider
+	}
+	hermesArgs := "hermes chat --query-file \"$stint_prompt_file\" --oneshot --provider " + providerArg
 	if in.model != "" {
-		provider := in.provider
-		if provider == "" {
-			provider = "custom"
-		}
-		// A provider template lets a box provision static request overrides
-		// for endpoints such as NInfer that do not advertise dynamic reasoning
-		// fields. For example custom:qwen-stint-{reasoning} resolves to the
-		// medium or xhigh custom-provider entry before Hermes starts.
-		provider = strings.ReplaceAll(provider, "{reasoning}", in.reasoning)
-		providerArg := shellQuote(provider)
-		if provider == "custom" {
-			// Preserve the established smoke/diagnostic command shape.
-			providerArg = provider
-		}
-		hermesArgs += " --provider " + providerArg + " -m " + shellQuote(in.model)
-		if in.reasoning != "" {
-			hermesArgs += " --reasoning " + shellQuote(in.reasoning)
-		}
+		hermesArgs += " -m " + shellQuote(in.model)
+	}
+	if in.reasoning != "" {
+		hermesArgs += " --reasoning " + shellQuote(in.reasoning)
 	}
 	line := remoteHermesCommand(in, b64, hermesArgs, secs)
 
@@ -675,11 +676,7 @@ func (e *localHermesExecutor) run(ctx context.Context, in execInput) (execResult
 		return execResult{exitCode: -1, duration: time.Since(start)}, err
 	}
 
-	provider := in.provider
-	if provider == "" {
-		provider = "custom"
-	}
-	provider = strings.ReplaceAll(provider, "{reasoning}", in.reasoning)
+	provider := resolveHermesProvider(in.provider, in.reasoning)
 	argv := []string{"chat", "--query-file", promptPath, "--oneshot", "--provider", provider}
 	if in.model != "" {
 		argv = append(argv, "-m", in.model)

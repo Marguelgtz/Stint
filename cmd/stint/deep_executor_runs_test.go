@@ -21,6 +21,8 @@ func beginJournaledTestRun(t *testing.T, env *testEnv) {
 
 func TestJournaledTaskPersistsExecutorStartBeforeLaunchAndResultBeforeVerification(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
+	env.coord.execCfg.provider = "custom:qwen-stint-{reasoning}"
+	env.coord.execCfg.reasoning = "medium"
 	beginJournaledTestRun(t, env)
 	startObservedBeforeLaunch := false
 	env.fake.before = func(execInput) {
@@ -54,6 +56,11 @@ func TestJournaledTaskPersistsExecutorStartBeforeLaunchAndResultBeforeVerificati
 	if started == nil || completed == nil || started.ID != completed.ID || started.Attempt != 1 || started.RepositoryBefore == nil || completed.RepositoryAfter == nil {
 		t.Fatalf("executor run provenance is incomplete: start=%+v result=%+v", started, completed)
 	}
+	if started.Runtime.Provider != "custom:qwen-stint-medium" || started.Runtime.Model != env.coord.execCfg.model ||
+		started.Runtime.Reasoning != "medium" || completed.Runtime != started.Runtime ||
+		len(env.fake.inputs) != 1 || env.fake.inputs[0].provider != started.Runtime.Provider || env.fake.inputs[0].reasoning != started.Runtime.Reasoning {
+		t.Fatalf("executor runtime differs between durable facts and invocation: start=%+v result=%+v input=%+v", started.Runtime, completed.Runtime, env.fake.inputs)
+	}
 	if started.RepositoryBefore.TreeSHA == completed.RepositoryAfter.TreeSHA {
 		t.Fatal("fixture executor did not produce a distinct repository result state")
 	}
@@ -62,6 +69,66 @@ func TestJournaledTaskPersistsExecutorStartBeforeLaunchAndResultBeforeVerificati
 	}
 	if env.state.Tasks[0].Status != deep.StatusVerified || env.state.Tasks[0].ExecutorRunID != completed.ID || !env.state.Tasks[0].ExecutorRunProcessed {
 		t.Fatalf("task result projection = %+v", env.state.Tasks[0])
+	}
+}
+
+func TestEmptyConfiguredProviderIsPersistedAsHermesDefault(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.coord.execCfg.provider = ""
+	env.coord.execCfg.reasoning = "medium"
+	beginJournaledTestRun(t, env)
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("run task with Hermes default provider: %v", err)
+	}
+	events, err := deep.ReadRunEvents(env.coord.stateDir, env.state.SessionID)
+	if err != nil || len(events) != 3 || events[1].ExecutorRun == nil || events[2].ExecutorRun == nil {
+		t.Fatalf("executor provider history = %+v err=%v", events, err)
+	}
+	if events[1].ExecutorRun.Runtime.Provider != "custom" || events[2].ExecutorRun.Runtime != events[1].ExecutorRun.Runtime ||
+		len(env.fake.inputs) != 1 || env.fake.inputs[0].provider != "custom" {
+		t.Fatalf("empty provider resolution differs across record, result, and invocation: start=%+v result=%+v input=%+v", events[1].ExecutorRun.Runtime, events[2].ExecutorRun.Runtime, env.fake.inputs)
+	}
+}
+
+func TestJournaledTaskRetryKeepsBothExecutorInvocations(t *testing.T) {
+	env := newTestEnv(t, map[int]execResult{1: failedResult()}, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	beginJournaledTestRun(t, env)
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
+		return verificationResult{Command: command, Outcome: verificationPassed}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("run first journaled attempt: %v", err)
+	}
+	if env.state.Tasks[0].Attempts != 1 || env.state.Tasks[0].Status != deep.StatusIncomplete || !env.state.Tasks[0].ExecutorRunProcessed {
+		t.Fatalf("first attempt did not reach a retryable state: %+v", env.state.Tasks[0])
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now.Add(time.Minute)); err != nil {
+		t.Fatalf("run second journaled attempt: %v", err)
+	}
+	events, err := deep.ReadRunEvents(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var starts, results []deep.ExecutorRun
+	for _, event := range events {
+		if event.ExecutorRun == nil || event.ExecutorRun.TaskID != "T-001" {
+			continue
+		}
+		switch event.Type {
+		case deep.RunEventExecutorStarted:
+			starts = append(starts, *event.ExecutorRun)
+		case deep.RunEventExecutorResult:
+			results = append(results, *event.ExecutorRun)
+		}
+	}
+	if len(starts) != 2 || len(results) != 2 || starts[0].ID == starts[1].ID ||
+		starts[0].Attempt != 1 || results[0].Attempt != 1 || starts[1].Attempt != 2 || results[1].Attempt != 2 ||
+		results[0].Outcome != deep.ExecutorOutcomeFailed || results[1].Outcome != deep.ExecutorOutcomeSucceeded {
+		t.Fatalf("retry overwrote or misattributed invocation history: starts=%+v results=%+v", starts, results)
+	}
+	if env.state.Tasks[0].Status != deep.StatusVerified || env.state.Tasks[0].Attempts != 2 || env.state.Tasks[0].ExecutorRunID != starts[1].ID {
+		t.Fatalf("successful retry task projection = %+v", env.state.Tasks[0])
 	}
 }
 
