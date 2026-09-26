@@ -20,44 +20,54 @@ const (
 // on every transition, following the session.json convention. All essential
 // state is local: compute may die, this file and the git worktree do not.
 type DeepState struct {
-	SessionID         string          `json:"sessionId"`
-	MissionName       string          `json:"missionName"`
-	Objective         string          `json:"objective"`
-	Success           []string        `json:"success,omitempty"`
-	Constraints       []string        `json:"constraints,omitempty"`
-	Verify            string          `json:"verify,omitempty"`
-	GitHub            GitHubPolicy    `json:"github"`
-	RepoPath          string          `json:"repoPath"`
-	WorktreePath      string          `json:"worktreePath"`
-	Branch            string          `json:"branch"`
-	BaseCommit        string          `json:"baseCommit,omitempty"`
-	Tasks             []Task          `json:"tasks"`
-	Phase             Phase           `json:"phase"`
-	Deadline          time.Time       `json:"deadline"`
-	LandBefore        time.Time       `json:"landBefore"`
-	ComputeBinding    *ComputeBinding `json:"computeBinding,omitempty"`
-	LandedAt          *time.Time      `json:"landedAt,omitempty"`
-	HandoffPath       string          `json:"handoffPath,omitempty"`
-	LandingReason     string          `json:"landingReason,omitempty"`
-	LandingCommit     string          `json:"landingCommit,omitempty"`
-	LandingVerify     string          `json:"landingVerify,omitempty"`
-	LandingVerifyDone bool            `json:"landingVerifyDone,omitempty"`
-	LandingHandoff    string          `json:"landingHandoff,omitempty"`
-	PreviousLandings  []LandingRecord `json:"previousLandings,omitempty"`
-	TaskAttemptCap    int             `json:"taskAttemptCap"`
-	Exec              *ExecSettings   `json:"exec,omitempty"`
-	StartedAt         time.Time       `json:"startedAt"`
-	UpdatedAt         time.Time       `json:"updatedAt,omitempty"`
+	SessionID                      string               `json:"sessionId"`
+	MissionName                    string               `json:"missionName"`
+	Objective                      string               `json:"objective"`
+	Success                        []string             `json:"success,omitempty"`
+	Constraints                    []string             `json:"constraints,omitempty"`
+	Verify                         string               `json:"verify,omitempty"`
+	GitHub                         GitHubPolicy         `json:"github"`
+	RepoPath                       string               `json:"repoPath"`
+	WorktreePath                   string               `json:"worktreePath"`
+	Branch                         string               `json:"branch"`
+	BaseCommit                     string               `json:"baseCommit,omitempty"`
+	Tasks                          []Task               `json:"tasks"`
+	Phase                          Phase                `json:"phase"`
+	Deadline                       time.Time            `json:"deadline"`
+	LandBefore                     time.Time            `json:"landBefore"`
+	ComputeBinding                 *ComputeBinding      `json:"computeBinding,omitempty"`
+	LandedAt                       *time.Time           `json:"landedAt,omitempty"`
+	HandoffPath                    string               `json:"handoffPath,omitempty"`
+	LandingReason                  string               `json:"landingReason,omitempty"`
+	LandingCommit                  string               `json:"landingCommit,omitempty"`
+	LandingCheckpointTreeSHA       string               `json:"landingCheckpointTreeSha,omitempty"`
+	LandingVerify                  string               `json:"landingVerify,omitempty"`
+	LandingVerifyDone              bool                 `json:"landingVerifyDone,omitempty"`
+	LandingVerificationSubject     *VerificationSubject `json:"landingVerificationSubject,omitempty"`
+	LandingVerificationBookkeeping map[string]string    `json:"landingVerificationBookkeeping,omitempty"`
+	LandingHandoff                 string               `json:"landingHandoff,omitempty"`
+	// ExecutionQuiescenceUnconfirmed blocks verification/landing when an
+	// executor may still have writers in the worktree. The active task owner
+	// clears it only after that invocation has returned with quiescence known.
+	ExecutionQuiescenceUnconfirmed bool            `json:"executionQuiescenceUnconfirmed,omitempty"`
+	ExecutionQuiescenceTaskID      string          `json:"executionQuiescenceTaskId,omitempty"`
+	PreviousLandings               []LandingRecord `json:"previousLandings,omitempty"`
+	TaskAttemptCap                 int             `json:"taskAttemptCap"`
+	Exec                           *ExecSettings   `json:"exec,omitempty"`
+	StartedAt                      time.Time       `json:"startedAt"`
+	UpdatedAt                      time.Time       `json:"updatedAt,omitempty"`
 }
 
 // LandingRecord preserves the identity and terminal reason of an earlier
 // landing when an operator deliberately resumes the same Deep Work session.
 type LandingRecord struct {
-	At            time.Time `json:"at"`
-	Reason        string    `json:"reason"`
-	Commit        string    `json:"commit,omitempty"`
-	Verification  string    `json:"verification,omitempty"`
-	HandoffSHA256 string    `json:"handoffSha256,omitempty"`
+	At                  time.Time            `json:"at"`
+	Reason              string               `json:"reason"`
+	Commit              string               `json:"commit,omitempty"`
+	CheckpointTreeSHA   string               `json:"checkpointTreeSha,omitempty"`
+	Verification        string               `json:"verification,omitempty"`
+	VerificationSubject *VerificationSubject `json:"verificationSubject,omitempty"`
+	HandoffSHA256       string               `json:"handoffSha256,omitempty"`
 }
 
 // ExecSettings are the per-session coding-agent invocation settings,

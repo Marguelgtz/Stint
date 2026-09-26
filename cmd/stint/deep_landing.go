@@ -193,10 +193,48 @@ func runVerifyCmd(ctx context.Context, command, workdir string) verificationResu
 	return result
 }
 
+func landingVerificationBookkeeping(metadata map[string]string) map[string]string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	copy := make(map[string]string, len(metadata))
+	for path, identity := range metadata {
+		if path != deepWorktreeHandoff {
+			copy[path] = identity
+		}
+	}
+	if len(copy) == 0 {
+		return nil
+	}
+	return copy
+}
+
+func landingEvidenceMatches(snapshot verificationSnapshot, subject *deep.VerificationSubject, bookkeeping map[string]string) bool {
+	return subject != nil && *subject == snapshot.Subject && sameMetadata(bookkeeping, landingVerificationBookkeeping(snapshot.Bookkeeping))
+}
+
+func summarizeLandingVerification(result verificationResult) string {
+	if result.Passed() {
+		return "passed"
+	}
+	finalVerify := "FAILED (" + string(result.Outcome) + ")"
+	if result.HasExitCode {
+		finalVerify += fmt.Sprintf(" (exit %d)", result.ExitCode)
+	}
+	if strings.TrimSpace(result.Output) != "" {
+		finalVerify += "\n" + strings.TrimSpace(result.Output)
+	}
+	if result.Error != "" {
+		finalVerify += "\nerror: " + result.Error
+	}
+	return finalVerify
+}
+
 // land is a resumable transaction. It persists PhaseLanding before any
-// handoff side effects, then records verification, the handoff, and its exact
-// commit SHA before marking the session landed. Landing never touches compute:
-// the existing watchdog owns the hard deadline.
+// handoff side effects, binds final verification to the product tree it
+// exercised, and records the matching checkpoint tree before marking the
+// session landed. Landing never touches compute: the existing watchdog owns
+// the hard deadline.
 func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	if c.state.Phase == deep.PhaseLanded || c.state.Phase == deep.PhaseStopped {
 		return nil
@@ -240,9 +278,25 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 		}
 	}
 
-	if !c.state.LandingVerifyDone {
-		finalVerify := ""
-		if c.state.Verify != "" {
+	bookkeepingPaths := c.verificationBookkeepingPaths()
+	verificationSnapshot, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+	if err != nil {
+		return fmt.Errorf("capture repository state before final verification: %w", err)
+	}
+	verifyRequired := strings.TrimSpace(c.state.Verify) != ""
+	if verifyRequired {
+		if !landingEvidenceMatches(verificationSnapshot, c.state.LandingVerificationSubject, c.state.LandingVerificationBookkeeping) {
+			// A legacy done bit has no subject provenance. Clear it durably before
+			// rerunning so a crash cannot make the old result look reusable.
+			if c.state.LandingVerifyDone || c.state.LandingVerificationSubject != nil || c.state.LandingVerificationBookkeeping != nil {
+				c.state.LandingVerify = ""
+				c.state.LandingVerifyDone = false
+				c.state.LandingVerificationSubject = nil
+				c.state.LandingVerificationBookkeeping = nil
+				if err := c.save(); err != nil {
+					return fmt.Errorf("invalidate stale final verification evidence: %w", err)
+				}
+			}
 			run := c.finalVerify
 			if run == nil {
 				run = func(ctx context.Context, command string) verificationResult {
@@ -255,20 +309,34 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 			} else {
 				finalVerify = "FAILED (" + string(result.Outcome) + ")"
 			}
-			if result.HasExitCode {
-				finalVerify += fmt.Sprintf(" (exit %d)", result.ExitCode)
+			afterVerify, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+			if err != nil {
+				return fmt.Errorf("capture repository state after final verification: %w", err)
 			}
-			if strings.TrimSpace(result.Output) != "" {
-				finalVerify += "\n" + strings.TrimSpace(result.Output)
+			if afterVerify.Subject != verificationSnapshot.Subject || !sameMetadata(
+				landingVerificationBookkeeping(verificationSnapshot.Bookkeeping),
+				landingVerificationBookkeeping(afterVerify.Bookkeeping),
+			) {
+				return fmt.Errorf("repository changed during final verification; verified subject %s/%s no longer matches %s/%s",
+					verificationSnapshot.Subject.HeadCommit, verificationSnapshot.Subject.TreeSHA,
+					afterVerify.Subject.HeadCommit, afterVerify.Subject.TreeSHA)
 			}
-			if result.Error != "" {
-				finalVerify += "\nerror: " + result.Error
+			c.state.LandingVerify = summarizeLandingVerification(result)
+			c.state.LandingVerifyDone = true
+			verifiedSubject := verificationSnapshot.Subject
+			c.state.LandingVerificationSubject = &verifiedSubject
+			c.state.LandingVerificationBookkeeping = landingVerificationBookkeeping(verificationSnapshot.Bookkeeping)
+			if err := c.save(); err != nil {
+				return fmt.Errorf("persist final verification result and subject: %w", err)
 			}
 		}
-		c.state.LandingVerify = finalVerify
+	} else if !c.state.LandingVerifyDone || c.state.LandingVerify != "" || c.state.LandingVerificationSubject != nil || c.state.LandingVerificationBookkeeping != nil {
+		c.state.LandingVerify = ""
 		c.state.LandingVerifyDone = true
+		c.state.LandingVerificationSubject = nil
+		c.state.LandingVerificationBookkeeping = nil
 		if err := c.save(); err != nil {
-			return fmt.Errorf("persist final verification result: %w", err)
+			return fmt.Errorf("persist absence of final verifier: %w", err)
 		}
 	}
 
@@ -295,27 +363,31 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 			return os.WriteFile(path, data, 0o644)
 		}
 	}
-	if err := worktreeWrite(filepath.Join(c.state.WorktreePath, "DEEP_WORK_HANDOFF.md"), handoff); err != nil {
-		return fmt.Errorf("write worktree handoff: %w", err)
+	// Mirror the generated summary into the worktree only while the path is
+	// Stint-owned untracked bookkeeping. If it is already Git-visible, it is a
+	// product-tree input and landing must leave it untouched after verification.
+	if _, handoffIsBookkeeping := verificationSnapshot.Bookkeeping[deepWorktreeHandoff]; handoffIsBookkeeping {
+		if err := worktreeWrite(filepath.Join(c.state.WorktreePath, deepWorktreeHandoff), handoff); err != nil {
+			return fmt.Errorf("write worktree handoff: %w", err)
+		}
 	}
 
 	commitSubject := fmt.Sprintf("deep: %s handoff", c.state.SessionID)
-	headSubject, err := c.git.headSubject(c.state.WorktreePath)
+	checkpointSnapshot, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
 	if err != nil {
-		return fmt.Errorf("read current worktree commit subject: %w", err)
+		return fmt.Errorf("capture repository state before landing checkpoint: %w", err)
 	}
-	status, err := c.git.statusShort(c.state.WorktreePath)
+	if verifyRequired && !landingEvidenceMatches(checkpointSnapshot, c.state.LandingVerificationSubject, c.state.LandingVerificationBookkeeping) {
+		return fmt.Errorf("repository changed after final verification; verified subject %s/%s no longer matches checkpoint subject %s/%s",
+			c.state.LandingVerificationSubject.HeadCommit, c.state.LandingVerificationSubject.TreeSHA,
+			checkpointSnapshot.Subject.HeadCommit, checkpointSnapshot.Subject.TreeSHA)
+	}
+	head, checkpointTree, err := c.git.checkpointSubject(c.state.WorktreePath, commitSubject, checkpointSnapshot)
 	if err != nil {
-		return fmt.Errorf("read worktree changes before handoff checkpoint: %w", err)
+		return fmt.Errorf("checkpoint landing repository state: %w", err)
 	}
-	if strings.TrimSpace(headSubject) != commitSubject || strings.TrimSpace(status) != "" {
-		if _, err := c.git.commitAll(c.state.WorktreePath, commitSubject); err != nil {
-			return fmt.Errorf("checkpoint handoff: %w", err)
-		}
-	}
-	head, err := c.git.headCommit(c.state.WorktreePath)
-	if err != nil {
-		return fmt.Errorf("read landing checkpoint SHA: %w", err)
+	if verifyRequired && checkpointTree != c.state.LandingVerificationSubject.TreeSHA {
+		return fmt.Errorf("landing checkpoint tree %s does not match final verification tree %s", checkpointTree, c.state.LandingVerificationSubject.TreeSHA)
 	}
 	head = strings.TrimSpace(head)
 	if head == "" {
@@ -323,6 +395,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	}
 
 	c.state.LandingCommit = head
+	c.state.LandingCheckpointTreeSHA = checkpointTree
 	c.state.Phase = deep.PhaseLanded
 	c.state.LandedAt = &now
 	if err := c.save(); err != nil {

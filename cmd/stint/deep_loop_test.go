@@ -267,8 +267,296 @@ func TestVerifiedTaskReusesWorkerCommitWhenTreeMatches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("final HEAD: %v", err)
 	}
-	if finalHead == checkpoint {
-		t.Fatal("landing handoff should be a later commit than the task checkpoint")
+	if finalHead != checkpoint {
+		t.Fatalf("landing added a marker-only commit %s after task checkpoint %s", finalHead, checkpoint)
+	}
+}
+
+func TestNoOpCheckpointReusesHeadWithoutEmptyCommit(t *testing.T) {
+	repo := newTestRepo(t)
+	git := newGitRunner()
+	before, err := git.repoHead(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject, err := git.verificationSubject(repo, nil)
+	if err != nil {
+		t.Fatalf("capture no-op subject: %v", err)
+	}
+	countBefore, err := exec.Command("git", "-C", repo, "rev-list", "--count", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, tree, err := git.checkpointSubject(repo, "deep(T-001): no-op checkpoint", subject)
+	if err != nil {
+		t.Fatalf("checkpoint no-op subject: %v", err)
+	}
+	if checkpoint != before || tree != subject.Subject.TreeSHA {
+		t.Fatalf("no-op checkpoint = %q/%q, want existing HEAD/tree %q/%q", checkpoint, tree, before, subject.Subject.TreeSHA)
+	}
+	countAfter, err := exec.Command("git", "-C", repo, "rev-list", "--count", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(countAfter)) != strings.TrimSpace(string(countBefore)) {
+		t.Fatalf("no-op task created a Git commit: count %s -> %s", strings.TrimSpace(string(countBefore)), strings.TrimSpace(string(countAfter)))
+	}
+}
+
+func TestMutationAfterVerificationInvalidatesSubjectBeforeCheckpoint(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	env.coord.verify = func(_ context.Context, command, workdir string) verificationResult {
+		if err := os.WriteFile(filepath.Join(workdir, "mutated-after-verifier.txt"), []byte("new state"), 0o644); err != nil {
+			t.Fatalf("mutate repository after verifier: %v", err)
+		}
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	err := env.coord.runTask(context.Background(), 0, env.clock.now)
+	if err == nil || !strings.Contains(err.Error(), "verification subject changed") {
+		t.Fatalf("runTask error = %v, want subject-mutation failure", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status != deep.StatusNeedsHuman || task.CheckpointCommit != "" || task.CheckpointTreeSHA != "" {
+		t.Fatalf("mutated verification accepted a checkpoint: status=%s commit=%q tree=%q", task.Status, task.CheckpointCommit, task.CheckpointTreeSHA)
+	}
+	if task.VerificationSubject == nil || !strings.Contains(task.VerificationResult, "verification passed") {
+		t.Fatalf("did not preserve the original passing evidence and subject: %+v", task)
+	}
+	head, err := env.coord.git.headCommit(env.wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head != env.state.BaseCommit {
+		t.Fatalf("mutated state received a checkpoint commit: HEAD=%s baseline=%s", head, env.state.BaseCommit)
+	}
+}
+
+type mutateAtCheckpointGit struct {
+	gitOps
+	worktree string
+	path     string
+}
+
+func (g mutateAtCheckpointGit) checkpointSubject(dir, message string, snapshot verificationSnapshot) (string, string, error) {
+	if err := os.WriteFile(filepath.Join(g.worktree, g.path), []byte("mutated at checkpoint boundary\n"), 0o644); err != nil {
+		return "", "", err
+	}
+	return g.gitOps.checkpointSubject(dir, message, snapshot)
+}
+
+func TestMutationAtCheckpointBoundaryCannotReuseVerifiedSubject(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	env.coord.git = mutateAtCheckpointGit{gitOps: env.coord.git, worktree: env.wt, path: "mutated-at-checkpoint.txt"}
+	err := env.coord.runTask(context.Background(), 0, env.clock.now)
+	if err == nil || !strings.Contains(err.Error(), "exact-state checkpoint failed") {
+		t.Fatalf("runTask error = %v, want checkpoint-boundary mutation failure", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status != deep.StatusNeedsHuman || task.CheckpointCommit != "" || task.CheckpointTreeSHA != "" {
+		t.Fatalf("checkpoint-boundary mutation was accepted: status=%s commit=%q tree=%q", task.Status, task.CheckpointCommit, task.CheckpointTreeSHA)
+	}
+}
+
+func TestHeadChangeAfterVerificationInvalidatesSubjectEvenWithSameTree(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	env.coord.verify = func(_ context.Context, command, workdir string) verificationResult {
+		cmd := exec.Command("git", "add", "-A")
+		cmd.Dir = workdir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("stage worktree after verifier: %v (%s)", err, out)
+		}
+		cmd = exec.Command("git", "commit", "-m", "external same-tree commit")
+		cmd.Dir = workdir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("commit same tree after verifier: %v (%s)", err, out)
+		}
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	err := env.coord.runTask(context.Background(), 0, env.clock.now)
+	if err == nil || !strings.Contains(err.Error(), "verification subject changed") {
+		t.Fatalf("runTask error = %v, want HEAD-identity mismatch", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status != deep.StatusNeedsHuman || task.CheckpointCommit != "" || task.VerificationSubject == nil {
+		t.Fatalf("same-tree HEAD change was accepted: %+v", task)
+	}
+}
+
+func TestVerificationSubjectUsesWorktreeContentOverStagedBlob(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	env.fake.after = func() {
+		readme := filepath.Join(env.wt, "README.md")
+		if err := os.WriteFile(readme, []byte("staged version\n"), 0o644); err != nil {
+			t.Fatalf("write staged README: %v", err)
+		}
+		cmd := exec.Command("git", "add", "README.md")
+		cmd.Dir = env.wt
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("stage README: %v (%s)", err, out)
+		}
+		if err := os.WriteFile(readme, []byte("worktree version\n"), 0o644); err != nil {
+			t.Fatalf("write unstaged README: %v", err)
+		}
+	}
+	env.coord.verify = func(_ context.Context, command, workdir string) verificationResult {
+		contents, err := os.ReadFile(filepath.Join(workdir, "README.md"))
+		if err != nil || string(contents) != "worktree version\n" {
+			t.Fatalf("verifier worktree README = %q, err=%v", contents, err)
+		}
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status != deep.StatusVerified || task.VerificationSubject == nil || task.CheckpointTreeSHA != task.VerificationSubject.TreeSHA {
+		t.Fatalf("tracked worktree change was not checkpointed exactly: %+v", task)
+	}
+	contents, err := exec.Command("git", "-C", env.wt, "show", task.CheckpointCommit+":README.md").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "worktree version\n" {
+		t.Fatalf("checkpoint captured staged content %q, want verifier-visible worktree content", contents)
+	}
+	message, err := exec.Command("git", "-C", env.wt, "show", "-s", "--format=%s", task.CheckpointCommit).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(message)), "deep(T-001): add helper.go"; got != want {
+		t.Fatalf("semantic checkpoint message = %q, want %q", got, want)
+	}
+}
+
+func TestVerificationSubjectRejectsDirtySubmoduleWorktree(t *testing.T) {
+	repo := newTestRepo(t)
+	submodule := newTestRepo(t)
+	cmd := exec.Command("git", "-C", repo, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "deps/inner")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("add local submodule: %v (%s)", err, out)
+	}
+	cmd = exec.Command("git", "-C", repo, "add", "-A")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("stage superproject submodule: %v (%s)", err, out)
+	}
+	cmd = exec.Command("git", "-C", repo, "commit", "-m", "add submodule")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("commit superproject submodule: %v (%s)", err, out)
+	}
+	cleanSnapshot, err := newGitRunner().verificationSubject(repo, nil)
+	if err != nil {
+		t.Fatalf("capture clean initialized submodule: %v", err)
+	}
+	if cleanSnapshot.Subject.TreeSHA == "" {
+		t.Fatal("clean submodule was missing from the product tree")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "deps", "inner", "dirty.txt"), []byte("uncommitted nested input\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newGitRunner().verificationSubject(repo, nil); err == nil || !strings.Contains(err.Error(), "dirty submodule") {
+		t.Fatalf("dirty submodule subject error = %v, want fail-closed dirty-submodule error", err)
+	}
+}
+
+func TestUntrackedActionPlanIsSeparateFromProductCheckpoint(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	const planPath = "plans/current.md"
+	env.coord.execCfg.actionPlan = planPath
+	env.fake.after = func() {
+		if err := os.MkdirAll(filepath.Join(env.wt, "plans"), 0o755); err != nil {
+			t.Fatalf("create plan directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(env.wt, planPath), []byte("run bookkeeping plan\n"), 0o644); err != nil {
+			t.Fatalf("write action plan: %v", err)
+		}
+	}
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status != deep.StatusVerified || task.VerificationSubject == nil {
+		t.Fatalf("task did not bind a verified subject: %+v", task)
+	}
+	if got := task.VerificationBookkeeping[planPath]; !strings.HasPrefix(got, "git-blob:") {
+		t.Fatalf("action-plan identity = %q, want separate Git blob identity", got)
+	}
+	if task.CheckpointTreeSHA != task.VerificationSubject.TreeSHA {
+		t.Fatalf("checkpoint tree %q differs from product subject %q", task.CheckpointTreeSHA, task.VerificationSubject.TreeSHA)
+	}
+	listed, err := exec.Command("git", "-C", env.wt, "ls-tree", "-r", "--name-only", task.CheckpointCommit, "--", planPath).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(listed)) != "" {
+		t.Fatalf("untracked Stint action plan entered product checkpoint: %q", listed)
+	}
+	status, err := env.coord.git.statusShort(env.wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, "?? plans/") {
+		t.Fatalf("bookkeeping file should remain outside the product checkpoint, status=%q", status)
+	}
+	if err := env.coord.land(context.Background(), "test landing"); err != nil {
+		t.Fatalf("land: %v", err)
+	}
+	listed, err = exec.Command("git", "-C", env.wt, "ls-tree", "-r", "--name-only", env.state.LandingCommit, "--", planPath, deepWorktreeHandoff).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(listed)) != "" {
+		t.Fatalf("Stint run bookkeeping entered landing product tree: %q", listed)
+	}
+}
+
+func TestStagedActionPlanIsIncludedInProductCheckpoint(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	const planPath = "plans/current.md"
+	env.coord.execCfg.actionPlan = planPath
+	env.fake.after = func() {
+		if err := os.MkdirAll(filepath.Join(env.wt, "plans"), 0o755); err != nil {
+			t.Fatalf("create plan directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(env.wt, planPath), []byte("intentional mission output\n"), 0o644); err != nil {
+			t.Fatalf("write action plan: %v", err)
+		}
+		cmd := exec.Command("git", "add", "--", planPath)
+		cmd.Dir = env.wt
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("stage intentional action-plan output: %v (%s)", err, out)
+		}
+	}
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status != deep.StatusVerified || task.VerificationSubject == nil {
+		t.Fatalf("task did not bind a verified subject: %+v", task)
+	}
+	if _, ok := task.VerificationBookkeeping[planPath]; ok {
+		t.Fatalf("Git-visible action plan was incorrectly classified as bookkeeping: %+v", task.VerificationBookkeeping)
+	}
+	listed, err := exec.Command("git", "-C", env.wt, "ls-tree", "-r", "--name-only", task.CheckpointCommit, "--", planPath).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(listed)) != planPath {
+		t.Fatalf("staged action-plan output missing from product checkpoint: %q", listed)
 	}
 }
 

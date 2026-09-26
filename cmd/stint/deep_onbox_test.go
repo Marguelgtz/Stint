@@ -247,21 +247,24 @@ func TestPrepareDeepOnBoxResumeStartsFreshLandingEpoch(t *testing.T) {
 	state.LandedAt = &landedAt
 	state.LandingReason = "time budget exhausted"
 	state.LandingCommit = strings.Repeat("a", 40)
+	state.LandingCheckpointTreeSHA = strings.Repeat("b", 40)
 	state.LandingVerify = "passed\nold verification"
 	state.LandingVerifyDone = true
+	state.LandingVerificationSubject = &deep.VerificationSubject{HeadCommit: strings.Repeat("c", 40), TreeSHA: strings.Repeat("b", 40)}
+	state.LandingVerificationBookkeeping = map[string]string{"plan.md": "git-blob:abc"}
 	state.LandingHandoff = "old handoff"
 	compute := sessionstate.State{InstanceID: 100, Deadline: env.clock.now.Add(2 * time.Hour)}
 	if _, err := prepareDeepOnBoxResume(state, compute, &deepOnBoxFlags{resume: true}, env.coord.git, env.clock.now); err != nil {
 		t.Fatalf("resume landed session: %v", err)
 	}
-	if state.Phase != deep.PhaseExecuting || state.LandedAt != nil || state.LandingReason != "" || state.LandingCommit != "" || state.LandingVerifyDone || state.LandingVerify != "" || state.LandingHandoff != "" {
+	if state.Phase != deep.PhaseExecuting || state.LandedAt != nil || state.LandingReason != "" || state.LandingCommit != "" || state.LandingCheckpointTreeSHA != "" || state.LandingVerifyDone || state.LandingVerify != "" || state.LandingVerificationSubject != nil || state.LandingVerificationBookkeeping != nil || state.LandingHandoff != "" {
 		t.Fatalf("resumed landing fields remain stale: %+v", state)
 	}
 	if len(state.PreviousLandings) != 1 {
 		t.Fatalf("previous landing history = %+v", state.PreviousLandings)
 	}
 	previous := state.PreviousLandings[0]
-	if previous.Reason != "time budget exhausted" || previous.Commit != strings.Repeat("a", 40) || previous.Verification != "passed\nold verification" || previous.HandoffSHA256 == "" {
+	if previous.Reason != "time budget exhausted" || previous.Commit != strings.Repeat("a", 40) || previous.CheckpointTreeSHA != strings.Repeat("b", 40) || previous.Verification != "passed\nold verification" || previous.VerificationSubject == nil || previous.VerificationSubject.HeadCommit != strings.Repeat("c", 40) || previous.HandoffSHA256 == "" {
 		t.Fatalf("previous landing evidence was not preserved: %+v", previous)
 	}
 }
