@@ -471,7 +471,11 @@ func truncateVerifierOutput(out string) string {
 // output: the box shell appends "<marker><code>" after the run so the exit
 // code survives the SSH channel (runSSH reports a non-zero remote exit as an
 // error, which would otherwise mask the real code).
-const hermesExitMarker = "__STINT_EXIT__="
+const (
+	hermesExitMarker            = "__STINT_EXIT__="
+	hermesSetupFailureMarker    = "__STINT_SETUP_FAILURE__="
+	hermesInvocationStartMarker = "__STINT_INVOCATION_STARTED__"
+)
 
 // writeRemoteFile writes data to a path on the box over the SSH seam,
 // base64-encoded so arbitrary content (the handoff's UTF-8 markdown)
@@ -540,7 +544,7 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 	if code, body, ok := takeTrailingVerifierMarker(out, hermesExitMarker); ok {
 		res.exitCode = code
 		res.completed = code == 0
-		res.outputText = strings.TrimSpace(body)
+		res.outputText = strings.TrimSpace(stripHermesInvocationStartMarker(body))
 		if res.completed {
 			res.finishReason = "completed"
 		} else {
@@ -548,8 +552,54 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 		}
 		return res, nil
 	}
+	if code, ok := takeExactHermesSetupFailure(out); ok {
+		res.exitCode = code
+		res.finishReason = fmt.Sprintf("setup failed before invocation (exit %d)", code)
+		res.stderrTail = ""
+		return res, fmt.Errorf("remote Hermes setup failed before process launch (exit %d)", code)
+	}
 	res.exitCode = -1
 	return res, fmt.Errorf("%w: Hermes invocation over SSH returned no trailing exit marker", errExecutorQuiescenceUnconfirmed)
+}
+
+// takeExactHermesSetupFailure accepts only the wrapper's single-line
+// pre-launch failure response. A Hermes process can print the same text, but
+// its output follows the wrapper's invocation-start frame and therefore can
+// never be this complete response.
+func takeExactHermesSetupFailure(output string) (int, bool) {
+	line := strings.TrimSuffix(output, "\n")
+	line = strings.TrimSuffix(line, "\r")
+	if strings.ContainsAny(line, "\r\n") || !strings.HasPrefix(line, hermesSetupFailureMarker) {
+		return 0, false
+	}
+	rawCode := strings.TrimPrefix(line, hermesSetupFailureMarker)
+	if rawCode == "" {
+		return 0, false
+	}
+	for _, digit := range rawCode {
+		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+	}
+	code, err := strconv.Atoi(rawCode)
+	if err != nil || code < 1 || code > 255 {
+		return 0, false
+	}
+	return code, true
+}
+
+func stripHermesInvocationStartMarker(output string) string {
+	line, rest, found := strings.Cut(output, "\n")
+	if !found {
+		if strings.TrimSuffix(line, "\r") == hermesInvocationStartMarker {
+			return ""
+		}
+		return output
+	}
+	if strings.TrimSuffix(line, "\r") != hermesInvocationStartMarker {
+		return output
+	}
+	return rest
 }
 
 func remoteHermesCommand(in execInput, b64, hermesArgs string, timeoutSeconds int) string {
@@ -558,14 +608,19 @@ func remoteHermesCommand(in execInput, b64, hermesArgs string, timeoutSeconds in
 	inner := remoteProcessGroupInvocation(hermesArgs, timeoutSeconds, "stint-hermes", "__STINT_STATUS_FILE__", "__STINT_GROUP_FILE__")
 	inner = strings.Replace(inner, shellQuote("__STINT_STATUS_FILE__"), statusFile, 1)
 	inner = strings.Replace(inner, shellQuote("__STINT_GROUP_FILE__"), groupFile, 1)
+	setupFailure := "stint_setup_failure() { stint_setup_status=$1; printf " +
+		shellQuote(hermesSetupFailureMarker+"%%s\\n") + " \"$stint_setup_status\"; exit 0; }; "
 	return fmt.Sprintf(
-		"umask 077; stint_prompt_file=$(mktemp /tmp/stint-deep-prompt.XXXXXX) || exit $?; "+
-			"stint_status_file=$(mktemp /tmp/stint-hermes-status.XXXXXX) || exit $?; "+
-			"stint_group_file=$(mktemp /tmp/stint-hermes-group.XXXXXX) || exit $?; "+
-			"trap 'rm -f \"$stint_prompt_file\" \"$stint_status_file\" \"$stint_group_file\"' EXIT; "+
-			"printf %%s %s | base64 -d > \"$stint_prompt_file\" || exit $?; "+
-			"cd %s || exit $?; export stint_prompt_file; "+
-			"command -v setsid >/dev/null 2>&1 || exit 125; "+
+		setupFailure+"umask 077 || stint_setup_failure $?; "+
+			"for stint_tool in mktemp base64 setsid timeout cat rm; do command -v \"$stint_tool\" >/dev/null 2>&1 || stint_setup_failure 127; done; "+
+			"stint_prompt_file=; stint_status_file=; stint_group_file=; "+
+			"trap 'for stint_tmp in \"$stint_prompt_file\" \"$stint_status_file\" \"$stint_group_file\"; do [ -z \"$stint_tmp\" ] || rm -f \"$stint_tmp\"; done' EXIT; "+
+			"stint_prompt_file=$(mktemp /tmp/stint-deep-prompt.XXXXXX 2>/dev/null) || stint_setup_failure $?; "+
+			"stint_status_file=$(mktemp /tmp/stint-hermes-status.XXXXXX 2>/dev/null) || stint_setup_failure $?; "+
+			"stint_group_file=$(mktemp /tmp/stint-hermes-group.XXXXXX 2>/dev/null) || stint_setup_failure $?; "+
+			"printf %%s %s | base64 -d > \"$stint_prompt_file\" 2>/dev/null || stint_setup_failure $?; "+
+			"cd %s >/dev/null 2>&1 || stint_setup_failure $?; export stint_prompt_file; "+
+			"printf '%%s\\n' "+shellQuote(hermesInvocationStartMarker)+"; "+
 			"%s & stint_hermes_pid=$!; wait \"$stint_hermes_pid\" 2>/dev/null || true; "+
 			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || exit 125; "+
 			"case \"$stint_group\" in ''|*[!0-9]*) exit 125;; esac; "+

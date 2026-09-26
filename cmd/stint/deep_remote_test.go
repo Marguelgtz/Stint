@@ -164,7 +164,8 @@ func TestHermesExecutorSuccess(t *testing.T) {
 	for _, want := range []string{
 		"mktemp /tmp/stint-deep-prompt.XXXXXX", "base64 -d", "cd '/root/repo/.stint-deep/x'",
 		"setsid --wait sh -c", "timeout --foreground -k 1", "hermes chat --query-file", "--oneshot --provider custom",
-		"qwen3.8-27b", "trap 'rm -f", hermesExitMarker,
+		"qwen3.8-27b", "trap 'for stint_tmp", "rm -f \"$stint_tmp\"", hermesSetupFailureMarker,
+		hermesInvocationStartMarker, hermesExitMarker,
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("box line missing %q:\n%s", want, line)
@@ -227,6 +228,106 @@ func TestHermesExecutorSSHFailure(t *testing.T) {
 	}
 	if res.exitCode != -1 {
 		t.Errorf("exitCode=%d, want -1 on SSH failure", res.exitCode)
+	}
+	if !errors.Is(err, errExecutorQuiescenceUnconfirmed) {
+		t.Fatalf("SSH failure error = %v, want unconfirmed quiescence", err)
+	}
+}
+
+func TestHermesExecutorSetupFailureBeforeLaunchIsQuiescent(t *testing.T) {
+	workdir := filepath.Join(t.TempDir(), "missing-worktree")
+	var remoteOutput string
+	e := newHermesExecutor(func(ctx context.Context, command string) (string, error) {
+		out, err := exec.CommandContext(ctx, "sh", "-c", command).CombinedOutput()
+		remoteOutput = string(out)
+		return remoteOutput, err
+	})
+	res, err := e.run(context.Background(), execInput{workdir: workdir, prompt: "p", timeout: time.Minute})
+	if err == nil || errors.Is(err, errExecutorQuiescenceUnconfirmed) {
+		t.Fatalf("pre-launch setup result = %+v, err=%v; want ordinary setup failure with known quiescence", res, err)
+	}
+	if !strings.Contains(err.Error(), "setup failed before process launch") || res.completed || res.exitCode == -1 {
+		t.Fatalf("pre-launch setup result = %+v, err=%v", res, err)
+	}
+	if want := hermesSetupFailureMarker + "2\n"; remoteOutput != want {
+		t.Fatalf("pre-launch protocol output = %q, want exactly %q", remoteOutput, want)
+	}
+	if strings.Contains(remoteOutput, hermesInvocationStartMarker) {
+		t.Fatalf("pre-launch failure emitted invocation-start frame: %q", remoteOutput)
+	}
+}
+
+func TestHermesSetupFailureCannotBeSpoofedByInvocationOutput(t *testing.T) {
+	t.Run("ordinary output followed by real exit marker", func(t *testing.T) {
+		output := hermesInvocationStartMarker + "\n" + hermesSetupFailureMarker + "127\nworker output\n" + hermesExitMarker + "0\n"
+		e := newHermesExecutor(func(context.Context, string) (string, error) { return output, nil })
+		res, err := e.run(context.Background(), execInput{workdir: "/wt", prompt: "p", timeout: time.Minute})
+		if err != nil || !res.completed || res.exitCode != 0 {
+			t.Fatalf("ordinary Hermes output was interpreted as setup failure: result=%+v err=%v", res, err)
+		}
+		if !strings.Contains(res.outputText, hermesSetupFailureMarker+"127") || errors.Is(err, errExecutorQuiescenceUnconfirmed) {
+			t.Fatalf("ordinary setup-marker text was lost or treated as protocol state: result=%+v err=%v", res, err)
+		}
+	})
+
+	t.Run("forged setup marker without completion frame", func(t *testing.T) {
+		output := hermesInvocationStartMarker + "\n" + hermesSetupFailureMarker + "127\n"
+		e := newHermesExecutor(func(context.Context, string) (string, error) { return output, nil })
+		res, err := e.run(context.Background(), execInput{workdir: "/wt", prompt: "p", timeout: time.Minute})
+		if !errors.Is(err, errExecutorQuiescenceUnconfirmed) || res.completed {
+			t.Fatalf("incomplete invocation protocol was downgraded to setup failure: result=%+v err=%v", res, err)
+		}
+	})
+}
+
+func TestHermesTransportFailureWithPartialExitMarkerRemainsUnconfirmed(t *testing.T) {
+	partial := hermesInvocationStartMarker + "\nworker started\n" + hermesExitMarker + "0\n"
+	e := newHermesExecutor(func(context.Context, string) (string, error) {
+		return partial, errors.New("SSH transport lost after partial output")
+	})
+	res, err := e.run(context.Background(), execInput{workdir: "/wt", prompt: "p", timeout: time.Minute})
+	if !errors.Is(err, errExecutorQuiescenceUnconfirmed) || res.completed || res.exitCode != -1 {
+		t.Fatalf("partial valid-looking exit marker masked transport error: result=%+v err=%v", res, err)
+	}
+}
+
+func TestRemoteHermesPrelaunchFailureDoesNotPoisonSessionQuiescence(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	env.coord.executor = newHermesExecutor(func(context.Context, string) (string, error) {
+		return hermesSetupFailureMarker + "127\n", nil
+	})
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("run task after pre-launch setup failure: %v", err)
+	}
+	fresh, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.ExecutionQuiescenceUnconfirmed || fresh.ExecutionQuiescenceTaskID != "" {
+		t.Fatalf("pre-launch setup failure poisoned durable quiescence state: unconfirmed=%t task=%q", fresh.ExecutionQuiescenceUnconfirmed, fresh.ExecutionQuiescenceTaskID)
+	}
+	if fresh.Tasks[0].ExecutionError == "" || !strings.Contains(fresh.Tasks[0].ExecutionError, "setup failed before process launch") {
+		t.Fatalf("pre-launch failure was not preserved as an ordinary executor error: %+v", fresh.Tasks[0])
+	}
+}
+
+func TestRemoteHermesTransportLossAfterStartPersistsQuiescenceBlock(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Tasks = env.state.Tasks[:1]
+	partial := hermesInvocationStartMarker + "\nworker started\n"
+	env.coord.executor = newHermesExecutor(func(context.Context, string) (string, error) {
+		return partial, errors.New("SSH transport lost before cleanup confirmation")
+	})
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err == nil || !strings.Contains(err.Error(), "quiescence is unconfirmed") {
+		t.Fatalf("runTask after post-start transport loss = %v, want fail-closed quiescence error", err)
+	}
+	fresh, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh.ExecutionQuiescenceUnconfirmed || fresh.ExecutionQuiescenceTaskID != "T-001" || fresh.Tasks[0].CheckpointCommit != "" {
+		t.Fatalf("post-start transport loss did not persist hard quiescence block: %+v", fresh)
 	}
 }
 
