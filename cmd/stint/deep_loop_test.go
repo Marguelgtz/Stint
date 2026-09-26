@@ -719,6 +719,14 @@ func TestRunVerifyCmd(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "sentinel")); !os.IsNotExist(err) {
 		t.Errorf("invalid command executed before rejection; sentinel stat error = %v", err)
 	}
+	lateWriter := filepath.Join(dir, "late-verifier-write")
+	command := "(sleep 0.2; printf late > " + shellQuote(lateWriter) + ") & true"
+	quiesced := runVerifyCmd(context.Background(), command, dir)
+	returnedAt := time.Now()
+	if !quiesced.Passed() {
+		t.Fatalf("verifier with background writer = %+v, want passed", quiesced)
+	}
+	assertNoDelayedMutationAfterReturn(t, lateWriter, returnedAt)
 }
 
 func TestLandingDeadline(t *testing.T) {
@@ -794,6 +802,117 @@ func TestDeepLandingResumesAfterWorktreeHandoffFailure(t *testing.T) {
 	}
 	if strings.TrimSpace(head) != env.state.LandingCommit {
 		t.Errorf("durable landing checkpoint = %q, worktree HEAD = %q", env.state.LandingCommit, head)
+	}
+}
+
+func TestDeepLandingRerunsFinalVerifierWhenSubjectChangedOnResume(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	verifyCalls := 0
+	env.coord.finalVerify = func(context.Context, string) verificationResult {
+		verifyCalls++
+		return verificationResult{Outcome: verificationPassed, Output: "checks passed"}
+	}
+	env.coord.worktreeWrite = func(string, []byte) error { return errors.New("box write failed") }
+	if err := env.coord.land(context.Background(), "test landing"); err == nil {
+		t.Fatal("land succeeded after worktree handoff write failed")
+	}
+	firstSubject := env.state.LandingVerificationSubject
+	if firstSubject == nil || !env.state.LandingVerifyDone {
+		t.Fatalf("final verifier result lacks a durable subject: %+v", env.state)
+	}
+	productFile := filepath.Join(env.wt, "README.md")
+	if err := os.WriteFile(productFile, []byte("# changed after final verification\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env.coord.worktreeWrite = nil
+	if err := env.coord.land(context.Background(), "retry landing"); err != nil {
+		t.Fatalf("resume landing after product mutation: %v", err)
+	}
+	if verifyCalls != 2 {
+		t.Fatalf("final verifier ran %d times, want rerun after subject changed", verifyCalls)
+	}
+	if env.state.LandingVerificationSubject == nil || env.state.LandingVerificationSubject.TreeSHA == firstSubject.TreeSHA {
+		t.Fatalf("resumed final verification did not bind the changed tree: first=%+v current=%+v", firstSubject, env.state.LandingVerificationSubject)
+	}
+	if env.state.LandingCheckpointTreeSHA != env.state.LandingVerificationSubject.TreeSHA {
+		t.Fatalf("landing checkpoint tree %q differs from final verifier tree %q", env.state.LandingCheckpointTreeSHA, env.state.LandingVerificationSubject.TreeSHA)
+	}
+}
+
+func TestDeepLandingDoesNotReuseLegacyFinalVerificationWithoutSubject(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Phase = deep.PhaseLanding
+	env.state.LandingVerifyDone = true
+	env.state.LandingVerify = "passed (legacy result without subject)"
+	if err := env.state.SaveDir(env.coord.stateDir); err != nil {
+		t.Fatal(err)
+	}
+	verifyCalls := 0
+	env.coord.finalVerify = func(context.Context, string) verificationResult {
+		verifyCalls++
+		return verificationResult{Outcome: verificationPassed}
+	}
+	if err := env.coord.land(context.Background(), "resume legacy landing"); err != nil {
+		t.Fatalf("land: %v", err)
+	}
+	if verifyCalls != 1 || env.state.LandingVerificationSubject == nil || env.state.LandingCheckpointTreeSHA != env.state.LandingVerificationSubject.TreeSHA {
+		t.Fatalf("legacy final verification was reused without provenance: calls=%d state=%+v", verifyCalls, env.state)
+	}
+}
+
+func TestDeepLandingRejectsMutationDuringFinalVerification(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.coord.finalVerify = func(context.Context, string) verificationResult {
+		if err := os.WriteFile(filepath.Join(env.wt, "README.md"), []byte("# changed while verifying\n"), 0o644); err != nil {
+			t.Errorf("mutate product during verification: %v", err)
+		}
+		return verificationResult{Outcome: verificationPassed}
+	}
+	if err := env.coord.land(context.Background(), "test landing"); err == nil || !strings.Contains(err.Error(), "changed during final verification") {
+		t.Fatalf("land error = %v, want exact-subject mutation failure", err)
+	}
+	if env.state.Phase != deep.PhaseLanding || env.state.LandingVerifyDone || env.state.LandingVerificationSubject != nil || env.state.LandingCommit != "" {
+		t.Fatalf("mutation was persisted as a final verification/checkpoint: %+v", env.state)
+	}
+}
+
+func TestDeepLandingStopsWhenFinalVerifierQuiescenceIsUnknown(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.coord.finalVerify = func(context.Context, string) verificationResult {
+		return verificationResult{Outcome: verificationExecutionErr, Error: "remote channel lost", QuiescenceUnconfirmed: true}
+	}
+	if err := env.coord.land(context.Background(), "test landing"); err == nil || !strings.Contains(err.Error(), "final verifier process quiescence is unconfirmed") {
+		t.Fatalf("land error = %v, want final verifier quiescence block", err)
+	}
+	if !env.state.ExecutionQuiescenceUnconfirmed || env.state.ExecutionQuiescenceTaskID != "mission-final-verifier" || env.state.LandingVerifyDone || env.state.LandingCommit != "" {
+		t.Fatalf("unquiesced final verifier was treated as stable: %+v", env.state)
+	}
+}
+
+func TestDeepLandingDoesNotRewriteGitVisibleHandoffInput(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	path := filepath.Join(env.wt, deepWorktreeHandoff)
+	if err := os.WriteFile(path, []byte("product-owned handoff input\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.coord.git.commitAll(env.wt, "add product-owned handoff input"); err != nil {
+		t.Fatal(err)
+	}
+	env.coord.finalVerify = func(context.Context, string) verificationResult {
+		return verificationResult{Outcome: verificationPassed}
+	}
+	if err := env.coord.land(context.Background(), "test landing"); err != nil {
+		t.Fatalf("land: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "product-owned handoff input\n" {
+		t.Fatalf("landing rewrote a Git-visible handoff input: %q", data)
+	}
+	if env.state.LandingCheckpointTreeSHA != env.state.LandingVerificationSubject.TreeSHA {
+		t.Fatalf("checkpoint tree %q differs from verified tree %q", env.state.LandingCheckpointTreeSHA, env.state.LandingVerificationSubject.TreeSHA)
 	}
 }
 
@@ -874,12 +993,63 @@ func TestDeepLoopDoesNotVerifyTaskWhenCheckpointFails(t *testing.T) {
 	}
 }
 
+func TestDeepLoopRefusesVerificationWhenExecutorQuiescenceIsUnknown(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.fake.scriptErr = map[int]error{1: errExecutorQuiescenceUnconfirmed}
+	verifyCalls := 0
+	env.coord.verify = func(context.Context, string, string) verificationResult {
+		verifyCalls++
+		return verificationResult{Outcome: verificationPassed}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err == nil || !strings.Contains(err.Error(), "quiescence is unconfirmed") {
+		t.Fatalf("runTask error = %v, want explicit quiescence failure", err)
+	}
+	if verifyCalls != 0 {
+		t.Fatalf("task verifier ran %d times while executor writers may still be active", verifyCalls)
+	}
+	if !env.state.ExecutionQuiescenceUnconfirmed || env.state.ExecutionQuiescenceTaskID != "T-001" || env.state.Tasks[0].Status != deep.StatusNeedsHuman {
+		t.Fatalf("unconfirmed executor state was not durably blocked: %+v", env.state)
+	}
+	if err := env.coord.run(context.Background()); err == nil || !strings.Contains(err.Error(), "executor writers may still be active") {
+		t.Fatalf("resume error = %v, want global fail-closed block", err)
+	}
+	if env.fake.calls != 1 || verifyCalls != 0 {
+		t.Fatalf("after resume: executor calls=%d verifier calls=%d, want 1/0", env.fake.calls, verifyCalls)
+	}
+}
+
+func TestDeepLoopBlocksCheckpointWhenVerifierQuiescenceIsUnknown(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	verifyCalls := 0
+	env.coord.verify = func(context.Context, string, string) verificationResult {
+		verifyCalls++
+		return verificationResult{Outcome: verificationExecutionErr, Error: "remote transport lost", QuiescenceUnconfirmed: true}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err == nil || !strings.Contains(err.Error(), "verifier process quiescence is unconfirmed") {
+		t.Fatalf("runTask error = %v, want verifier quiescence block", err)
+	}
+	if verifyCalls != 1 || env.state.Tasks[0].Status != deep.StatusNeedsHuman || !env.state.ExecutionQuiescenceUnconfirmed || env.state.Tasks[0].CheckpointCommit != "" {
+		t.Fatalf("unquiesced verifier produced unsafe task state: calls=%d state=%+v", verifyCalls, env.state)
+	}
+}
+
 // An external stop that lands the session while a task's invocation is in
 // flight must win: the in-flight task's saves may not resurrect the stopped
 // session from stale in-memory state (the zombie-proof invariant behind
 // `stint deep resume`).
 func TestDeepLoopExternalStopBeatsInFlightTask(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
+	executorActive := true
+	verifiedWhileExecutorActive := false
+	finalVerifyCalls := 0
+	finalVerify := func(context.Context, string) verificationResult {
+		finalVerifyCalls++
+		if executorActive {
+			verifiedWhileExecutorActive = true
+		}
+		return verificationResult{Outcome: verificationPassed}
+	}
+	env.coord.finalVerify = finalVerify
 	stopperState, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -889,6 +1059,7 @@ func TestDeepLoopExternalStopBeatsInFlightTask(t *testing.T) {
 		state:       &stopperState,
 		taskTimeout: time.Minute,
 		verify:      env.coord.verify,
+		finalVerify: finalVerify,
 		now:         func() time.Time { return env.clock.now },
 		logf:        func(string, ...any) {},
 		out:         io.Discard,
@@ -896,6 +1067,7 @@ func TestDeepLoopExternalStopBeatsInFlightTask(t *testing.T) {
 	}
 	env.fake.after = func() {
 		_ = stopper.land(context.Background(), "stopped by user")
+		executorActive = false
 	}
 	if err := env.coord.run(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
@@ -912,6 +1084,9 @@ func TestDeepLoopExternalStopBeatsInFlightTask(t *testing.T) {
 	}
 	if fresh.Tasks[0].Status == deep.StatusVerified {
 		t.Errorf("in-flight outcome was persisted after the stop: %s", fresh.Tasks[0].Status)
+	}
+	if verifiedWhileExecutorActive || finalVerifyCalls != 1 {
+		t.Errorf("final verifier ran while executor active=%t and was called %d times; want one post-quiescence run", verifiedWhileExecutorActive, finalVerifyCalls)
 	}
 }
 

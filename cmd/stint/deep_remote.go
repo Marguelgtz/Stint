@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -11,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
@@ -328,8 +326,10 @@ func (g *remoteGit) commitAll(dir, message string) (string, error) {
 }
 
 const (
-	verifyExitMarker  = "__STINT_VERIFY_EXIT__="
-	verifySetupMarker = "__STINT_VERIFY_SETUP__="
+	verifyExitMarker                     = "__STINT_VERIFY_EXIT__="
+	verifySetupMarker                    = "__STINT_VERIFY_SETUP__="
+	remoteVerifyTimeoutSeconds           = 170 // leave time for remote process-group cleanup before the 3-minute SSH deadline
+	remoteExecutionCleanupReserveSeconds = 5
 )
 
 // runVerifyCmdRemote executes the same validated raw shell command as the
@@ -341,12 +341,12 @@ func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir 
 	}
 	vctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	line := fmt.Sprintf("cd %s || { status=$?; printf '\\n%s%%s\\n' \"$status\"; exit 0; }; if sh -c %s; then status=0; else status=$?; fi; printf '\\n%s%%s\\n' \"$status\"; exit 0",
-		shellQuote(workdir), verifySetupMarker, shellQuote(command), verifyExitMarker)
+	line := remoteVerificationCommand(workdir, command)
 	out, err := remote(vctx, line)
 	result := verificationResult{Command: command, StartedAt: started, CompletedAt: time.Now().UTC()}
 	if err != nil {
 		result.Output = truncateVerifierOutput(out)
+		result.QuiescenceUnconfirmed = true
 		if errors.Is(vctx.Err(), context.DeadlineExceeded) {
 			result.Outcome = verificationTimedOut
 			result.Error = vctx.Err().Error()
@@ -363,7 +363,10 @@ func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir 
 		result.Output = truncateVerifierOutput(body)
 		result.ExitCode = exitCode
 		result.HasExitCode = true
-		if result.ExitCode == 0 {
+		if result.ExitCode == 124 {
+			result.Outcome = verificationTimedOut
+			result.Error = "remote verifier exceeded its bounded execution window"
+		} else if result.ExitCode == 0 {
 			result.Outcome = verificationPassed
 		} else {
 			result.Outcome = verificationFailed
@@ -372,7 +375,14 @@ func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir 
 	}
 	if setupCode, body, ok := takeTrailingVerifierMarker(out, verifySetupMarker); ok {
 		result.Outcome = verificationExecutionErr
-		result.Error = fmt.Sprintf("could not enter verifier worktree (cd exit %d)", setupCode)
+		if setupCode == 127 {
+			result.Error = "could not confirm remote verifier process-group quiescence"
+			result.QuiescenceUnconfirmed = true
+		} else if setupCode == 126 {
+			result.Error = "remote verifier setup failed before invocation"
+		} else {
+			result.Error = fmt.Sprintf("could not enter verifier worktree (cd exit %d)", setupCode)
+		}
 		result.Output = truncateVerifierOutput(body)
 		return result
 	}
@@ -380,14 +390,45 @@ func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir 
 	if errors.Is(vctx.Err(), context.DeadlineExceeded) {
 		result.Outcome = verificationTimedOut
 		result.Error = vctx.Err().Error()
+		result.QuiescenceUnconfirmed = true
 	} else if errors.Is(vctx.Err(), context.Canceled) {
 		result.Outcome = verificationCanceled
 		result.Error = vctx.Err().Error()
+		result.QuiescenceUnconfirmed = true
 	} else {
 		result.Outcome = verificationExecutionErr
 		result.Error = "remote verification returned no trailing exit marker"
+		result.QuiescenceUnconfirmed = true
 	}
 	return result
+}
+
+func remoteVerificationCommand(workdir, command string) string {
+	statusFile := "$(mktemp /tmp/stint-verify-status.XXXXXX)"
+	groupFile := "$(mktemp /tmp/stint-verify-group.XXXXXX)"
+	inner := remoteProcessGroupInvocation(command, remoteVerifyTimeoutSeconds, "stint-verifier", "__STINT_STATUS_FILE__", "__STINT_GROUP_FILE__")
+	// The status file path is a positional argument to the setsid supervisor;
+	// substitute that one fixed shell variable after quoting the user command.
+	inner = strings.Replace(inner, shellQuote("__STINT_STATUS_FILE__"), `"$stint_status_file"`, 1)
+	inner = strings.Replace(inner, shellQuote("__STINT_GROUP_FILE__"), `"$stint_group_file"`, 1)
+	return fmt.Sprintf(
+		"cd %s || { status=$?; printf '\\n%s%%s\\n' \"$status\"; exit 0; }; "+
+			"command -v setsid >/dev/null 2>&1 || { printf '\\n%s126\\n'; exit 0; }; "+
+			"stint_status_file=%s || { printf '\\n%s126\\n'; exit 0; }; "+
+			"stint_group_file=%s || { rm -f \"$stint_status_file\"; printf '\\n%s126\\n'; exit 0; }; "+
+			"trap 'rm -f \"$stint_status_file\" \"$stint_group_file\"' EXIT; "+
+			"%s & stint_verifier_pid=$!; wait \"$stint_verifier_pid\" 2>/dev/null || true; "+
+			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || { printf '\\n%s127\\n'; exit 0; }; "+
+			"case \"$stint_group\" in ''|*[!0-9]*) printf '\\n%s127\\n'; exit 0;; esac; "+
+			"if ! kill -KILL -- -\"$stint_group\" 2>/dev/null && kill -0 -- -\"$stint_group\" 2>/dev/null; then printf '\\n%s127\\n'; exit 0; fi; "+
+			"status=$(cat \"$stint_status_file\" 2>/dev/null) || { printf '\\n%s126\\n'; exit 0; }; "+
+			"case \"$status\" in ''|*[!0-9]*) printf '\\n%s126\\n'; exit 0;; esac; "+
+			"printf '\\n%s%%s\\n' \"$status\"; exit 0",
+		shellQuote(workdir), verifySetupMarker,
+		verifySetupMarker, statusFile, verifySetupMarker, groupFile, verifySetupMarker,
+		inner, verifySetupMarker, verifySetupMarker, verifySetupMarker, verifySetupMarker,
+		verifySetupMarker, verifyExitMarker,
+	)
 }
 
 // takeTrailingVerifierMarker accepts only the wrapper's final complete output
@@ -465,7 +506,7 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 	start := time.Now()
 
 	b64 := base64.StdEncoding.EncodeToString([]byte(in.prompt))
-	secs := int(in.timeout.Seconds())
+	secs := int(in.timeout.Seconds()) - remoteExecutionCleanupReserveSeconds
 	hermesArgs := "hermes chat --query-file \"$stint_prompt_file\" --oneshot"
 	if in.model != "" {
 		provider := in.provider
@@ -487,38 +528,52 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 			hermesArgs += " --reasoning " + shellQuote(in.reasoning)
 		}
 	}
-	line := fmt.Sprintf(
-		"umask 077; stint_prompt_file=$(mktemp /tmp/stint-deep-prompt.XXXXXX) || exit $?; "+
-			"trap 'rm -f \"$stint_prompt_file\"' EXIT; printf %%s %s | base64 -d > \"$stint_prompt_file\" && "+
-			"cd %s && timeout %d %s 2>&1; ec=$?; echo %s$ec",
-		shellQuote(b64), shellQuote(in.workdir), secs, hermesArgs, hermesExitMarker)
+	line := remoteHermesCommand(in, b64, hermesArgs, secs)
 
 	out, err := e.remote(ctx, line)
 	res := execResult{duration: time.Since(start), stderrTail: tailLine(out, 5)}
 
-	// Recover the invocation's exit code from the marker. A missing marker
-	// (SSH failure, or the box line not reaching the marker) means the
-	// invocation did not complete.
-	if idx := strings.LastIndex(out, hermesExitMarker); idx >= 0 {
-		rest := strings.TrimSpace(out[idx+len(hermesExitMarker):])
-		if code, perr := strconv.Atoi(rest); perr == nil {
-			res.exitCode = code
-			res.completed = code == 0
-			if res.completed {
-				res.finishReason = "completed"
-			}
-		}
-	}
-	// The marker line is bookkeeping, not agent output: drop it from the
-	// report so the handoff carries only the worker's text.
-	if i := strings.LastIndex(out, hermesExitMarker); i >= 0 {
-		res.outputText = strings.TrimSpace(out[:i])
-	}
-	if err != nil && !strings.Contains(out, hermesExitMarker) {
+	if err != nil {
 		res.exitCode = -1
-		return res, fmt.Errorf("hermes invocation over SSH: %w", err)
+		return res, fmt.Errorf("%w: hermes invocation over SSH: %v", errExecutorQuiescenceUnconfirmed, err)
 	}
-	return res, nil
+	if code, body, ok := takeTrailingVerifierMarker(out, hermesExitMarker); ok {
+		res.exitCode = code
+		res.completed = code == 0
+		res.outputText = strings.TrimSpace(body)
+		if res.completed {
+			res.finishReason = "completed"
+		} else {
+			res.finishReason = fmt.Sprintf("exit %d", code)
+		}
+		return res, nil
+	}
+	res.exitCode = -1
+	return res, fmt.Errorf("%w: Hermes invocation over SSH returned no trailing exit marker", errExecutorQuiescenceUnconfirmed)
+}
+
+func remoteHermesCommand(in execInput, b64, hermesArgs string, timeoutSeconds int) string {
+	statusFile := `"$stint_status_file"`
+	groupFile := `"$stint_group_file"`
+	inner := remoteProcessGroupInvocation(hermesArgs, timeoutSeconds, "stint-hermes", "__STINT_STATUS_FILE__", "__STINT_GROUP_FILE__")
+	inner = strings.Replace(inner, shellQuote("__STINT_STATUS_FILE__"), statusFile, 1)
+	inner = strings.Replace(inner, shellQuote("__STINT_GROUP_FILE__"), groupFile, 1)
+	return fmt.Sprintf(
+		"umask 077; stint_prompt_file=$(mktemp /tmp/stint-deep-prompt.XXXXXX) || exit $?; "+
+			"stint_status_file=$(mktemp /tmp/stint-hermes-status.XXXXXX) || exit $?; "+
+			"stint_group_file=$(mktemp /tmp/stint-hermes-group.XXXXXX) || exit $?; "+
+			"trap 'rm -f \"$stint_prompt_file\" \"$stint_status_file\" \"$stint_group_file\"' EXIT; "+
+			"printf %%s %s | base64 -d > \"$stint_prompt_file\" || exit $?; "+
+			"cd %s || exit $?; export stint_prompt_file; "+
+			"command -v setsid >/dev/null 2>&1 || exit 125; "+
+			"%s & stint_hermes_pid=$!; wait \"$stint_hermes_pid\" 2>/dev/null || true; "+
+			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || exit 125; "+
+			"case \"$stint_group\" in ''|*[!0-9]*) exit 125;; esac; "+
+			"if ! kill -KILL -- -\"$stint_group\" 2>/dev/null && kill -0 -- -\"$stint_group\" 2>/dev/null; then exit 125; fi; "+
+			"ec=$(cat \"$stint_status_file\" 2>/dev/null) || exit 125; "+
+			"case \"$ec\" in ''|*[!0-9]*) exit 125;; esac; printf '\\n%s%%s\\n' \"$ec\"; exit 0",
+		shellQuote(b64), shellQuote(in.workdir), inner, hermesExitMarker,
+	)
 }
 
 // localHermesExecutor runs Hermes in the same instance as the coordinator. It
@@ -577,18 +632,37 @@ func (e *localHermesExecutor) run(ctx context.Context, in execInput) (execResult
 
 	cmd := exec.CommandContext(ctx, e.binary, argv...)
 	cmd.Dir = in.workdir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	err = cmd.Run()
+	outFile, err := newPrivateOutputFile("stint-hermes-output-*")
+	if err != nil {
+		return execResult{exitCode: -1, duration: time.Since(start)}, fmt.Errorf("create local Hermes output file: %w", err)
+	}
+	errFile, err := newPrivateOutputFile("stint-hermes-stderr-*")
+	if err != nil {
+		_ = outFile.Close()
+		_ = os.Remove(outFile.Name())
+		return execResult{exitCode: -1, duration: time.Since(start)}, fmt.Errorf("create local Hermes stderr file: %w", err)
+	}
+	cmd.Stdout, cmd.Stderr = outFile, errFile
+	runErr, quiesceErr := runQuiescedProcessGroup(cmd)
+	out, outReadErr := readAndRemoveOutputFile(outFile)
+	errOutput, errReadErr := readAndRemoveOutputFile(errFile)
 	res := execResult{
 		duration:   time.Since(start),
 		exitCode:   processExitCode(cmd),
-		outputText: strings.TrimSpace(out.String()),
-		stderrTail: tailLine(errb.String(), 5),
+		outputText: strings.TrimSpace(string(out)),
+		stderrTail: tailLine(string(errOutput), 5),
 	}
-	if err == nil {
+	if outReadErr != nil || errReadErr != nil {
+		res.exitCode = -1
+		return res, fmt.Errorf("read local Hermes output (stdout: %v, stderr: %v)", outReadErr, errReadErr)
+	}
+	if quiesceErr != nil {
+		res.exitCode = -1
+		res.completed = false
+		res.finishReason = "quiescence_error"
+		return res, fmt.Errorf("%w: local Hermes invocation could not quiesce its process group: %v", errExecutorQuiescenceUnconfirmed, quiesceErr)
+	}
+	if runErr == nil {
 		res.completed = true
 		res.finishReason = "completed"
 		return res, nil
@@ -596,5 +670,5 @@ func (e *localHermesExecutor) run(ctx context.Context, in execInput) (execResult
 	if ctx.Err() != nil {
 		res.finishReason = ctx.Err().Error()
 	}
-	return res, fmt.Errorf("local hermes invocation: %w", err)
+	return res, fmt.Errorf("local hermes invocation: %w", runErr)
 }

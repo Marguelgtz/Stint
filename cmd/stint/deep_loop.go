@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -118,6 +119,104 @@ func (c *deepCoordinator) stillExecuting() (bool, error) {
 	return fresh.Phase == deep.PhaseExecuting, nil
 }
 
+// afterInvocationState refreshes a concurrently landed session. When the
+// operator requested a stop during this task, the landing path leaves a
+// durable quiescence flag; this invocation's owner may clear it only after
+// the executor returned with its process group known to be quiescent.
+func (c *deepCoordinator) afterInvocationState(taskID string) (bool, error) {
+	fresh, err := deep.LoadState(c.stateDir, c.state.SessionID)
+	if err != nil {
+		return false, err
+	}
+	if fresh.Phase == deep.PhaseExecuting {
+		return true, nil
+	}
+	*c.state = fresh
+	changed := false
+	for i := range c.state.Tasks {
+		if c.state.Tasks[i].ID == taskID && c.state.Tasks[i].Status == deep.StatusActive {
+			c.state.Tasks[i].Status = deep.StatusIncomplete
+			c.state.Tasks[i].Blocker = "stopped mid-task (" + c.state.LandingReason + ")"
+			changed = true
+		}
+	}
+	if fresh.ExecutionQuiescenceUnconfirmed && fresh.ExecutionQuiescenceTaskID == taskID {
+		c.state.ExecutionQuiescenceUnconfirmed = false
+		c.state.ExecutionQuiescenceTaskID = ""
+		changed = true
+	}
+	if changed {
+		if err := c.save(); err != nil {
+			return false, fmt.Errorf("persist executor quiescence after external landing: %w", err)
+		}
+	}
+	return false, nil
+}
+
+func (c *deepCoordinator) persistUnquiescedExecutor(taskID string, result execResult, execErr error) error {
+	fresh, err := deep.LoadState(c.stateDir, c.state.SessionID)
+	if err != nil {
+		return fmt.Errorf("read durable state after unconfirmed executor quiescence: %w", err)
+	}
+	*c.state = fresh
+	for i := range c.state.Tasks {
+		if c.state.Tasks[i].ID != taskID {
+			continue
+		}
+		task := &c.state.Tasks[i]
+		task.Status = deep.StatusNeedsHuman
+		task.Blocker = "executor process quiescence is unconfirmed; verification and further work are stopped"
+		task.ExecutionError = execErr.Error()
+		task.LastResult = result.summary() + " | executor error: " + execErr.Error()
+		task.VerificationCommand = ""
+		task.VerificationResult = verificationResult{Outcome: verificationExecutionErr, Error: "not run because executor writers may still be active"}.Summary()
+		task.VerificationOutput = ""
+		task.VerificationSubject = nil
+		task.VerificationBookkeeping = nil
+		task.CheckpointCommit = ""
+		task.CheckpointTreeSHA = ""
+		task.VerifiedAt = nil
+		c.state.ExecutionQuiescenceUnconfirmed = true
+		c.state.ExecutionQuiescenceTaskID = taskID
+		if err := c.save(); err != nil {
+			return fmt.Errorf("persist unconfirmed executor quiescence for task %s: %w", taskID, err)
+		}
+		return fmt.Errorf("task %s cannot be verified because %w", taskID, execErr)
+	}
+	return fmt.Errorf("task %s disappeared from durable state after execution", taskID)
+}
+
+func (c *deepCoordinator) persistUnquiescedVerifier(taskID, command string, result verificationResult) error {
+	fresh, err := deep.LoadState(c.stateDir, c.state.SessionID)
+	if err != nil {
+		return fmt.Errorf("read durable state after unconfirmed verifier quiescence: %w", err)
+	}
+	*c.state = fresh
+	for i := range c.state.Tasks {
+		if c.state.Tasks[i].ID != taskID {
+			continue
+		}
+		task := &c.state.Tasks[i]
+		task.Status = deep.StatusNeedsHuman
+		task.Blocker = "verifier process quiescence is unconfirmed; checkpointing and further work are stopped"
+		task.VerificationCommand = command
+		task.VerificationResult = result.Summary()
+		task.VerificationOutput = strings.TrimSpace(tailLine(result.Output, 3))
+		task.VerificationSubject = nil
+		task.VerificationBookkeeping = nil
+		task.CheckpointCommit = ""
+		task.CheckpointTreeSHA = ""
+		task.VerifiedAt = nil
+		c.state.ExecutionQuiescenceUnconfirmed = true
+		c.state.ExecutionQuiescenceTaskID = taskID
+		if err := c.save(); err != nil {
+			return fmt.Errorf("persist unconfirmed verifier quiescence for task %s: %w", taskID, err)
+		}
+		return fmt.Errorf("task %s cannot be checkpointed because verifier process quiescence is unconfirmed", taskID)
+	}
+	return fmt.Errorf("task %s disappeared from durable state after verification", taskID)
+}
+
 // repoSummary is the durable git truth folded into reconstructed task
 // context so a fresh invocation can continue without conversational memory.
 func (c *deepCoordinator) repoSummary() deep.RepoSummary {
@@ -190,6 +289,18 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		c.incident(deep.IncidentExecutorError, t.ID, execErr.Error())
 	}
 	c.logf("task %s attempt %d result: %s", t.ID, t.Attempts, res.summary())
+	if errors.Is(execErr, errExecutorQuiescenceUnconfirmed) {
+		return c.persistUnquiescedExecutor(t.ID, res, execErr)
+	}
+	continuing, err := c.afterInvocationState(t.ID)
+	if err != nil {
+		return fmt.Errorf("refresh durable state after task %s executor: %w", t.ID, err)
+	}
+	if !continuing {
+		c.logf("task %s: executor quiesced after an external landing request; verification is deferred to resumed landing", t.ID)
+		return nil
+	}
+
 	// Capture the exact Git-visible worktree state after the executor returns
 	// and immediately before verification. Stint bookkeeping that is not
 	// already tracked or staged is fingerprinted separately from the product
@@ -201,6 +312,14 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	} else {
 		t.VerificationSubject = &subject.Subject
 		t.VerificationBookkeeping = subject.Bookkeeping
+	}
+	continuing, err = c.afterInvocationState(t.ID)
+	if err != nil {
+		return fmt.Errorf("refresh durable state before task %s verification: %w", t.ID, err)
+	}
+	if !continuing {
+		c.logf("task %s: external landing began before verification; verification is deferred", t.ID)
+		return nil
 	}
 
 	verifyResult, verifyCmd := c.accept(ctx, t)
@@ -216,6 +335,9 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	t.VerificationCommand = verifyCmd
 	t.VerificationOutput = strings.TrimSpace(tailLine(verifyResult.Output, 3))
 	t.VerificationResult = verifyResult.Summary()
+	if verifyResult.QuiescenceUnconfirmed {
+		return c.persistUnquiescedVerifier(t.ID, verifyCmd, verifyResult)
+	}
 
 	executionSucceeded := execErr == nil && res.completed && res.exitCode == 0
 
@@ -290,7 +412,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	// The invocation and verify span the longest gap of the session: an
 	// external stop or landing must win, or this process's save would
 	// resurrect a stopped session from stale in-memory state.
-	executing, err = c.stillExecuting()
+	executing, err = c.afterInvocationState(t.ID)
 	if err != nil {
 		return fmt.Errorf("read durable Deep Work state after task %s: %w", t.ID, err)
 	}
@@ -444,6 +566,10 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 		fresh, err := deep.LoadState(c.stateDir, c.state.SessionID)
 		if err != nil {
 			return fmt.Errorf("read durable Deep Work state: %w", err)
+		}
+		if fresh.ExecutionQuiescenceUnconfirmed {
+			*c.state = fresh
+			return fmt.Errorf("Deep Work is blocked because executor writers may still be active (task %s)", fresh.ExecutionQuiescenceTaskID)
 		}
 		if fresh.Phase != deep.PhaseExecuting {
 			if fresh.Phase == deep.PhaseLanding {

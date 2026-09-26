@@ -157,15 +157,28 @@ func runVerifyCmd(ctx context.Context, command, workdir string) verificationResu
 	defer cancel()
 	cmd := exec.CommandContext(vctx, "sh", "-c", command)
 	cmd.Dir = workdir
-	var buf bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &buf, &buf
-	err := cmd.Run()
-	out := buf.String()
+	output, err := newPrivateOutputFile("stint-verifier-output-*")
+	if err != nil {
+		return verificationResult{Command: command, Outcome: verificationExecutionErr, StartedAt: started, CompletedAt: time.Now().UTC(), Error: "create verifier output file: " + err.Error()}
+	}
+	cmd.Stdout, cmd.Stderr = output, output
+	runErr, quiesceErr := runQuiescedProcessGroup(cmd)
+	outBytes, outputErr := readAndRemoveOutputFile(output)
+	if outputErr != nil {
+		return verificationResult{Command: command, Outcome: verificationExecutionErr, StartedAt: started, CompletedAt: time.Now().UTC(), Error: "read verifier output: " + outputErr.Error()}
+	}
+	out := string(outBytes)
 	if len(out) > 4000 {
 		out = out[len(out)-4000:]
 	}
 	result := verificationResult{Command: command, StartedAt: started, CompletedAt: time.Now().UTC(), Output: out}
-	if err == nil {
+	if quiesceErr != nil {
+		result.Outcome = verificationExecutionErr
+		result.Error = "could not quiesce verifier process group: " + quiesceErr.Error()
+		result.QuiescenceUnconfirmed = true
+		return result
+	}
+	if runErr == nil {
 		result.Outcome = verificationPassed
 		result.ExitCode = 0
 		result.HasExitCode = true
@@ -182,14 +195,14 @@ func runVerifyCmd(ctx context.Context, command, workdir string) verificationResu
 		return result
 	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if errors.As(runErr, &exitErr) {
 		result.Outcome = verificationFailed
 		result.ExitCode = exitErr.ExitCode()
 		result.HasExitCode = true
 		return result
 	}
 	result.Outcome = verificationExecutionErr
-	result.Error = err.Error()
+	result.Error = runErr.Error()
 	return result
 }
 
@@ -251,6 +264,9 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	if c.state.Phase != deep.PhaseExecuting && c.state.Phase != deep.PhaseLanding {
 		return fmt.Errorf("cannot land Deep Work session from phase %q", c.state.Phase)
 	}
+	if c.state.ExecutionQuiescenceUnconfirmed {
+		return fmt.Errorf("cannot verify or checkpoint while executor writers may still be active (task %s); quiescence must be confirmed first", c.state.ExecutionQuiescenceTaskID)
+	}
 	if c.state.LandingReason == "" {
 		c.state.LandingReason = reason
 	}
@@ -265,17 +281,24 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	c.logf("landing: %s", reason)
 
 	changed := false
+	activeTaskID := ""
 	for i := range c.state.Tasks {
 		if c.state.Tasks[i].Status == deep.StatusActive {
+			if activeTaskID == "" {
+				activeTaskID = c.state.Tasks[i].ID
+			}
 			c.state.Tasks[i].Status = deep.StatusIncomplete
 			c.state.Tasks[i].Blocker = "stopped mid-task (" + reason + ")"
 			changed = true
 		}
 	}
 	if changed {
+		c.state.ExecutionQuiescenceUnconfirmed = true
+		c.state.ExecutionQuiescenceTaskID = activeTaskID
 		if err := c.save(); err != nil {
 			return fmt.Errorf("persist active tasks before landing: %w", err)
 		}
+		return fmt.Errorf("landing deferred until active task %s executor has returned and quiesced", activeTaskID)
 	}
 
 	bookkeepingPaths := c.verificationBookkeepingPaths()
@@ -304,10 +327,13 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 				}
 			}
 			result := run(ctx, c.state.Verify)
-			if result.Passed() {
-				finalVerify = "passed"
-			} else {
-				finalVerify = "FAILED (" + string(result.Outcome) + ")"
+			if result.QuiescenceUnconfirmed {
+				c.state.ExecutionQuiescenceUnconfirmed = true
+				c.state.ExecutionQuiescenceTaskID = "mission-final-verifier"
+				if err := c.save(); err != nil {
+					return fmt.Errorf("final verifier quiescence is unconfirmed and the block could not be persisted: %w", err)
+				}
+				return fmt.Errorf("landing stopped because final verifier process quiescence is unconfirmed")
 			}
 			afterVerify, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
 			if err != nil {
