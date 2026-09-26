@@ -2,6 +2,7 @@ package deep
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -535,6 +536,93 @@ func TestRunJournalFailsClosedOnMalformedCompleteEvent(t *testing.T) {
 	}
 	if _, err := LoadState(stateDir, state.SessionID); err == nil || !strings.Contains(err.Error(), "decode complete run event") {
 		t.Fatalf("malformed complete event was skipped: %v", err)
+	}
+}
+
+func TestRunJournalV1ReadsB1LifecycleHistoryAfterExecutorEventsAreAdded(t *testing.T) {
+	stateDir, state, now := journalFixture(t)
+	const epochID = "b1-epoch-v1"
+	state.RunID = state.SessionID
+	state.ExecutionEpochID = epochID
+	state.RunEventSchemaVersion = 1 // pin the previously shipped B1 format
+	state.Phase = PhaseInitializing
+	if err := state.SaveDir(stateDir); err != nil {
+		t.Fatal(err)
+	}
+
+	events := []RunEvent{
+		{
+			SchemaVersion: 1, EventID: epochStartedEventID(state.SessionID, epochID), RunID: state.SessionID,
+			EpochID: epochID, Sequence: 1, OccurredAt: now, Actor: "deep-coordinator", Type: RunEventEpochStarted,
+			Boundary: RunEventBoundaryNewRun, FromPhase: PhaseInitializing, ToPhase: PhaseExecuting,
+			Deadline: state.Deadline, LandBefore: state.LandBefore, TaskSummary: summarizeRunTasks(state.Tasks),
+		},
+		{
+			SchemaVersion: 1, EventID: landingEventID(state.SessionID, epochID, "started"), RunID: state.SessionID,
+			EpochID: epochID, Sequence: 2, OccurredAt: now.Add(time.Minute), Actor: "deep-coordinator",
+			Type: RunEventLandingStarted, FromPhase: PhaseExecuting, ToPhase: PhaseLanding,
+			Reason: "B1 stop", TaskSummary: summarizeRunTasks(state.Tasks),
+		},
+		{
+			SchemaVersion: 1, EventID: landingEventID(state.SessionID, epochID, "completed"), RunID: state.SessionID,
+			EpochID: epochID, Sequence: 3, OccurredAt: now.Add(2 * time.Minute), Actor: "deep-coordinator",
+			Type: RunEventLanded, FromPhase: PhaseLanding, ToPhase: PhaseLanded,
+			Reason: "B1 stop", CheckpointCommit: "b1-checkpoint", CheckpointTree: "b1-tree",
+			TaskSummary: summarizeRunTasks(state.Tasks),
+		},
+	}
+	var journal bytes.Buffer
+	for _, event := range events {
+		line, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal.Write(line)
+		journal.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(DeepDir(stateDir, state.SessionID), runEventFileName), journal.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadState(stateDir, state.SessionID)
+	if err != nil || loaded.RunEventSchemaVersion != 1 || loaded.RunEventWatermark != 3 || loaded.Phase != PhaseLanded {
+		t.Fatalf("read existing B1 v1 history: state=%+v err=%v", loaded, err)
+	}
+	actual, err := ReadRunEvents(stateDir, state.SessionID)
+	if err != nil || len(actual) != 3 {
+		t.Fatalf("existing B1 history was changed: events=%+v err=%v", actual, err)
+	}
+	for _, event := range actual {
+		if event.ExecutorRun != nil {
+			t.Fatalf("reader synthesized executor history for B1 event: %+v", event)
+		}
+	}
+}
+
+func TestRunJournalFailsClosedOnUnknownCompleteEventType(t *testing.T) {
+	stateDir, state, now := journalFixture(t)
+	if err := BeginNewRun(stateDir, &state, now); err != nil {
+		t.Fatal(err)
+	}
+	unknown := RunEvent{
+		SchemaVersion: RunEventSchemaVersion, EventID: "future-event", RunID: state.RunID,
+		EpochID: state.ExecutionEpochID, Sequence: state.RunEventWatermark + 1,
+		OccurredAt: now.Add(time.Minute), Actor: "future-component", Type: RunEventType("executor.future"),
+		FromPhase: PhaseExecuting, ToPhase: PhaseExecuting, TaskSummary: summarizeRunTasks(state.Tasks),
+	}
+	if err := withRunStateLock(stateDir, state.SessionID, func(dir string) error { return appendRunEventLocked(dir, unknown) }); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(DeepDir(stateDir, state.SessionID), "deep.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadState(stateDir, state.SessionID); err == nil || !strings.Contains(err.Error(), "unknown run event type") {
+		t.Fatalf("unknown complete event was not rejected: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(DeepDir(stateDir, state.SessionID), "deep.json"))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("unknown event changed projection: err=%v", err)
 	}
 }
 
