@@ -71,10 +71,13 @@ type DeepState struct {
 	// LandingVerificationOutcome preserves the typed mission verifier result
 	// across a crash between final verification and terminal state persistence.
 	LandingVerificationOutcome VerificationOutcome `json:"landingVerificationOutcome,omitempty"`
-	TaskAttemptCap             int                 `json:"taskAttemptCap"`
-	Exec                       *ExecSettings       `json:"exec,omitempty"`
-	StartedAt                  time.Time           `json:"startedAt"`
-	UpdatedAt                  time.Time           `json:"updatedAt,omitempty"`
+	// LandingVerificationRunID links journal-backed final verification to its
+	// canonical VerificationRun record. Empty for legacy sessions.
+	LandingVerificationRunID string        `json:"landingVerificationRunId,omitempty"`
+	TaskAttemptCap           int           `json:"taskAttemptCap"`
+	Exec                     *ExecSettings `json:"exec,omitempty"`
+	StartedAt                time.Time     `json:"startedAt"`
+	UpdatedAt                time.Time     `json:"updatedAt,omitempty"`
 }
 
 // LandingRecord preserves the identity and terminal reason of an earlier
@@ -88,6 +91,7 @@ type LandingRecord struct {
 	MissionOutcome      MissionOutcome       `json:"missionOutcome,omitempty"`
 	VerificationOutcome VerificationOutcome  `json:"verificationOutcome,omitempty"`
 	VerificationSubject *VerificationSubject `json:"verificationSubject,omitempty"`
+	VerificationRunID   string               `json:"verificationRunId,omitempty"`
 	HandoffSHA256       string               `json:"handoffSha256,omitempty"`
 }
 

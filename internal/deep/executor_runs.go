@@ -257,6 +257,8 @@ func applyExecutorStarted(task *Task, run ExecutorRun) {
 	task.LastResult = ""
 	task.ExecutorRunProcessed = false
 	task.VerificationCommand = ""
+	task.VerificationRunID = ""
+	task.VerificationOutcome = VerificationNotRun
 	task.VerificationResult = ""
 	task.VerificationOutput = ""
 	task.VerificationSubject = nil

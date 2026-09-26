@@ -67,10 +67,14 @@ type Task struct {
 	ExecutorRunProcessed bool `json:"executorRunProcessed,omitempty"`
 	// Attempt evidence is kept independently: a passing repository command is
 	// diagnostic evidence, not proof that a failed executor completed the task.
-	ExecutionError       string     `json:"executionError,omitempty"`
-	VerificationCommand  string     `json:"verificationCommand,omitempty"`
-	VerificationResult   string     `json:"verificationResult,omitempty"`
-	VerificationOutput   string     `json:"verificationOutput,omitempty"`
+	ExecutionError      string              `json:"executionError,omitempty"`
+	VerificationCommand string              `json:"verificationCommand,omitempty"`
+	VerificationOutcome VerificationOutcome `json:"verificationOutcome,omitempty"`
+	VerificationResult  string              `json:"verificationResult,omitempty"`
+	VerificationOutput  string              `json:"verificationOutput,omitempty"`
+	// VerificationRunID identifies the canonical verifier invocation in a
+	// journaled run. It remains separate from task acceptance and checkpointing.
+	VerificationRunID    string     `json:"verificationRunId,omitempty"`
 	ConfiguredTimeoutSec int        `json:"configuredTimeoutSec,omitempty"`
 	EffectiveTimeoutSec  int        `json:"effectiveTimeoutSec,omitempty"`
 	TimeoutDecision      string     `json:"timeoutDecision,omitempty"`
