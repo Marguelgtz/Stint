@@ -25,10 +25,14 @@ type DeepState struct {
 	// RunID remains stable for the lifetime of this Deep Work session. For
 	// journaled sessions it is initialized from SessionID, preserving the
 	// existing session directory as the run identity.
-	RunID                          string               `json:"runId,omitempty"`
-	ExecutionEpochID               string               `json:"executionEpochId,omitempty"`
-	RunEventSchemaVersion          int                  `json:"runEventSchemaVersion,omitempty"`
-	RunEventWatermark              uint64               `json:"runEventWatermark,omitempty"`
+	RunID                 string `json:"runId,omitempty"`
+	ExecutionEpochID      string `json:"executionEpochId,omitempty"`
+	RunEventSchemaVersion int    `json:"runEventSchemaVersion,omitempty"`
+	RunEventWatermark     uint64 `json:"runEventWatermark,omitempty"`
+	// ProjectionRevision advances on every durable deep.json write. Writers
+	// must present the revision they loaded, preventing stale task/runtime
+	// snapshots from replacing newer durable state.
+	ProjectionRevision             uint64               `json:"projectionRevision,omitempty"`
 	MissionName                    string               `json:"missionName"`
 	Objective                      string               `json:"objective"`
 	Success                        []string             `json:"success,omitempty"`

@@ -235,7 +235,7 @@ func TestRunJournalReplaysEventWhenProjectionPersistenceFails(t *testing.T) {
 		Reason:      "crash-boundary fixture",
 		TaskSummary: summarizeRunTasks(state.Tasks),
 	}
-	err := appendAndProjectRunEvent(stateDir, &state, event, func(string, DeepState) error {
+	err := appendAndProjectRunEvent(stateDir, &state, event, func(string, *DeepState) error {
 		return errors.New("injected projection persistence failure")
 	})
 	if err == nil || !strings.Contains(err.Error(), "is durable but deep.json projection update failed") {
@@ -292,7 +292,7 @@ func TestRunJournalReplaysResumeAfterProjectionFailureWithContext(t *testing.T) 
 
 	projectionWrites := 0
 	preparedWatermark := state.RunEventWatermark
-	err = appendAndProjectRunEvent(stateDir, &state, event, func(dir string, projection DeepState) error {
+	err = appendAndProjectRunEvent(stateDir, &state, event, func(dir string, projection *DeepState) error {
 		projectionWrites++
 		if projection.RunEventWatermark == preparedWatermark {
 			return writeProjectionLocked(dir, projection)
@@ -315,8 +315,112 @@ func TestRunJournalReplaysResumeAfterProjectionFailureWithContext(t *testing.T) 
 	if loaded.Exec == nil || loaded.Exec.Model != "model-v2" || loaded.ComputeBinding == nil || loaded.ComputeBinding.InstanceID != 4321 {
 		t.Fatalf("resume context was lost while replaying its epoch event: exec=%+v binding=%+v", loaded.Exec, loaded.ComputeBinding)
 	}
-	if !loaded.Deadline.Equal(state.Deadline) || !loaded.LandBefore.Equal(state.LandBefore) {
+	if !loaded.Deadline.Equal(now.Add(2*time.Hour)) || !loaded.LandBefore.Equal(now.Add(90*time.Minute)) {
 		t.Fatalf("resume deadline context was not restored: deadline=%s landBefore=%s", loaded.Deadline, loaded.LandBefore)
+	}
+}
+
+func TestRunEventRejectsStaleProjectionWithoutOverwritingNewerTaskEvidence(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Task, time.Time)
+		check  func(*testing.T, Task)
+	}{
+		{
+			name: "active task state",
+			mutate: func(task *Task, _ time.Time) {
+				task.Status = StatusActive
+				task.Attempts = 1
+			},
+			check: func(t *testing.T, task Task) {
+				t.Helper()
+				if task.Status != StatusActive || task.Attempts != 1 {
+					t.Fatalf("newer active task state was lost: %+v", task)
+				}
+			},
+		},
+		{
+			name: "verification and checkpoint evidence",
+			mutate: func(task *Task, at time.Time) {
+				task.Status = StatusVerified
+				task.VerifiedAt = &at
+				task.VerificationSubject = &VerificationSubject{HeadCommit: "verified-head", TreeSHA: "verified-tree"}
+				task.CheckpointCommit = "checkpoint-commit"
+				task.CheckpointTreeSHA = "checkpoint-tree"
+			},
+			check: func(t *testing.T, task Task) {
+				t.Helper()
+				if task.Status != StatusVerified || task.VerificationSubject == nil || task.VerificationSubject.TreeSHA != "verified-tree" ||
+					task.CheckpointCommit != "checkpoint-commit" || task.CheckpointTreeSHA != "checkpoint-tree" {
+					t.Fatalf("newer verification/checkpoint evidence was lost: %+v", task)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stateDir, state, now := journalFixture(t)
+			if err := BeginNewRun(stateDir, &state, now); err != nil {
+				t.Fatal(err)
+			}
+			stale, err := LoadState(stateDir, state.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fresh, err := LoadState(stateDir, state.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := now.Add(30 * time.Second)
+			tt.mutate(&fresh.Tasks[0], at)
+			if err := fresh.SaveDir(stateDir); err != nil {
+				t.Fatalf("save newer task state: %v", err)
+			}
+
+			err = BeginLanding(stateDir, &stale, "stale caller landing", now.Add(time.Minute))
+			if err == nil || !strings.Contains(err.Error(), "stale Deep Work projection revision") {
+				t.Fatalf("stale landing transition = %v, want revision rejection", err)
+			}
+			loaded, err := LoadState(stateDir, state.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loaded.Phase != PhaseExecuting || loaded.RunEventWatermark != 1 {
+				t.Fatalf("stale lifecycle transition changed phase/history: phase=%q watermark=%d", loaded.Phase, loaded.RunEventWatermark)
+			}
+			tt.check(t, loaded.Tasks[0])
+		})
+	}
+}
+
+func TestSaveDirRejectsStaleProjectionRevision(t *testing.T) {
+	stateDir, state, now := journalFixture(t)
+	if err := BeginNewRun(stateDir, &state, now); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := LoadState(stateDir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := LoadState(stateDir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh.Tasks[0].Status = StatusActive
+	if err := fresh.SaveDir(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	stale.Exec = &ExecSettings{Worker: "stale-runtime"}
+	if err := stale.SaveDir(stateDir); err == nil || !strings.Contains(err.Error(), "stale Deep Work projection revision") {
+		t.Fatalf("stale SaveDir = %v, want revision rejection", err)
+	}
+	loaded, err := LoadState(stateDir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Tasks[0].Status != StatusActive || loaded.Exec != nil {
+		t.Fatalf("stale save overwrote newer durable state: task=%+v exec=%+v", loaded.Tasks[0], loaded.Exec)
 	}
 }
 

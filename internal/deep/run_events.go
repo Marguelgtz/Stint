@@ -122,7 +122,7 @@ func BeginNewRun(stateDir string, state *DeepState, at time.Time) error {
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("inspect existing run event journal: %w", err)
 			}
-			return writeProjectionLocked(stateDir, prepared)
+			return writeProjectionLocked(stateDir, &prepared)
 		})
 		if err != nil {
 			return fmt.Errorf("persist run initialization boundary: %w", err)
@@ -307,7 +307,7 @@ func landingEventID(runID, epochID, action string) string {
 	return runID + "/" + epochID + "/landing-" + action
 }
 
-type projectionWriter func(string, DeepState) error
+type projectionWriter func(string, *DeepState) error
 
 func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent, project projectionWriter) error {
 	if project == nil {
@@ -321,6 +321,9 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		current, _, err = recoverProjectionLocked(stateDir, dir, current, true)
 		if err != nil {
 			return err
+		}
+		if state.ProjectionRevision != current.ProjectionRevision {
+			return fmt.Errorf("stale Deep Work projection revision %d; durable revision is %d; reload before writing a run event", state.ProjectionRevision, current.ProjectionRevision)
 		}
 		if state.RunEventWatermark != current.RunEventWatermark || state.RunID != current.RunID ||
 			state.ExecutionEpochID != current.ExecutionEpochID || state.RunEventSchemaVersion != current.RunEventSchemaVersion ||
@@ -349,9 +352,15 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 			// the new epoch event.
 			prepared.Deadline = current.Deadline
 			prepared.LandBefore = current.LandBefore
-			if err := project(stateDir, prepared); err != nil {
+			if err := project(stateDir, &prepared); err != nil {
 				return fmt.Errorf("persist resume context before run epoch event: %w", err)
 			}
+			// The pre-event projection deliberately keeps the previous deadline
+			// until the epoch event is durable. Retain the caller's requested
+			// resume context in memory while adopting the revision written by the
+			// preparation step.
+			state.ProjectionRevision = prepared.ProjectionRevision
+			state.UpdatedAt = prepared.UpdatedAt
 		}
 		event.SchemaVersion = RunEventSchemaVersion
 		event.Sequence = uint64(len(events)) + 1
@@ -369,7 +378,7 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		if err := applyRunEvent(&projected, event); err != nil {
 			return fmt.Errorf("apply persisted run event %s: %w", event.EventID, err)
 		}
-		if err := project(stateDir, projected); err != nil {
+		if err := project(stateDir, &projected); err != nil {
 			return fmt.Errorf("run event %s is durable but deep.json projection update failed: %w", event.EventID, err)
 		}
 		*state = projected
@@ -745,7 +754,7 @@ func recoverProjectionLocked(stateDir, dir string, state DeepState, persist bool
 		return DeepState{}, journalExists, errors.New("deep.json run or epoch identity differs from journal history")
 	}
 	if changed && persist {
-		if err := writeProjectionLocked(stateDir, state); err != nil {
+		if err := writeProjectionLocked(stateDir, &state); err != nil {
 			return DeepState{}, journalExists, fmt.Errorf("replay run event journal into deep.json: %w", err)
 		}
 	}

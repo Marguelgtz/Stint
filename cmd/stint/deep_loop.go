@@ -47,7 +47,7 @@ type deepCoordinator struct {
 	logf          func(format string, args ...any)
 	out           io.Writer
 	git           gitOps
-	persist       func(string, deep.DeepState) error
+	persist       func(string, *deep.DeepState) error
 	// completeLanding is the durable landing-transition seam. Production uses
 	// the RunEvent-backed operation; tests inject the crash boundary after Git
 	// has created the checkpoint but before its lifecycle event is recorded.
@@ -85,9 +85,9 @@ func (c *deepCoordinator) mission() deep.Mission {
 func (c *deepCoordinator) save() error {
 	persist := c.persist
 	if persist == nil {
-		persist = func(dir string, state deep.DeepState) error { return state.SaveDir(dir) }
+		persist = func(dir string, state *deep.DeepState) error { return state.SaveDir(dir) }
 	}
-	if err := persist(c.stateDir, *c.state); err != nil {
+	if err := persist(c.stateDir, c.state); err != nil {
 		c.logf("WARNING: persist state: %v", err)
 		c.incident(deep.IncidentStateSave, "", err.Error())
 		return err

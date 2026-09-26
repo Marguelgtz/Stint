@@ -10,8 +10,8 @@ import (
 )
 
 // SaveDir persists the session state and the latest-session pointer.
-func (s DeepState) SaveDir(stateDir string) error {
-	if s.SessionID == "" {
+func (s *DeepState) SaveDir(stateDir string) error {
+	if s == nil || s.SessionID == "" {
 		return fmt.Errorf("deep state session id is empty")
 	}
 	return withRunStateLock(stateDir, s.SessionID, func(dir string) error {
@@ -24,16 +24,21 @@ func (s DeepState) SaveDir(stateDir string) error {
 			if err != nil {
 				return err
 			}
+			if s.ProjectionRevision != recovered.ProjectionRevision {
+				return fmt.Errorf("stale Deep Work projection revision %d; durable revision is %d; reload before saving", s.ProjectionRevision, recovered.ProjectionRevision)
+			}
 			if recovered.RunEventSchemaVersion != 0 || recovered.RunEventWatermark != 0 {
-				if !missionOutcomeProjectionValid(s) {
+				if !missionOutcomeProjectionValid(*s) {
 					return fmt.Errorf("journal-backed mission outcome must match its current deterministic evidence")
 				}
 				if s.RunEventSchemaVersion != recovered.RunEventSchemaVersion || s.RunEventWatermark != recovered.RunEventWatermark ||
 					s.RunID != recovered.RunID || s.ExecutionEpochID != recovered.ExecutionEpochID ||
-					!sameLifecycleProjection(s, recovered) {
+					!sameLifecycleProjection(*s, recovered) {
 					return fmt.Errorf("journal-backed lifecycle state must be changed through a RunEvent transition")
 				}
 			}
+		} else if s.ProjectionRevision != 0 {
+			return fmt.Errorf("stale Deep Work projection revision %d; no durable projection exists", s.ProjectionRevision)
 		}
 		return writeProjectionLocked(stateDir, s)
 	})
@@ -86,20 +91,32 @@ func readStateFileIfPresent(dir, sessionID string) (*DeepState, error) {
 // writeProjectionLocked persists deep.json and the latest-session pointer.
 // Callers hold the session's run-event lock. Journal transitions invoke it
 // only after the event file has been synced.
-func writeProjectionLocked(stateDir string, s DeepState) error {
+func writeProjectionLocked(stateDir string, s *DeepState) error {
+	if s == nil {
+		return errors.New("cannot persist a nil Deep Work projection")
+	}
+	if s.ProjectionRevision == ^uint64(0) {
+		return errors.New("Deep Work projection revision is exhausted")
+	}
 	dir := DeepDir(stateDir, s.SessionID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create deep state dir: %w", err)
 	}
-	s.UpdatedAt = time.Now().UTC()
-	data, err := marshalIndent(s)
+	projected := *s
+	projected.UpdatedAt = time.Now().UTC()
+	projected.ProjectionRevision++
+	data, err := marshalIndent(&projected)
 	if err != nil {
 		return err
 	}
 	if err := writeAtomic(filepath.Join(dir, "deep.json"), data); err != nil {
 		return err
 	}
-	return writeAtomic(LatestFile(stateDir), []byte(s.SessionID+"\n"))
+	if err := writeAtomic(LatestFile(stateDir), []byte(projected.SessionID+"\n")); err != nil {
+		return err
+	}
+	*s = projected
+	return nil
 }
 
 // LoadLatestState resolves the latest session pointer and loads its state.

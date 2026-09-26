@@ -91,6 +91,43 @@ func TestJournaledLandingReusesCheckpointWhenCompletionEventIsMissing(t *testing
 	}
 }
 
+func TestLandingWithStaleCoordinatorSnapshotDefersForActiveTaskQuiescence(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	env.state.Verify = "must-not-run-after-active-task"
+	env.coord.stateDir = t.TempDir() // isolate this as a journaled run
+	if err := deep.BeginNewRun(env.coord.stateDir, env.state, env.clock.now); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest.Tasks[0].Status = deep.StatusActive
+	latest.Tasks[0].Attempts = 1
+	if err := latest.SaveDir(env.coord.stateDir); err != nil {
+		t.Fatal(err)
+	}
+
+	finalVerifierCalls := 0
+	env.coord.finalVerify = func(context.Context, string) verificationResult {
+		finalVerifierCalls++
+		return verificationResult{Outcome: verificationPassed}
+	}
+	if err := env.coord.land(context.Background(), "stale landing caller"); err == nil || !strings.Contains(err.Error(), "landing deferred until active task") {
+		t.Fatalf("landing with durable active task = %v, want quiescence deferral", err)
+	}
+	if finalVerifierCalls != 0 {
+		t.Fatalf("final verifier ran %d times while task quiescence was unresolved", finalVerifierCalls)
+	}
+	loaded, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Phase != deep.PhaseLanding || !loaded.ExecutionQuiescenceUnconfirmed || loaded.ExecutionQuiescenceTaskID != "T-001" {
+		t.Fatalf("landing did not durably block on active-task quiescence: phase=%q blocked=%t task=%q", loaded.Phase, loaded.ExecutionQuiescenceUnconfirmed, loaded.ExecutionQuiescenceTaskID)
+	}
+}
+
 func readRunEventFixture(t *testing.T, stateDir, sessionID string) []deep.RunEvent {
 	t.Helper()
 	path := filepath.Join(deep.DeepDir(stateDir, sessionID), "run-events.jsonl")
