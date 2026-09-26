@@ -48,13 +48,22 @@ func (f *fakeRemote) run(ctx context.Context, cmd string) (string, error) {
 // coordinator run can be exercised end-to-end over the fake box.
 type stubGit struct{}
 
-func (stubGit) repoHead(dir string) (string, error)                  { return "base123", nil }
-func (stubGit) headCommit(dir string) (string, error)                { return "base123", nil }
-func (stubGit) headSubject(dir string) (string, error)               { return "baseline", nil }
-func (stubGit) cleanTracked(dir string) (bool, string)               { return true, "" }
-func (stubGit) logOneline(dir string, n int) (string, error)         { return "", nil }
-func (stubGit) statusShort(dir string) (string, error)               { return "", nil }
-func (stubGit) diffStat(dir, base string) (string, error)            { return "", nil }
+func (stubGit) repoHead(dir string) (string, error)          { return "base123", nil }
+func (stubGit) headCommit(dir string) (string, error)        { return "base123", nil }
+func (stubGit) headSubject(dir string) (string, error)       { return "baseline", nil }
+func (stubGit) cleanTracked(dir string) (bool, string)       { return true, "" }
+func (stubGit) logOneline(dir string, n int) (string, error) { return "", nil }
+func (stubGit) statusShort(dir string) (string, error)       { return "", nil }
+func (stubGit) diffStat(dir, base string) (string, error)    { return "", nil }
+func (stubGit) verificationSubject(string, []string) (verificationSnapshot, error) {
+	return verificationSnapshot{
+		Subject:     deep.VerificationSubject{HeadCommit: "base123", TreeSHA: "tree123"},
+		Bookkeeping: map[string]string{deepWorktreeHandoff: "absent"},
+	}, nil
+}
+func (stubGit) checkpointSubject(string, string, verificationSnapshot) (string, string, error) {
+	return "base123", "tree123", nil
+}
 func (stubGit) worktreeAdd(repo, worktree, branch string) error      { return nil }
 func (stubGit) branchExists(repo, branch string) bool                { return true }
 func (stubGit) worktreeUsable(worktree string) bool                  { return true }
@@ -73,6 +82,54 @@ func TestShellQuote(t *testing.T) {
 		if got := shellQuote(in); got != want {
 			t.Errorf("shellQuote(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestRemoteVerificationSubjectAndCheckpointMatchProductTree(t *testing.T) {
+	repo := newTestRepo(t)
+	const planPath = "plans/O'Brien action.md"
+	if err := os.MkdirAll(filepath.Join(repo, "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(planPath)), []byte("run bookkeeping\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("product change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	remote := func(ctx context.Context, command string) (string, error) {
+		cmd := exec.CommandContext(ctx, "sh", "-c", command)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	remoteGit := &remoteGit{remote: remote}
+	snapshot, err := remoteGit.verificationSubject(repo, []string{planPath, deepWorktreeHandoff})
+	if err != nil {
+		t.Fatalf("remote verification subject: %v", err)
+	}
+	if snapshot.Bookkeeping[planPath] == "" || snapshot.Bookkeeping[deepWorktreeHandoff] != "absent" {
+		t.Fatalf("remote bookkeeping identity = %+v", snapshot.Bookkeeping)
+	}
+	localSnapshot, err := newGitRunner().verificationSubject(repo, []string{planPath, deepWorktreeHandoff})
+	if err != nil {
+		t.Fatalf("local verification subject: %v", err)
+	}
+	if !sameVerificationSnapshot(snapshot, localSnapshot) {
+		t.Fatalf("remote subject %+v differs from local subject %+v", snapshot, localSnapshot)
+	}
+	checkpoint, tree, err := remoteGit.checkpointSubject(repo, "deep(T-001): add feature", snapshot)
+	if err != nil {
+		t.Fatalf("remote checkpoint: %v", err)
+	}
+	if tree != snapshot.Subject.TreeSHA {
+		t.Fatalf("remote checkpoint tree %q differs from subject %q", tree, snapshot.Subject.TreeSHA)
+	}
+	listed, err := exec.Command("git", "-C", repo, "ls-tree", "-r", "--name-only", checkpoint, "--", planPath).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(listed)) != "" {
+		t.Fatalf("untracked remote bookkeeping entered checkpoint: %q", listed)
 	}
 }
 

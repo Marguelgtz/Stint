@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -29,6 +30,8 @@ type gitOps interface {
 	logOneline(dir string, n int) (string, error)
 	statusShort(dir string) (string, error)
 	diffStat(dir, base string) (string, error)
+	verificationSubject(dir string, bookkeepingPaths []string) (verificationSnapshot, error)
+	checkpointSubject(dir, message string, snapshot verificationSnapshot) (string, string, error)
 	worktreeAdd(repo, worktree, branch string) error
 	branchExists(repo, branch string) bool
 	worktreeUsable(worktree string) bool
@@ -134,6 +137,156 @@ func (g *remoteGit) diffStat(dir, base string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// verificationSubject captures the worktree's Git-visible product tree using
+// a temporary index on the box. Stint-owned, untracked bookkeeping files are
+// hashed separately and excluded from that tree; tracked or staged versions
+// remain ordinary product inputs.
+func (g *remoteGit) verificationSubject(dir string, bookkeepingPaths []string) (verificationSnapshot, error) {
+	paths, err := cleanBookkeepingPaths(bookkeepingPaths)
+	if err != nil {
+		return verificationSnapshot{}, err
+	}
+	var script strings.Builder
+	script.WriteString("set -e\n")
+	script.WriteString("d=" + shellQuote(dir) + "\n")
+	script.WriteString("head=$(git -C \"$d\" rev-parse HEAD)\n")
+	script.WriteString("sub_status=$(git -C \"$d\" submodule status --recursive)\n")
+	script.WriteString("while IFS= read -r line; do case \"$line\" in -*) printf '%s\\n' 'verification subject contains an uninitialized submodule' >&2; exit 1;; esac; done <<EOF\n$sub_status\nEOF\n")
+	script.WriteString("git -C \"$d\" submodule foreach --quiet --recursive 'test -z \"$(git status --porcelain --untracked-files=all)\"' >/dev/null\n")
+	script.WriteString("set --\n")
+	for i, path := range paths {
+		pathspec := ":(literal)" + path
+		target := filepath.ToSlash(filepath.Join(dir, filepath.FromSlash(path)))
+		script.WriteString("idx=$(git -C \"$d\" ls-files -- " + shellQuote(pathspec) + ")\n")
+		script.WriteString("committed=$(git -C \"$d\" ls-tree -r --name-only HEAD -- " + shellQuote(pathspec) + ")\n")
+		script.WriteString("if [ -z \"$idx\" ] && [ -z \"$committed\" ]; then\n")
+		script.WriteString("  if [ -L " + shellQuote(target) + " ]; then printf '%s\\n' 'bookkeeping path is not a regular file' >&2; exit 1; else if [ -f " + shellQuote(target) + " ]; then oid=$(git -C \"$d\" hash-object --no-filters -- " + shellQuote(path) + "); else if [ -e " + shellQuote(target) + " ]; then printf '%s\\n' 'bookkeeping path is not a regular file' >&2; exit 1; else oid=absent; fi; fi; fi\n")
+		script.WriteString("  printf '%s=%s\\n' " + shellQuote(fmt.Sprintf("__STINT_META_%d__", i)) + " \"$oid\"\n")
+		script.WriteString("  set -- \"$@\" " + shellQuote(":(top,exclude,literal)"+path) + "\n")
+		script.WriteString("fi\n")
+	}
+	script.WriteString("tmp=$(mktemp -d \"${TMPDIR:-/tmp}/stint-deep-index.XXXXXX\")\n")
+	script.WriteString("trap 'rm -rf \"$tmp\"' EXIT HUP INT TERM\n")
+	script.WriteString("export GIT_INDEX_FILE=\"$tmp/index\"\n")
+	script.WriteString("git -C \"$d\" read-tree \"$head\"\n")
+	script.WriteString("git -C \"$d\" add -A -- . \"$@\"\n")
+	script.WriteString("tree=$(git -C \"$d\" write-tree)\n")
+	script.WriteString("head_after=$(git -C \"$d\" rev-parse HEAD)\n")
+	script.WriteString("[ \"$head\" = \"$head_after\" ] || { printf '%s\\n' 'repository HEAD changed while capturing verification subject' >&2; exit 1; }\n")
+	script.WriteString("printf '__STINT_SUBJECT__=%s %s\\n' \"$head_after\" \"$tree\"\n")
+	out, err := g.remote(context.Background(), script.String())
+	if err != nil {
+		msg := strings.TrimSpace(out)
+		if msg == "" {
+			msg = err.Error()
+		}
+		return verificationSnapshot{}, fmt.Errorf("capture remote verification subject: %s", msg)
+	}
+	var snapshot verificationSnapshot
+	metadata := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		for i, path := range paths {
+			marker := fmt.Sprintf("__STINT_META_%d__=", i)
+			if strings.HasPrefix(line, marker) {
+				identity := strings.TrimPrefix(line, marker)
+				if identity != "absent" {
+					identity = "git-blob:" + identity
+				}
+				metadata[path] = identity
+			}
+		}
+		if strings.HasPrefix(line, "__STINT_SUBJECT__=") {
+			fields := strings.Fields(strings.TrimPrefix(line, "__STINT_SUBJECT__="))
+			if len(fields) == 2 {
+				snapshot.Subject.HeadCommit, snapshot.Subject.TreeSHA = fields[0], fields[1]
+			}
+		}
+	}
+	if snapshot.Subject.HeadCommit == "" || snapshot.Subject.TreeSHA == "" {
+		return verificationSnapshot{}, fmt.Errorf("remote verification subject returned no valid tree identity")
+	}
+	if len(metadata) > 0 {
+		snapshot.Bookkeeping = metadata
+	}
+	return snapshot, nil
+}
+
+func (g *remoteGit) checkpointSubject(dir, message string, snapshot verificationSnapshot) (string, string, error) {
+	subject := snapshot.Subject
+	if subject.HeadCommit == "" || subject.TreeSHA == "" {
+		return "", "", fmt.Errorf("verification subject is incomplete")
+	}
+	excluded := bookkeepingPathsFromSnapshot(snapshot)
+	current, err := g.verificationSubject(dir, excluded)
+	if err != nil {
+		return "", "", err
+	}
+	if !sameVerificationSnapshot(snapshot, current) {
+		return "", "", fmt.Errorf("repository changed after verification; verified subject %s/%s no longer matches %s/%s", subject.HeadCommit, subject.TreeSHA, current.Subject.HeadCommit, current.Subject.TreeSHA)
+	}
+	args := []string{"add", "-A", "--", "."}
+	for _, path := range excluded {
+		args = append(args, ":(top,exclude,literal)"+path)
+	}
+	if _, err := g.run(dir, args...); err != nil {
+		return "", "", err
+	}
+	tree, err := g.run(dir, "write-tree")
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(tree) != subject.TreeSHA {
+		return "", "", fmt.Errorf("repository changed while preparing checkpoint tree; verified %s, staged %s", subject.TreeSHA, strings.TrimSpace(tree))
+	}
+	head, err := g.repoHead(dir)
+	if err != nil {
+		return "", "", err
+	}
+	head = strings.TrimSpace(head)
+	if head != subject.HeadCommit {
+		return "", "", fmt.Errorf("repository HEAD changed after verification; verified %s, found %s", subject.HeadCommit, head)
+	}
+	headTree, err := g.run(dir, "rev-parse", "HEAD^{tree}")
+	if err != nil {
+		return "", "", err
+	}
+	checkpoint := head
+	if strings.TrimSpace(headTree) != subject.TreeSHA {
+		if _, err := g.run(dir, "commit", "-m", message, "--author", "Stint Deep Work <deep@stint.local>"); err != nil {
+			return "", "", err
+		}
+		checkpoint, err = g.repoHead(dir)
+		if err != nil {
+			return "", "", err
+		}
+		checkpoint = strings.TrimSpace(checkpoint)
+		parent, err := g.run(dir, "rev-parse", "HEAD^")
+		if err != nil {
+			return "", "", fmt.Errorf("read semantic checkpoint parent: %w", err)
+		}
+		if strings.TrimSpace(parent) != subject.HeadCommit {
+			return "", "", fmt.Errorf("checkpoint parent changed after verification; verified HEAD %s, found parent %s", subject.HeadCommit, strings.TrimSpace(parent))
+		}
+	}
+	checkpointTree, err := g.run(dir, "rev-parse", "HEAD^{tree}")
+	if err != nil {
+		return "", "", err
+	}
+	checkpointTree = strings.TrimSpace(checkpointTree)
+	if checkpointTree != subject.TreeSHA {
+		return "", "", fmt.Errorf("checkpoint tree does not match verified tree: verified %s, checkpoint %s", subject.TreeSHA, checkpointTree)
+	}
+	after, err := g.verificationSubject(dir, excluded)
+	if err != nil {
+		return "", "", err
+	}
+	if after.Subject.HeadCommit != checkpoint || after.Subject.TreeSHA != subject.TreeSHA || !sameMetadata(snapshot.Bookkeeping, after.Bookkeeping) {
+		return "", "", fmt.Errorf("repository changed before checkpoint acceptance; verified tree %s, current HEAD/tree %s/%s", subject.TreeSHA, after.Subject.HeadCommit, after.Subject.TreeSHA)
+	}
+	return checkpoint, checkpointTree, nil
 }
 
 func (g *remoteGit) worktreeAdd(repo, worktree, branch string) error {
