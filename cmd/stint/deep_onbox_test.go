@@ -235,7 +235,7 @@ func TestPrepareDeepOnBoxResumeRebindsOnlyAfterWorktreeRecovery(t *testing.T) {
 	}
 }
 
-func TestPrepareDeepOnBoxResumeStartsFreshLandingEpoch(t *testing.T) {
+func TestPrepareDeepOnBoxResumePreservesLandingUntilEpochIsJournaled(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
 	state := env.state
 	state.Exec = &deep.ExecSettings{Worker: workerHermesOnBox, Model: "model", TaskTimeoutSec: 600}
@@ -255,9 +255,18 @@ func TestPrepareDeepOnBoxResumeStartsFreshLandingEpoch(t *testing.T) {
 	state.LandingVerificationSubject = &deep.VerificationSubject{HeadCommit: strings.Repeat("c", 40), TreeSHA: strings.Repeat("b", 40)}
 	state.LandingVerificationBookkeeping = map[string]string{"plan.md": "git-blob:abc"}
 	state.LandingHandoff = "old handoff"
+	if err := state.SaveDir(env.coord.stateDir); err != nil {
+		t.Fatal(err)
+	}
 	compute := sessionstate.State{InstanceID: 100, Deadline: env.clock.now.Add(2 * time.Hour)}
 	if _, err := prepareDeepOnBoxResume(state, compute, &deepOnBoxFlags{resume: true}, env.coord.git, env.clock.now); err != nil {
 		t.Fatalf("resume landed session: %v", err)
+	}
+	if state.Phase != deep.PhaseLanded {
+		t.Fatalf("prepare changed phase before epoch event: %s", state.Phase)
+	}
+	if err := deep.BeginResumeEpoch(env.coord.stateDir, state, deep.PhaseLanded, env.clock.now); err != nil {
+		t.Fatalf("persist new resume epoch: %v", err)
 	}
 	if state.Phase != deep.PhaseExecuting || state.MissionOutcome != deep.MissionOutcomePending || state.LandedAt != nil || state.LandingReason != "" || state.LandingCommit != "" || state.LandingCheckpointTreeSHA != "" || state.LandingVerifyDone || state.LandingVerify != "" || state.LandingVerificationOutcome != deep.VerificationNotRun || state.LandingVerificationSubject != nil || state.LandingVerificationBookkeeping != nil || state.LandingHandoff != "" {
 		t.Fatalf("resumed landing fields remain stale: %+v", state)
