@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Marguelgtz/Stint/internal/deep"
 )
 
 type verificationOutcome string
@@ -69,4 +71,23 @@ func (r verificationResult) IncidentDetail() string {
 		parts = append(parts, "output="+output)
 	}
 	return strings.Join(parts, " ")
+}
+
+// validateMissionVerifyCommands is pure: it inspects persisted executable
+// command data without probing tools, contacting compute, or starting a shell.
+func validateMissionVerifyCommands(mission deep.Mission) error {
+	if strings.TrimSpace(mission.Verify) != "" {
+		if err := deep.ValidateVerifyCommand(mission.Verify); err != nil {
+			return fmt.Errorf("mission verification command is invalid: %w", err)
+		}
+	}
+	for _, task := range mission.Tasks {
+		if strings.TrimSpace(task.Verify) == "" {
+			continue
+		}
+		if err := deep.ValidateVerifyCommand(task.Verify); err != nil {
+			return fmt.Errorf("task %s verification command is invalid: %w", task.ID, err)
+		}
+	}
+	return nil
 }

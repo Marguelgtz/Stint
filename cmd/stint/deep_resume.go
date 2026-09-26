@@ -76,13 +76,9 @@ func runDeepResume(args []string) error {
 		return err
 	}
 
-	// 1. Load the session's durable state.
-	var state deep.DeepState
-	if f.sessionID != "" {
-		state, err = deep.LoadState(paths.StateDir, f.sessionID)
-	} else {
-		state, err = deep.LoadLatestState(paths.StateDir)
-	}
+	// 1. Load durable state and validate its executable command fields before
+	//    checking or contacting compute/runtime services.
+	state, err := loadValidatedDeepResumeState(paths.StateDir, f.sessionID)
 	if err != nil {
 		return err
 	}
@@ -236,6 +232,23 @@ func runDeepResume(args []string) error {
 		remote:          remoteFn,
 		paths:           paths,
 	}, git, true)
+}
+
+func loadValidatedDeepResumeState(stateDir, sessionID string) (deep.DeepState, error) {
+	var state deep.DeepState
+	var err error
+	if sessionID != "" {
+		state, err = deep.LoadState(stateDir, sessionID)
+	} else {
+		state, err = deep.LoadLatestState(stateDir)
+	}
+	if err != nil {
+		return deep.DeepState{}, err
+	}
+	if err := validateMissionVerifyCommands(deep.Mission{Verify: state.Verify, Tasks: state.Tasks}); err != nil {
+		return deep.DeepState{}, fmt.Errorf("persisted verification command data is invalid: %w", err)
+	}
+	return state, nil
 }
 
 // assertNoLiveCoordinator refuses to start a second coordinator for a

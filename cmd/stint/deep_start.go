@@ -208,9 +208,6 @@ func splitShellCommands(command string) []string {
 }
 
 func preflightRemoteVerifyTools(mission deep.Mission, remote remoteCmd) error {
-	if err := validateMissionVerifyCommands(mission); err != nil {
-		return err
-	}
 	commands := make([]string, 0, len(mission.Tasks)+1)
 	commands = append(commands, mission.Verify)
 	for _, task := range mission.Tasks {
@@ -225,9 +222,6 @@ func preflightRemoteVerifyTools(mission deep.Mission, remote remoteCmd) error {
 }
 
 func preflightLocalVerifyTools(mission deep.Mission) error {
-	if err := validateMissionVerifyCommands(mission); err != nil {
-		return err
-	}
 	commands := make([]string, 0, len(mission.Tasks)+1)
 	commands = append(commands, mission.Verify)
 	for _, task := range mission.Tasks {
@@ -236,23 +230,6 @@ func preflightLocalVerifyTools(mission deep.Mission) error {
 	for _, tool := range verificationToolNames(commands) {
 		if _, err := lookPath(tool); err != nil {
 			return fmt.Errorf("mission verification requires %q, which is unavailable on the compute box", tool)
-		}
-	}
-	return nil
-}
-
-func validateMissionVerifyCommands(mission deep.Mission) error {
-	if strings.TrimSpace(mission.Verify) != "" {
-		if err := deep.ValidateVerifyCommand(mission.Verify); err != nil {
-			return fmt.Errorf("mission verification command is invalid: %w", err)
-		}
-	}
-	for _, task := range mission.Tasks {
-		if strings.TrimSpace(task.Verify) == "" {
-			continue
-		}
-		if err := deep.ValidateVerifyCommand(task.Verify); err != nil {
-			return fmt.Errorf("task %s verification command is invalid: %w", task.ID, err)
 		}
 	}
 	return nil

@@ -5,10 +5,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Marguelgtz/Stint/internal/config"
 	"github.com/Marguelgtz/Stint/internal/deep"
 )
 
@@ -21,6 +23,40 @@ func testResumeState(deadline time.Time) *deep.DeepState {
 		Branch:       "stint/deep-x",
 		Deadline:     deadline,
 		Phase:        deep.PhaseExecuting,
+	}
+}
+
+func TestDeepResumeRejectsPersistedVerifierBeforeComputeLoad(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	paths, err := config.DefaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := deep.DeepState{
+		SessionID: "20260926-090000",
+		Verify:    "`pnpm test`",
+		Tasks:     []deep.Task{{ID: "T-001", Objective: "fixture"}},
+	}
+	if err := state.SaveDir(paths.StateDir); err != nil {
+		t.Fatal(err)
+	}
+
+	err = runDeepResume([]string{"--session", state.SessionID})
+	if err == nil || !strings.Contains(err.Error(), "persisted verification command data is invalid") {
+		t.Fatalf("resume error = %v, want persisted-command validation before compute checks", err)
+	}
+	if strings.Contains(err.Error(), "active compute session") || strings.Contains(err.Error(), "SSH") {
+		t.Fatalf("resume contacted or checked compute before rejecting command data: %v", err)
+	}
+	err = runDeepOnBox([]string{"--resume"})
+	if err == nil || !strings.Contains(err.Error(), "persisted verification command data is invalid") {
+		t.Fatalf("on-box resume error = %v, want persisted-command validation before compute checks", err)
+	}
+	if strings.Contains(err.Error(), "compute identity") {
+		t.Fatalf("on-box resume checked compute before rejecting command data: %v", err)
 	}
 }
 
