@@ -263,6 +263,13 @@ func TestRunVerifyCmdRemote(t *testing.T) {
 	if transportResult.Outcome != verificationExecutionErr || !strings.Contains(transportResult.Error, "connection lost") {
 		t.Errorf("transport result = %+v, want execution_error", transportResult)
 	}
+	markerPlusTransportError := func(ctx context.Context, cmd string) (string, error) {
+		return "verifier output\n" + verifyExitMarker + "0\n", errors.New("connection lost after output")
+	}
+	masked := runVerifyCmdRemote(context.Background(), markerPlusTransportError, "true", "/wt")
+	if masked.Outcome != verificationExecutionErr || masked.Passed() {
+		t.Errorf("transport error was masked by exit marker: %+v", masked)
+	}
 	before := len(fr.calls)
 	invalid := runVerifyCmdRemote(context.Background(), fr.run, "`echo wrapped`", "/wt")
 	if invalid.Outcome != verificationInvalid || len(fr.calls) != before {
@@ -275,6 +282,10 @@ func TestRunVerifyCmdRemote(t *testing.T) {
 	realFailure := runVerifyCmdRemote(context.Background(), realRemote, "printf remote-output; exit 7", t.TempDir())
 	if realFailure.Outcome != verificationFailed || !realFailure.HasExitCode || realFailure.ExitCode != 7 || !strings.Contains(realFailure.Output, "remote-output") {
 		t.Errorf("executed remote wrapper result = %+v, want command exit 7 and output", realFailure)
+	}
+	markerOutput := runVerifyCmdRemote(context.Background(), realRemote, "printf '%s\\n' '__STINT_VERIFY_SETUP__=42'; true", t.TempDir())
+	if !markerOutput.Passed() || !strings.Contains(markerOutput.Output, verifySetupMarker+"42") {
+		t.Errorf("verifier output collided with setup marker framing: %+v", markerOutput)
 	}
 	setupFailure := runVerifyCmdRemote(context.Background(), realRemote, "true", filepath.Join(t.TempDir(), "missing-worktree"))
 	if setupFailure.Outcome != verificationExecutionErr || !strings.Contains(setupFailure.Error, "could not enter verifier worktree") {
@@ -291,21 +302,32 @@ func TestRunVerifyCmdRemote(t *testing.T) {
 	}
 }
 
-func TestVerifierPreflightRejectsPersistedMarkdownBeforeToolLookup(t *testing.T) {
+func TestTakeTrailingVerifierMarkerRejectsEmbeddedFrame(t *testing.T) {
+	output := "ordinary output\n" + verifyExitMarker + "0\ntrailing verifier output\n"
+	if _, _, ok := takeTrailingVerifierMarker(output, verifyExitMarker); ok {
+		t.Fatalf("accepted non-trailing verifier marker in %q", output)
+	}
+	code, body, ok := takeTrailingVerifierMarker("ordinary output\n"+verifyExitMarker+"7\n", verifyExitMarker)
+	if !ok || code != 7 || body != "ordinary output" {
+		t.Fatalf("trailing marker = (%d, %q, %t), want (7, ordinary output, true)", code, body, ok)
+	}
+}
+
+func TestVerifyCommandValidationIsSeparateFromRuntimePreflight(t *testing.T) {
 	mission := deep.Mission{Verify: "`pnpm test`", Tasks: []deep.Task{{ID: "T-17", Verify: "test -f result.txt"}}}
-	if err := preflightLocalVerifyTools(mission); err == nil || !strings.Contains(err.Error(), "mission verification command is invalid") {
-		t.Fatalf("local preflight error = %v, want attributable invalid mission command", err)
+	if err := validateMissionVerifyCommands(mission); err == nil || !strings.Contains(err.Error(), "mission verification command is invalid") {
+		t.Fatalf("pure command validation error = %v, want attributable invalid mission command", err)
 	}
 	remoteCalls := 0
-	err := preflightRemoteVerifyTools(mission, func(context.Context, string) (string, error) {
+	err := preflightRemoteVerifyTools(deep.Mission{Verify: "go test ./..."}, func(context.Context, string) (string, error) {
 		remoteCalls++
 		return "", nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "mission verification command is invalid") {
-		t.Fatalf("remote preflight error = %v, want attributable invalid mission command", err)
+	if err != nil {
+		t.Fatalf("runtime preflight unexpectedly failed: %v", err)
 	}
-	if remoteCalls != 0 {
-		t.Fatalf("remote tool lookup ran %d times before invalid persisted data was rejected", remoteCalls)
+	if remoteCalls != 1 {
+		t.Fatalf("remote availability preflight calls = %d, want one independent tool lookup", remoteCalls)
 	}
 
 	taskMission := deep.Mission{Tasks: []deep.Task{{ID: "T-17", Verify: "```pnpm test```"}}}

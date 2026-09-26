@@ -191,22 +191,24 @@ func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir 
 		shellQuote(workdir), verifySetupMarker, shellQuote(command), verifyExitMarker)
 	out, err := remote(vctx, line)
 	result := verificationResult{Command: command, StartedAt: started, CompletedAt: time.Now().UTC()}
-	if setupCode, body, ok := takeVerifierMarker(out, verifySetupMarker); ok {
-		result.Outcome = verificationExecutionErr
-		result.Error = "could not enter verifier worktree (cd exit " + setupCode + ")"
-		result.Output = truncateVerifierOutput(body)
+	if err != nil {
+		result.Output = truncateVerifierOutput(out)
+		if errors.Is(vctx.Err(), context.DeadlineExceeded) {
+			result.Outcome = verificationTimedOut
+			result.Error = vctx.Err().Error()
+		} else if errors.Is(vctx.Err(), context.Canceled) {
+			result.Outcome = verificationCanceled
+			result.Error = vctx.Err().Error()
+		} else {
+			result.Outcome = verificationExecutionErr
+			result.Error = "remote verification transport failed: " + err.Error()
+		}
 		return result
 	}
-	if exitCode, body, ok := takeVerifierMarker(out, verifyExitMarker); ok {
+	if exitCode, body, ok := takeTrailingVerifierMarker(out, verifyExitMarker); ok {
 		result.Output = truncateVerifierOutput(body)
-		if parsed, parseErr := strconv.Atoi(exitCode); parseErr != nil {
-			result.Outcome = verificationExecutionErr
-			result.Error = "remote verifier returned an invalid exit marker"
-			return result
-		} else {
-			result.ExitCode = parsed
-			result.HasExitCode = true
-		}
+		result.ExitCode = exitCode
+		result.HasExitCode = true
 		if result.ExitCode == 0 {
 			result.Outcome = verificationPassed
 		} else {
@@ -214,10 +216,13 @@ func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir 
 		}
 		return result
 	}
-	if len(out) > 4000 {
-		out = out[len(out)-4000:]
+	if setupCode, body, ok := takeTrailingVerifierMarker(out, verifySetupMarker); ok {
+		result.Outcome = verificationExecutionErr
+		result.Error = fmt.Sprintf("could not enter verifier worktree (cd exit %d)", setupCode)
+		result.Output = truncateVerifierOutput(body)
+		return result
 	}
-	result.Output = out
+	result.Output = truncateVerifierOutput(out)
 	if errors.Is(vctx.Err(), context.DeadlineExceeded) {
 		result.Outcome = verificationTimedOut
 		result.Error = vctx.Err().Error()
@@ -226,30 +231,38 @@ func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir 
 		result.Error = vctx.Err().Error()
 	} else {
 		result.Outcome = verificationExecutionErr
-		if err != nil {
-			result.Error = "remote verification transport failed: " + err.Error()
-		} else {
-			result.Error = "remote verification returned no exit marker"
-		}
+		result.Error = "remote verification returned no trailing exit marker"
 	}
 	return result
 }
 
-func takeVerifierMarker(output, marker string) (code, body string, found bool) {
-	index := strings.LastIndex(output, marker)
-	if index < 0 {
-		return "", output, false
+// takeTrailingVerifierMarker accepts only the wrapper's final complete output
+// line. A verifier can print marker-like text earlier in its output without
+// overriding the wrapper's appended status; trailing background output fails
+// closed because it obscures the status boundary.
+func takeTrailingVerifierMarker(output, marker string) (code int, body string, found bool) {
+	trimmed := strings.TrimSuffix(output, "\n")
+	trimmed = strings.TrimSuffix(trimmed, "\r")
+	lineStart := strings.LastIndexByte(trimmed, '\n') + 1
+	line := strings.TrimSuffix(trimmed[lineStart:], "\r")
+	if !strings.HasPrefix(line, marker) {
+		return 0, output, false
 	}
-	codeStart := index + len(marker)
-	codeEnd := strings.IndexByte(output[codeStart:], '\n')
-	if codeEnd >= 0 {
-		codeEnd += codeStart
-	} else {
-		codeEnd = len(output)
+	rawCode := strings.TrimPrefix(line, marker)
+	if rawCode == "" {
+		return 0, output, false
 	}
-	code = strings.TrimSpace(strings.TrimSuffix(output[codeStart:codeEnd], "\r"))
-	body = strings.TrimRight(output[:index], "\r\n")
-	return code, body, true
+	for _, digit := range rawCode {
+		if digit < '0' || digit > '9' {
+			return 0, output, false
+		}
+	}
+	parsed, err := strconv.Atoi(rawCode)
+	if err != nil || parsed > 255 {
+		return 0, output, false
+	}
+	body = strings.TrimRight(output[:lineStart], "\r\n")
+	return parsed, body, true
 }
 
 func truncateVerifierOutput(out string) string {
