@@ -199,6 +199,9 @@ func runDeepResume(args []string) error {
 	//    branch — a deadline landing is a pause, not a verdict.
 	if state.Phase == deep.PhaseLanding {
 		deep.AppendLog(paths.StateDir, state, "resuming interrupted landing")
+	} else if state.Phase == deep.PhaseLanded {
+		state.ReopenAfterLanding(now)
+		deep.AppendLog(paths.StateDir, state, "resuming after a recorded landing outcome")
 	} else if state.Phase != deep.PhaseExecuting {
 		deep.AppendLog(paths.StateDir, state, "resuming from %s", state.Phase)
 		state.Phase = deep.PhaseExecuting

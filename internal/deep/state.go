@@ -11,7 +11,7 @@ type Phase string
 const (
 	PhaseExecuting Phase = "executing"
 	PhaseLanding   Phase = "landing"
-	PhaseLanded    Phase = "landed"
+	PhaseLanded    Phase = "landed" // operational stopping/handoff boundary; see MissionOutcome
 	PhaseStopped   Phase = "stopped"
 )
 
@@ -52,10 +52,17 @@ type DeepState struct {
 	ExecutionQuiescenceUnconfirmed bool            `json:"executionQuiescenceUnconfirmed,omitempty"`
 	ExecutionQuiescenceTaskID      string          `json:"executionQuiescenceTaskId,omitempty"`
 	PreviousLandings               []LandingRecord `json:"previousLandings,omitempty"`
-	TaskAttemptCap                 int             `json:"taskAttemptCap"`
-	Exec                           *ExecSettings   `json:"exec,omitempty"`
-	StartedAt                      time.Time       `json:"startedAt"`
-	UpdatedAt                      time.Time       `json:"updatedAt,omitempty"`
+	// MissionOutcome is separate from Phase: landed means the coordinator
+	// reached a recoverable boundary, while this records deterministic mission
+	// completion evidence. Empty legacy terminal values remain unknown.
+	MissionOutcome MissionOutcome `json:"missionOutcome,omitempty"`
+	// LandingVerificationOutcome preserves the typed mission verifier result
+	// across a crash between final verification and terminal state persistence.
+	LandingVerificationOutcome VerificationOutcome `json:"landingVerificationOutcome,omitempty"`
+	TaskAttemptCap             int                 `json:"taskAttemptCap"`
+	Exec                       *ExecSettings       `json:"exec,omitempty"`
+	StartedAt                  time.Time           `json:"startedAt"`
+	UpdatedAt                  time.Time           `json:"updatedAt,omitempty"`
 }
 
 // LandingRecord preserves the identity and terminal reason of an earlier
@@ -66,6 +73,8 @@ type LandingRecord struct {
 	Commit              string               `json:"commit,omitempty"`
 	CheckpointTreeSHA   string               `json:"checkpointTreeSha,omitempty"`
 	Verification        string               `json:"verification,omitempty"`
+	MissionOutcome      MissionOutcome       `json:"missionOutcome,omitempty"`
+	VerificationOutcome VerificationOutcome  `json:"verificationOutcome,omitempty"`
 	VerificationSubject *VerificationSubject `json:"verificationSubject,omitempty"`
 	HandoffSHA256       string               `json:"handoffSha256,omitempty"`
 }
@@ -125,6 +134,7 @@ func NewState(sessionID string, mission Mission, repoPath, worktreePath string, 
 		Branch:         BranchName(sessionID),
 		Tasks:          mission.Tasks,
 		Phase:          PhaseExecuting,
+		MissionOutcome: MissionOutcomePending,
 		Deadline:       deadline.UTC(),
 		LandBefore:     landBefore.UTC(),
 		TaskAttemptCap: taskAttemptCap,

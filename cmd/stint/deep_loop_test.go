@@ -152,13 +152,13 @@ func TestOnBoxHandoffUsesOnBoxResumePathAndShowsEarlierLanding(t *testing.T) {
 		SessionID: "20260924-120000", MissionName: "resume fixture", Objective: "continue work",
 		Phase: deep.PhaseLanded, Branch: "stint/deep-20260924-120000", StartedAt: at.Add(-time.Hour), Deadline: at.Add(time.Hour), Exec: &deep.ExecSettings{Worker: workerHermesOnBox},
 		Tasks:            []deep.Task{{ID: "T-001", Objective: "finish implementation", Status: deep.StatusQueued}},
-		PreviousLandings: []deep.LandingRecord{{At: at.Add(-time.Hour), Reason: "time budget exhausted", Commit: strings.Repeat("a", 40), HandoffSHA256: "digest"}},
+		PreviousLandings: []deep.LandingRecord{{At: at.Add(-time.Hour), Reason: "time budget exhausted", Commit: strings.Repeat("a", 40), MissionOutcome: deep.MissionOutcomeIncomplete, HandoffSHA256: "digest"}},
 	}
 	handoff := buildHandoff(state, "later landing", at, "passed", deep.RepoSummary{})
 	if !strings.Contains(handoff, "`stint deep onbox --resume` in the on-box supervisor context") || strings.Contains(handoff, "`stint deep resume`") {
 		t.Fatalf("on-box handoff recommends the wrong resume path:\n%s", handoff)
 	}
-	if !strings.Contains(handoff, "Earlier landing epochs") || !strings.Contains(handoff, "time budget exhausted") || !strings.Contains(handoff, strings.Repeat("a", 40)) {
+	if !strings.Contains(handoff, "Earlier landing epochs") || !strings.Contains(handoff, "time budget exhausted") || !strings.Contains(handoff, "incomplete") || !strings.Contains(handoff, strings.Repeat("a", 40)) {
 		t.Fatalf("earlier landing identity was not retained:\n%s", handoff)
 	}
 }
@@ -186,6 +186,9 @@ func TestDeepLoopContinuation(t *testing.T) {
 	}
 	if b := env.state.Tasks[1]; b.Status != deep.StatusVerified {
 		t.Errorf("task B = %s, want verified", b.Status)
+	}
+	if env.state.MissionOutcome != deep.MissionOutcomeSucceeded {
+		t.Errorf("mission outcome = %s, want succeeded after bound task and final verification evidence", env.state.MissionOutcome)
 	}
 	// The reconstructed prompt for attempt 2 must carry task context.
 	if got := env.fake.prompts[1]; !strings.Contains(got, "add helper.go") {
@@ -577,6 +580,9 @@ func TestDeepLoopParkAndContinue(t *testing.T) {
 	}
 	if env.state.Phase != deep.PhaseLanded {
 		t.Errorf("phase = %s, want landed", env.state.Phase)
+	}
+	if env.state.MissionOutcome != deep.MissionOutcomeIncomplete {
+		t.Errorf("mission outcome = %s, want incomplete with a blocked task", env.state.MissionOutcome)
 	}
 	data, err := os.ReadFile(env.state.HandoffPath)
 	if err != nil {

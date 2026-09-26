@@ -52,6 +52,7 @@ func runDeepStatus(args []string) error {
 		remaining = 0
 	}
 	fmt.Printf("Deep Work %s — %s (%s)\n", state.SessionID, state.MissionName, state.Phase)
+	fmt.Printf("  mission outcome: %s\n", deep.DisplayMissionOutcome(state.MissionOutcome, state.Phase))
 	fmt.Printf("  deadline: %s (%s remaining)\n", state.Deadline.Format(time.RFC3339), remaining.Round(time.Minute))
 	fmt.Printf("  worktree: %s (branch %s)\n", state.WorktreePath, state.Branch)
 	if alive, pid := deep.CoordinatorAlive(paths.StateDir, state.SessionID); alive {
@@ -130,7 +131,7 @@ func runDeepStop(args []string) error {
 	}
 	switch state.Phase {
 	case deep.PhaseLanded, deep.PhaseStopped:
-		fmt.Printf("Deep Work %s already %s.\n", state.SessionID, state.Phase)
+		fmt.Printf("Deep Work %s already %s (mission outcome: %s).\n", state.SessionID, state.Phase, deep.DisplayMissionOutcome(state.MissionOutcome, state.Phase))
 		if state.HandoffPath != "" {
 			fmt.Printf("  handoff: %s\n", state.HandoffPath)
 		}

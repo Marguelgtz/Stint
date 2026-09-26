@@ -308,12 +308,17 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	}
 	verifyRequired := strings.TrimSpace(c.state.Verify) != ""
 	if verifyRequired {
-		if !landingEvidenceMatches(verificationSnapshot, c.state.LandingVerificationSubject, c.state.LandingVerificationBookkeeping) {
+		evidenceReusable := landingEvidenceMatches(verificationSnapshot, c.state.LandingVerificationSubject, c.state.LandingVerificationBookkeeping) &&
+			c.state.LandingVerificationOutcome.Recorded()
+		if !evidenceReusable {
 			// A legacy done bit has no subject provenance. Clear it durably before
-			// rerunning so a crash cannot make the old result look reusable.
-			if c.state.LandingVerifyDone || c.state.LandingVerificationSubject != nil || c.state.LandingVerificationBookkeeping != nil {
+			// rerunning so a crash cannot make the old result look reusable. A
+			// subject-bearing A2 result without a typed A3 outcome is also rerun:
+			// its prose summary is not canonical verifier state.
+			if c.state.LandingVerifyDone || c.state.LandingVerificationOutcome != deep.VerificationNotRun || c.state.LandingVerificationSubject != nil || c.state.LandingVerificationBookkeeping != nil {
 				c.state.LandingVerify = ""
 				c.state.LandingVerifyDone = false
+				c.state.LandingVerificationOutcome = deep.VerificationNotRun
 				c.state.LandingVerificationSubject = nil
 				c.state.LandingVerificationBookkeeping = nil
 				if err := c.save(); err != nil {
@@ -349,6 +354,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 			}
 			c.state.LandingVerify = summarizeLandingVerification(result)
 			c.state.LandingVerifyDone = true
+			c.state.LandingVerificationOutcome = result.Outcome
 			verifiedSubject := verificationSnapshot.Subject
 			c.state.LandingVerificationSubject = &verifiedSubject
 			c.state.LandingVerificationBookkeeping = landingVerificationBookkeeping(verificationSnapshot.Bookkeeping)
@@ -356,9 +362,10 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 				return fmt.Errorf("persist final verification result and subject: %w", err)
 			}
 		}
-	} else if !c.state.LandingVerifyDone || c.state.LandingVerify != "" || c.state.LandingVerificationSubject != nil || c.state.LandingVerificationBookkeeping != nil {
+	} else if !c.state.LandingVerifyDone || c.state.LandingVerify != "" || c.state.LandingVerificationOutcome != deep.VerificationNotRun || c.state.LandingVerificationSubject != nil || c.state.LandingVerificationBookkeeping != nil {
 		c.state.LandingVerify = ""
 		c.state.LandingVerifyDone = true
+		c.state.LandingVerificationOutcome = deep.VerificationNotRun
 		c.state.LandingVerificationSubject = nil
 		c.state.LandingVerificationBookkeeping = nil
 		if err := c.save(); err != nil {
@@ -389,10 +396,11 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 			return os.WriteFile(path, data, 0o644)
 		}
 	}
+	_, handoffIsBookkeeping := verificationSnapshot.Bookkeeping[deepWorktreeHandoff]
 	// Mirror the generated summary into the worktree only while the path is
 	// Stint-owned untracked bookkeeping. If it is already Git-visible, it is a
 	// product-tree input and landing must leave it untouched after verification.
-	if _, handoffIsBookkeeping := verificationSnapshot.Bookkeeping[deepWorktreeHandoff]; handoffIsBookkeeping {
+	if handoffIsBookkeeping {
 		if err := worktreeWrite(filepath.Join(c.state.WorktreePath, deepWorktreeHandoff), handoff); err != nil {
 			return fmt.Errorf("write worktree handoff: %w", err)
 		}
@@ -420,19 +428,48 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 		return fmt.Errorf("landing checkpoint SHA is empty")
 	}
 
+	priorLandingCommit := c.state.LandingCommit
+	priorLandingTree := c.state.LandingCheckpointTreeSHA
+	priorPhase := c.state.Phase
+	priorLandedAt := c.state.LandedAt
+	priorOutcome := c.state.MissionOutcome
+	priorHandoff := c.state.LandingHandoff
+	restoreLandingState := func() {
+		c.state.LandingCommit = priorLandingCommit
+		c.state.LandingCheckpointTreeSHA = priorLandingTree
+		c.state.Phase = priorPhase
+		c.state.LandedAt = priorLandedAt
+		c.state.MissionOutcome = priorOutcome
+		c.state.LandingHandoff = priorHandoff
+	}
 	c.state.LandingCommit = head
 	c.state.LandingCheckpointTreeSHA = checkpointTree
 	c.state.Phase = deep.PhaseLanded
 	c.state.LandedAt = &now
+	c.state.MissionOutcome = deep.DetermineMissionOutcome(*c.state)
+	c.state.LandingHandoff = updateHandoffLandingResult(c.state.LandingHandoff, c.state.MissionOutcome, reason)
+	if c.state.LandingHandoff != priorHandoff {
+		handoff = []byte(c.state.LandingHandoff)
+		if err := writeAtomicFile(handoffPath, handoff); err != nil {
+			restoreLandingState()
+			return fmt.Errorf("update durable handoff with mission outcome: %w", err)
+		}
+		if handoffIsBookkeeping {
+			if err := worktreeWrite(filepath.Join(c.state.WorktreePath, deepWorktreeHandoff), handoff); err != nil {
+				restoreLandingState()
+				return fmt.Errorf("update worktree handoff with mission outcome: %w", err)
+			}
+		}
+	}
 	if err := c.save(); err != nil {
-		c.state.Phase = deep.PhaseLanding
-		c.state.LandedAt = nil
+		restoreLandingState()
 		return fmt.Errorf("persist landed state and checkpoint SHA: %w", err)
 	}
 	c.incident(deep.IncidentLanded, "", fmt.Sprintf("%s (checkpoint %s)", reason, head))
 	c.logf("landed: %s", handoffPath)
 
-	fmt.Fprintf(c.out, "\nDeep Work landed (%s).\n", reason)
+	fmt.Fprintf(c.out, "\nDeep Work reached the landing boundary (%s).\n", reason)
+	fmt.Fprintf(c.out, "  mission outcome: %s\n", deep.DisplayMissionOutcome(c.state.MissionOutcome, c.state.Phase))
 	fmt.Fprintf(c.out, "  handoff:  %s\n", handoffPath)
 	fmt.Fprintf(c.out, "  worktree: %s (branch %s)\n", c.state.WorktreePath, c.state.Branch)
 	fmt.Fprintf(c.out, "  landing checkpoint: %s\n", head)
