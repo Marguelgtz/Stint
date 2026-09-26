@@ -131,14 +131,14 @@ func (g *gitRunner) worktreeReattach(repo, worktree, branch string) error {
 	return err
 }
 
-// commitAll checkpoints the worktree with an explicit coordinator marker.
-// --allow-empty keeps the accepted revision unambiguous when a worker already
-// committed its changes or verification legitimately accepts a no-op task.
+// commitAll records actual staged/worktree changes. Callers that need a
+// checkpoint without a repository change must reuse the current HEAD instead
+// of manufacturing an empty marker commit.
 func (g *gitRunner) commitAll(dir, message string) (string, error) {
 	if _, err := g.run(dir, "add", "-A"); err != nil {
 		return "", err
 	}
-	out, err := g.run(dir, "commit", "--allow-empty", "-m", message,
+	out, err := g.run(dir, "commit", "-m", message,
 		"--author", "Stint Deep Work <deep@stint.local>")
 	if err != nil {
 		return strings.TrimSpace(out), err

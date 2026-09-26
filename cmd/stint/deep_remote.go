@@ -312,13 +312,14 @@ func (g *remoteGit) worktreeReattach(repo, worktree, branch string) error {
 	return err
 }
 
-// commitAll checkpoints the on-box worktree with a distinct coordinator
-// marker, including when the worker already committed its changes.
+// commitAll records actual staged/worktree changes. Callers that need a
+// checkpoint without a repository change must reuse the current HEAD instead
+// of manufacturing an empty marker commit.
 func (g *remoteGit) commitAll(dir, message string) (string, error) {
 	if _, err := g.run(dir, "add", "-A"); err != nil {
 		return "", err
 	}
-	out, err := g.run(dir, "commit", "--allow-empty", "-m", message,
+	out, err := g.run(dir, "commit", "-m", message,
 		"--author", "Stint Deep Work <deep@stint.local>")
 	if err != nil {
 		return strings.TrimSpace(out), err

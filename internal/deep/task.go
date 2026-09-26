@@ -70,9 +70,16 @@ type Task struct {
 	TimeoutDecision      string     `json:"timeoutDecision,omitempty"`
 	Findings             []string   `json:"findings,omitempty"`
 	VerifiedAt           *time.Time `json:"verifiedAt,omitempty"`
-	// CheckpointCommit is the exact repository HEAD accepted by the
-	// coordinator for this task. The coordinator creates a distinct marker
-	// commit even when the worker already committed its own changes.
-	CheckpointCommit string `json:"checkpointCommit,omitempty"`
-	Source           string `json:"source,omitempty"`
+	// VerificationSubject records the product Git state exercised by the
+	// verifier. Stint-owned worktree bookkeeping is identified separately in
+	// VerificationBookkeeping and is never folded into the product tree by
+	// default.
+	VerificationSubject     *VerificationSubject `json:"verificationSubject,omitempty"`
+	VerificationBookkeeping map[string]string    `json:"verificationBookkeeping,omitempty"`
+	// CheckpointCommit and CheckpointTreeSHA identify the repository state
+	// accepted for this task. The commit may be an existing worker commit when
+	// it already represents the verified tree; no empty marker commit is needed.
+	CheckpointCommit  string `json:"checkpointCommit,omitempty"`
+	CheckpointTreeSHA string `json:"checkpointTreeSha,omitempty"`
+	Source            string `json:"source,omitempty"`
 }

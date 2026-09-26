@@ -168,6 +168,13 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	t.ConfiguredTimeoutSec = int(c.taskTimeout.Seconds())
 	t.EffectiveTimeoutSec = int(effectiveTimeout.Seconds())
 	t.TimeoutDecision = timeoutDecision
+	// Evidence from an earlier attempt must never be reused by a new
+	// verification/checkpoint cycle.
+	t.VerificationSubject = nil
+	t.VerificationBookkeeping = nil
+	t.CheckpointCommit = ""
+	t.CheckpointTreeSHA = ""
+	t.VerifiedAt = nil
 	if err := c.save(); err != nil {
 		return fmt.Errorf("persist active task %s before invoking Hermes: %w", t.ID, err)
 	}
@@ -183,6 +190,18 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		c.incident(deep.IncidentExecutorError, t.ID, execErr.Error())
 	}
 	c.logf("task %s attempt %d result: %s", t.ID, t.Attempts, res.summary())
+	// Capture the exact Git-visible worktree state after the executor returns
+	// and immediately before verification. Stint bookkeeping that is not
+	// already tracked or staged is fingerprinted separately from the product
+	// tree by the Git backend.
+	subject, subjectErr := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+	if subjectErr != nil {
+		c.logf("task %s: capture verification subject: %v", t.ID, subjectErr)
+		c.incident(deep.IncidentCheckpointFail, t.ID, "could not capture verification subject: "+subjectErr.Error())
+	} else {
+		t.VerificationSubject = &subject.Subject
+		t.VerificationBookkeeping = subject.Bookkeeping
+	}
 
 	verifyResult, verifyCmd := c.accept(ctx, t)
 	if verifyCmd != "" {
@@ -202,37 +221,51 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 
 	switch {
 	case executionSucceeded && verifyResult.Passed():
-		if msg, err := c.git.commitAll(c.state.WorktreePath, fmt.Sprintf("deep: %s %s verified", c.state.SessionID, t.ID)); err != nil {
-			c.logf("checkpoint commit for %s: %v (%s)", t.ID, err, msg)
-			c.incident(deep.IncidentCheckpointFail, t.ID, "checkpoint commit failed: "+err.Error())
+		if subjectErr != nil {
 			t.Status = deep.StatusNeedsHuman
-			t.Blocker = "independent verification passed, but checkpoint commit failed: " + err.Error()
+			t.Blocker = "verification passed, but the exact repository subject could not be captured: " + subjectErr.Error()
+			if saveErr := c.save(); saveErr != nil {
+				return fmt.Errorf("persist missing verification subject for task %s: %w", t.ID, saveErr)
+			}
+			return fmt.Errorf("verification subject unavailable for task %s: %w", t.ID, subjectErr)
+		}
+		currentSubject, err := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+		if err == nil && !sameVerificationSnapshot(subject, currentSubject) {
+			err = fmt.Errorf("repository changed after verification; verified subject %s/%s no longer matches %s/%s", subject.Subject.HeadCommit, subject.Subject.TreeSHA, currentSubject.Subject.HeadCommit, currentSubject.Subject.TreeSHA)
+		}
+		if err != nil {
+			t.Status = deep.StatusNeedsHuman
+			t.Blocker = "verification evidence was invalidated before checkpoint creation: " + err.Error()
+			c.incident(deep.IncidentCheckpointFail, t.ID, t.Blocker)
+			if saveErr := c.save(); saveErr != nil {
+				return fmt.Errorf("persist invalidated verification for task %s: %w", t.ID, saveErr)
+			}
+			return fmt.Errorf("verification subject changed for task %s: %w", t.ID, err)
+		}
+		head, tree, err := c.git.checkpointSubject(c.state.WorktreePath, taskCheckpointMessage(*t), subject)
+		if err != nil {
+			c.logf("checkpoint for %s failed: %v", t.ID, err)
+			c.incident(deep.IncidentCheckpointFail, t.ID, "verified subject could not be checkpointed exactly: "+err.Error())
+			t.Status = deep.StatusNeedsHuman
+			t.Blocker = "verification passed, but an exact-state checkpoint could not be created: " + err.Error()
 			if saveErr := c.save(); saveErr != nil {
 				return fmt.Errorf("persist checkpoint failure for task %s: %w", t.ID, saveErr)
 			}
-			return fmt.Errorf("checkpoint commit failed for task %s: %w", t.ID, err)
-		} else if head, err := c.git.headCommit(c.state.WorktreePath); err != nil {
-			c.logf("checkpoint HEAD for %s: %v", t.ID, err)
-			c.incident(deep.IncidentCheckpointFail, t.ID, "read checkpoint HEAD failed: "+err.Error())
-			t.Status = deep.StatusNeedsHuman
-			t.Blocker = "independent verification passed, but checkpoint identity could not be read: " + err.Error()
-			if saveErr := c.save(); saveErr != nil {
-				return fmt.Errorf("persist missing-checkpoint state for task %s: %w", t.ID, saveErr)
-			}
-			return fmt.Errorf("checkpoint HEAD unavailable for task %s: %w", t.ID, err)
+			return fmt.Errorf("exact-state checkpoint failed for task %s: %w", t.ID, err)
 		} else {
-			head = strings.TrimSpace(head)
-			if head == "" {
-				err := fmt.Errorf("git returned an empty checkpoint HEAD")
+			head, tree = strings.TrimSpace(head), strings.TrimSpace(tree)
+			if head == "" || tree == "" || tree != subject.Subject.TreeSHA {
+				err := fmt.Errorf("checkpoint identity does not match verified tree")
 				t.Status = deep.StatusNeedsHuman
-				t.Blocker = "independent verification passed, but checkpoint identity is empty"
+				t.Blocker = "verification passed, but checkpoint identity does not match its subject"
 				c.incident(deep.IncidentCheckpointFail, t.ID, err.Error())
 				if saveErr := c.save(); saveErr != nil {
-					return fmt.Errorf("persist empty-checkpoint state for task %s: %w", t.ID, saveErr)
+					return fmt.Errorf("persist invalid-checkpoint state for task %s: %w", t.ID, saveErr)
 				}
 				return fmt.Errorf("checkpoint identity unavailable for task %s", t.ID)
 			}
 			t.CheckpointCommit = head
+			t.CheckpointTreeSHA = tree
 			ts := c.now()
 			t.Status = deep.StatusVerified
 			t.VerifiedAt = &ts

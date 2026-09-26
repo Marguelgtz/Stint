@@ -210,10 +210,10 @@ func TestDeepLoopContinuation(t *testing.T) {
 	}
 }
 
-// A worker may commit its own verified changes before returning. The coordinator
-// must add a distinct acceptance marker and record that exact SHA so every task
-// can become one unambiguous layer in the on-box PR stack.
-func TestVerifiedTaskRecordsCoordinatorCheckpointAfterWorkerCommit(t *testing.T) {
+// A worker may commit its own verified changes before returning. When that
+// commit already represents the exact verified tree, the task checkpoint
+// reuses it instead of creating an empty coordinator marker.
+func TestVerifiedTaskReusesWorkerCommitWhenTreeMatches(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
 	env.state.Tasks = env.state.Tasks[:1]
 	var workerHead string
@@ -238,8 +238,8 @@ func TestVerifiedTaskRecordsCoordinatorCheckpointAfterWorkerCommit(t *testing.T)
 		t.Fatalf("run: %v", err)
 	}
 	checkpoint := env.state.Tasks[0].CheckpointCommit
-	if checkpoint == "" || checkpoint == workerHead {
-		t.Fatalf("checkpointCommit = %q, want a coordinator commit after worker HEAD %q", checkpoint, workerHead)
+	if checkpoint == "" || checkpoint != workerHead {
+		t.Fatalf("checkpointCommit = %q, want existing worker HEAD %q", checkpoint, workerHead)
 	}
 	persisted, err := deep.LoadState(env.coord.stateDir, env.state.SessionID)
 	if err != nil {
@@ -248,15 +248,20 @@ func TestVerifiedTaskRecordsCoordinatorCheckpointAfterWorkerCommit(t *testing.T)
 	if got := persisted.Tasks[0].CheckpointCommit; got != checkpoint {
 		t.Fatalf("persisted checkpointCommit = %q, want %q", got, checkpoint)
 	}
-	cmd := exec.Command("git", "show", "-s", "--format=%P%x00%s", checkpoint)
+	if persisted.Tasks[0].VerificationSubject == nil {
+		t.Fatal("persisted task has no verification subject")
+	}
+	if persisted.Tasks[0].CheckpointTreeSHA == "" || persisted.Tasks[0].CheckpointTreeSHA != persisted.Tasks[0].VerificationSubject.TreeSHA {
+		t.Fatalf("checkpoint tree %q does not match verification subject %+v", persisted.Tasks[0].CheckpointTreeSHA, persisted.Tasks[0].VerificationSubject)
+	}
+	cmd := exec.Command("git", "rev-parse", checkpoint+"^{tree}")
 	cmd.Dir = env.wt
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("inspect checkpoint commit: %v (%s)", err, out)
+		t.Fatalf("inspect checkpoint tree: %v (%s)", err, out)
 	}
-	parts := strings.SplitN(strings.TrimSpace(string(out)), "\x00", 2)
-	if len(parts) != 2 || parts[0] != workerHead || parts[1] != "deep: "+env.state.SessionID+" T-001 verified" {
-		t.Fatalf("checkpoint marker = %q, want parent %s and coordinator subject", strings.TrimSpace(string(out)), workerHead)
+	if got := strings.TrimSpace(string(out)); got != persisted.Tasks[0].VerificationSubject.TreeSHA {
+		t.Fatalf("checkpoint tree = %q, want verified tree %q", got, persisted.Tasks[0].VerificationSubject.TreeSHA)
 	}
 	finalHead, err := env.coord.git.headCommit(env.wt)
 	if err != nil {
@@ -558,7 +563,9 @@ type failingCommitGit struct {
 	err error
 }
 
-func (g failingCommitGit) commitAll(string, string) (string, error) { return "", g.err }
+func (g failingCommitGit) checkpointSubject(string, string, verificationSnapshot) (string, string, error) {
+	return "", "", g.err
+}
 
 func TestDeepLoopDoesNotVerifyTaskWhenCheckpointFails(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
