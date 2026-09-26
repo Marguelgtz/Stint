@@ -45,13 +45,13 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 	// Remote Hermes uses SSH; on-box Hermes uses local subprocesses on the
 	// compute instance. Both share the same coordinator state machine.
 	var exec executor
-	verifyFn := func(ctx context.Context, command, workdir string) (string, bool, error) {
+	verifyFn := func(ctx context.Context, command, workdir string) verificationResult {
 		return runVerifyCmd(ctx, command, workdir)
 	}
 	switch cfg.worker {
 	case workerHermes:
 		exec = newHermesExecutor(cfg.remote)
-		verifyFn = func(ctx context.Context, command, workdir string) (string, bool, error) {
+		verifyFn = func(ctx context.Context, command, workdir string) verificationResult {
 			return runVerifyCmdRemote(ctx, cfg.remote, command, workdir)
 		}
 	case workerHermesOnBox:
@@ -79,7 +79,7 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 	}
 	if cfg.worker == workerHermes {
 		// The mission-level check at landing runs in the on-box worktree.
-		coord.finalVerify = func(ctx context.Context, command string) (string, bool, error) {
+		coord.finalVerify = func(ctx context.Context, command string) verificationResult {
 			return runVerifyCmdRemote(ctx, cfg.remote, command, state.WorktreePath)
 		}
 		// The worktree handoff file must be written on the box too, so the

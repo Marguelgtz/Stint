@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,7 +30,7 @@ func (f *fakeRemote) run(ctx context.Context, cmd string) (string, error) {
 		// The on-box Hermes run: agent text, then the exit-code marker.
 		return "worker: wrote the S0 spec and fixtures\n" + hermesExitMarker + "0", nil
 	case strings.Contains(cmd, "sh -c 'true'"):
-		return "PASS\n", nil
+		return "PASS\n" + verifyExitMarker + "0\n", nil
 	case strings.Contains(cmd, "rev-parse HEAD"):
 		return "base123\n", nil
 	case strings.Contains(cmd, "status --porcelain"):
@@ -240,22 +241,98 @@ func TestLocalHermesExecutorFailure(t *testing.T) {
 
 func TestRunVerifyCmdRemote(t *testing.T) {
 	fr := &fakeRemote{}
-	out, ok, err := runVerifyCmdRemote(context.Background(), fr.run, "true", "/root/repo/.stint-deep/x")
-	if err != nil {
-		t.Fatalf("verify: %v", err)
+	passed := runVerifyCmdRemote(context.Background(), fr.run, "true", "/root/repo/.stint-deep/x")
+	if !passed.Passed() || passed.ExitCode != 0 || !strings.Contains(passed.Output, "PASS") {
+		t.Errorf("verify of `true` result = %+v", passed)
 	}
-	if !ok {
-		t.Errorf("verify of `true` reported fail (out=%q)", out)
-	}
-	if len(fr.calls) != 1 || !strings.HasPrefix(fr.calls[0], "cd '/root/repo/.stint-deep/x' && sh -c 'true'") {
+	if len(fr.calls) != 1 || !strings.HasPrefix(fr.calls[0], "cd '/root/repo/.stint-deep/x' ||") || !strings.Contains(fr.calls[0], "sh -c 'true'") {
 		t.Errorf("unexpected remote verify line: %q", fr.calls)
 	}
-	// A failing verify (exit non-zero) must be reported as fail.
-	frailing := func(ctx context.Context, cmd string) (string, error) {
-		return "boom", errors.New("command exited 1")
+	// A failing verifier keeps its process exit distinct from SSH transport.
+	failing := func(ctx context.Context, cmd string) (string, error) {
+		return "boom\n" + verifyExitMarker + "7\n", nil
 	}
-	if _, ok, _ := runVerifyCmdRemote(context.Background(), frailing, "bash scripts/verify-cp1", "/wt"); ok {
-		t.Errorf("a failing verify command was reported as passing")
+	failed := runVerifyCmdRemote(context.Background(), failing, "bash scripts/verify-cp1", "/wt")
+	if failed.Outcome != verificationFailed || !failed.HasExitCode || failed.ExitCode != 7 || !strings.Contains(failed.Output, "boom") {
+		t.Errorf("nonzero verifier result = %+v, want failed exit 7 with output", failed)
+	}
+	transport := func(ctx context.Context, cmd string) (string, error) {
+		return "ssh disconnected", errors.New("connection lost")
+	}
+	transportResult := runVerifyCmdRemote(context.Background(), transport, "true", "/wt")
+	if transportResult.Outcome != verificationExecutionErr || !strings.Contains(transportResult.Error, "connection lost") {
+		t.Errorf("transport result = %+v, want execution_error", transportResult)
+	}
+	markerPlusTransportError := func(ctx context.Context, cmd string) (string, error) {
+		return "verifier output\n" + verifyExitMarker + "0\n", errors.New("connection lost after output")
+	}
+	masked := runVerifyCmdRemote(context.Background(), markerPlusTransportError, "true", "/wt")
+	if masked.Outcome != verificationExecutionErr || masked.Passed() {
+		t.Errorf("transport error was masked by exit marker: %+v", masked)
+	}
+	before := len(fr.calls)
+	invalid := runVerifyCmdRemote(context.Background(), fr.run, "`echo wrapped`", "/wt")
+	if invalid.Outcome != verificationInvalid || len(fr.calls) != before {
+		t.Errorf("invalid remote command result = %+v; remote calls %d => %d", invalid, before, len(fr.calls))
+	}
+	realRemote := func(ctx context.Context, command string) (string, error) {
+		out, err := exec.CommandContext(ctx, "sh", "-c", command).CombinedOutput()
+		return string(out), err
+	}
+	realFailure := runVerifyCmdRemote(context.Background(), realRemote, "printf remote-output; exit 7", t.TempDir())
+	if realFailure.Outcome != verificationFailed || !realFailure.HasExitCode || realFailure.ExitCode != 7 || !strings.Contains(realFailure.Output, "remote-output") {
+		t.Errorf("executed remote wrapper result = %+v, want command exit 7 and output", realFailure)
+	}
+	markerOutput := runVerifyCmdRemote(context.Background(), realRemote, "printf '%s\\n' '__STINT_VERIFY_SETUP__=42'; true", t.TempDir())
+	if !markerOutput.Passed() || !strings.Contains(markerOutput.Output, verifySetupMarker+"42") {
+		t.Errorf("verifier output collided with setup marker framing: %+v", markerOutput)
+	}
+	setupFailure := runVerifyCmdRemote(context.Background(), realRemote, "true", filepath.Join(t.TempDir(), "missing-worktree"))
+	if setupFailure.Outcome != verificationExecutionErr || !strings.Contains(setupFailure.Error, "could not enter verifier worktree") {
+		t.Errorf("remote worktree setup result = %+v, want execution_error", setupFailure)
+	}
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	remoteTimeout := runVerifyCmdRemote(timeoutCtx, func(ctx context.Context, _ string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}, "true", "/wt")
+	if remoteTimeout.Outcome != verificationTimedOut {
+		t.Errorf("remote timeout result = %+v, want timed_out", remoteTimeout)
+	}
+}
+
+func TestTakeTrailingVerifierMarkerRejectsEmbeddedFrame(t *testing.T) {
+	output := "ordinary output\n" + verifyExitMarker + "0\ntrailing verifier output\n"
+	if _, _, ok := takeTrailingVerifierMarker(output, verifyExitMarker); ok {
+		t.Fatalf("accepted non-trailing verifier marker in %q", output)
+	}
+	code, body, ok := takeTrailingVerifierMarker("ordinary output\n"+verifyExitMarker+"7\n", verifyExitMarker)
+	if !ok || code != 7 || body != "ordinary output" {
+		t.Fatalf("trailing marker = (%d, %q, %t), want (7, ordinary output, true)", code, body, ok)
+	}
+}
+
+func TestVerifyCommandValidationIsSeparateFromRuntimePreflight(t *testing.T) {
+	mission := deep.Mission{Verify: "`pnpm test`", Tasks: []deep.Task{{ID: "T-17", Verify: "test -f result.txt"}}}
+	if err := validateMissionVerifyCommands(mission); err == nil || !strings.Contains(err.Error(), "mission verification command is invalid") {
+		t.Fatalf("pure command validation error = %v, want attributable invalid mission command", err)
+	}
+	remoteCalls := 0
+	err := preflightRemoteVerifyTools(deep.Mission{Verify: "go test ./..."}, func(context.Context, string) (string, error) {
+		remoteCalls++
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("runtime preflight unexpectedly failed: %v", err)
+	}
+	if remoteCalls != 1 {
+		t.Fatalf("remote availability preflight calls = %d, want one independent tool lookup", remoteCalls)
+	}
+
+	taskMission := deep.Mission{Tasks: []deep.Task{{ID: "T-17", Verify: "```pnpm test```"}}}
+	if err := validateMissionVerifyCommands(taskMission); err == nil || !strings.Contains(err.Error(), "task T-17") {
+		t.Fatalf("task preflight error = %v, want task attribution", err)
 	}
 }
 
@@ -286,7 +363,7 @@ func TestDeepLoopRemoteHermesEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePtr := &state
-	remoteVerify := func(ctx context.Context, command, workdir string) (string, bool, error) {
+	remoteVerify := func(ctx context.Context, command, workdir string) verificationResult {
 		return runVerifyCmdRemote(ctx, fr.run, command, workdir)
 	}
 	coord := &deepCoordinator{
@@ -297,7 +374,7 @@ func TestDeepLoopRemoteHermesEndToEnd(t *testing.T) {
 		now:         func() time.Time { return time.Date(2026, 9, 3, 16, 0, 0, 0, time.UTC) },
 		taskTimeout: time.Minute,
 		verify:      remoteVerify,
-		finalVerify: func(ctx context.Context, command string) (string, bool, error) {
+		finalVerify: func(ctx context.Context, command string) verificationResult {
 			return runVerifyCmdRemote(ctx, fr.run, command, state.WorktreePath)
 		},
 		worktreeWrite: func(path string, data []byte) error {

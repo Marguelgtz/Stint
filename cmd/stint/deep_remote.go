@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
+	"github.com/Marguelgtz/Stint/internal/deep"
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
@@ -171,18 +173,103 @@ func (g *remoteGit) commitAll(dir, message string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// runVerifyCmdRemote runs the verification command on the box in the on-box
-// worktree with the same 3-minute bound as the local variant and returns its
-// combined output tail and pass/fail (command exit 0).
-func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir string) (string, bool, error) {
+const (
+	verifyExitMarker  = "__STINT_VERIFY_EXIT__="
+	verifySetupMarker = "__STINT_VERIFY_SETUP__="
+)
+
+// runVerifyCmdRemote executes the same validated raw shell command as the
+// local verifier and transports its exit status separately from SSH status.
+func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir string) verificationResult {
+	started := time.Now().UTC()
+	if err := deep.ValidateVerifyCommand(command); err != nil {
+		return verificationResult{Command: command, Outcome: verificationInvalid, StartedAt: started, CompletedAt: time.Now().UTC(), Error: err.Error()}
+	}
 	vctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	line := fmt.Sprintf("cd %s && sh -c %s", shellQuote(workdir), shellQuote(command))
+	line := fmt.Sprintf("cd %s || { status=$?; printf '\\n%s%%s\\n' \"$status\"; exit 0; }; if sh -c %s; then status=0; else status=$?; fi; printf '\\n%s%%s\\n' \"$status\"; exit 0",
+		shellQuote(workdir), verifySetupMarker, shellQuote(command), verifyExitMarker)
 	out, err := remote(vctx, line)
-	if len(out) > 4000 {
-		out = out[len(out)-4000:]
+	result := verificationResult{Command: command, StartedAt: started, CompletedAt: time.Now().UTC()}
+	if err != nil {
+		result.Output = truncateVerifierOutput(out)
+		if errors.Is(vctx.Err(), context.DeadlineExceeded) {
+			result.Outcome = verificationTimedOut
+			result.Error = vctx.Err().Error()
+		} else if errors.Is(vctx.Err(), context.Canceled) {
+			result.Outcome = verificationCanceled
+			result.Error = vctx.Err().Error()
+		} else {
+			result.Outcome = verificationExecutionErr
+			result.Error = "remote verification transport failed: " + err.Error()
+		}
+		return result
 	}
-	return out, err == nil, nil
+	if exitCode, body, ok := takeTrailingVerifierMarker(out, verifyExitMarker); ok {
+		result.Output = truncateVerifierOutput(body)
+		result.ExitCode = exitCode
+		result.HasExitCode = true
+		if result.ExitCode == 0 {
+			result.Outcome = verificationPassed
+		} else {
+			result.Outcome = verificationFailed
+		}
+		return result
+	}
+	if setupCode, body, ok := takeTrailingVerifierMarker(out, verifySetupMarker); ok {
+		result.Outcome = verificationExecutionErr
+		result.Error = fmt.Sprintf("could not enter verifier worktree (cd exit %d)", setupCode)
+		result.Output = truncateVerifierOutput(body)
+		return result
+	}
+	result.Output = truncateVerifierOutput(out)
+	if errors.Is(vctx.Err(), context.DeadlineExceeded) {
+		result.Outcome = verificationTimedOut
+		result.Error = vctx.Err().Error()
+	} else if errors.Is(vctx.Err(), context.Canceled) {
+		result.Outcome = verificationCanceled
+		result.Error = vctx.Err().Error()
+	} else {
+		result.Outcome = verificationExecutionErr
+		result.Error = "remote verification returned no trailing exit marker"
+	}
+	return result
+}
+
+// takeTrailingVerifierMarker accepts only the wrapper's final complete output
+// line. A verifier can print marker-like text earlier in its output without
+// overriding the wrapper's appended status; trailing background output fails
+// closed because it obscures the status boundary.
+func takeTrailingVerifierMarker(output, marker string) (code int, body string, found bool) {
+	trimmed := strings.TrimSuffix(output, "\n")
+	trimmed = strings.TrimSuffix(trimmed, "\r")
+	lineStart := strings.LastIndexByte(trimmed, '\n') + 1
+	line := strings.TrimSuffix(trimmed[lineStart:], "\r")
+	if !strings.HasPrefix(line, marker) {
+		return 0, output, false
+	}
+	rawCode := strings.TrimPrefix(line, marker)
+	if rawCode == "" {
+		return 0, output, false
+	}
+	for _, digit := range rawCode {
+		if digit < '0' || digit > '9' {
+			return 0, output, false
+		}
+	}
+	parsed, err := strconv.Atoi(rawCode)
+	if err != nil || parsed > 255 {
+		return 0, output, false
+	}
+	body = strings.TrimRight(output[:lineStart], "\r\n")
+	return parsed, body, true
+}
+
+func truncateVerifierOutput(out string) string {
+	if len(out) > 4000 {
+		return out[len(out)-4000:]
+	}
+	return out
 }
 
 // hermesExitMarker delimits the Hermes invocation's exit code in the remote

@@ -401,11 +401,30 @@ func TestDeepLoopStopsOnExternalLanding(t *testing.T) {
 
 func TestRunVerifyCmd(t *testing.T) {
 	dir := t.TempDir()
-	if out, ok, err := runVerifyCmd(context.Background(), "echo verified", dir); err != nil || !ok || !strings.Contains(out, "verified") {
-		t.Errorf("pass case: ok=%v err=%v out=%q", ok, err, out)
+	passed := runVerifyCmd(context.Background(), "echo verified", dir)
+	if !passed.Passed() || !strings.Contains(passed.Output, "verified") || !passed.HasExitCode || passed.ExitCode != 0 {
+		t.Errorf("pass case: result=%+v", passed)
 	}
-	if _, ok, _ := runVerifyCmd(context.Background(), "exit 3", dir); ok {
-		t.Errorf("exit 3 reported as passing")
+	failed := runVerifyCmd(context.Background(), "exit 3", dir)
+	if failed.Outcome != verificationFailed || !failed.HasExitCode || failed.ExitCode != 3 {
+		t.Errorf("exit 3 result = %+v, want failed with exit 3", failed)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	timedOut := runVerifyCmd(ctx, "sleep 1", dir)
+	if timedOut.Outcome != verificationTimedOut {
+		t.Errorf("timeout result = %+v, want timed_out", timedOut)
+	}
+	launchFailure := runVerifyCmd(context.Background(), "true", filepath.Join(dir, "missing-worktree"))
+	if launchFailure.Outcome != verificationExecutionErr || launchFailure.Error == "" {
+		t.Errorf("shell launch failure result = %+v, want execution_error with cause", launchFailure)
+	}
+	invalid := runVerifyCmd(context.Background(), "`touch sentinel`", dir)
+	if invalid.Outcome != verificationInvalid {
+		t.Errorf("Markdown-wrapped command result = %+v, want invalid_command", invalid)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sentinel")); !os.IsNotExist(err) {
+		t.Errorf("invalid command executed before rejection; sentinel stat error = %v", err)
 	}
 }
 
@@ -451,9 +470,9 @@ func TestDeepLandingSilentVerifyReported(t *testing.T) {
 func TestDeepLandingResumesAfterWorktreeHandoffFailure(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
 	verifyCalls := 0
-	env.coord.finalVerify = func(context.Context, string) (string, bool, error) {
+	env.coord.finalVerify = func(context.Context, string) verificationResult {
 		verifyCalls++
-		return "checks passed", true, nil
+		return verificationResult{Outcome: verificationPassed, Output: "checks passed"}
 	}
 	env.coord.worktreeWrite = func(string, []byte) error { return errors.New("box write failed") }
 	if err := env.coord.land(context.Background(), "test landing"); err == nil {
@@ -612,11 +631,11 @@ func TestDeepLoopPerTaskVerifyOverridesMissionVerify(t *testing.T) {
 	if err := env.state.SaveDir(env.coord.stateDir); err != nil {
 		t.Fatal(err)
 	}
-	env.coord.verify = func(_ context.Context, command, _ string) (string, bool, error) {
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
 		if strings.Contains(command, "scoped") {
-			return "task check ok", true, nil
+			return verificationResult{Command: command, Outcome: verificationPassed, Output: "task check ok"}
 		}
-		return "", false, nil
+		return verificationResult{Command: command, Outcome: verificationFailed}
 	}
 	if err := env.coord.run(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
@@ -647,11 +666,11 @@ func TestDeepLoopPerTaskVerifyWithoutMissionVerify(t *testing.T) {
 	if err := env.state.SaveDir(env.coord.stateDir); err != nil {
 		t.Fatal(err)
 	}
-	env.coord.verify = func(_ context.Context, command, _ string) (string, bool, error) {
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
 		if strings.Contains(command, "scoped") {
-			return "task check ok", true, nil
+			return verificationResult{Command: command, Outcome: verificationPassed, Output: "task check ok"}
 		}
-		return "", false, nil
+		return verificationResult{Command: command, Outcome: verificationFailed}
 	}
 	if err := env.coord.run(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
@@ -684,8 +703,8 @@ func TestDeepLoopRecordsIncidents(t *testing.T) {
 	if err := env.state.SaveDir(env.coord.stateDir); err != nil {
 		t.Fatal(err)
 	}
-	env.coord.verify = func(_ context.Context, command, _ string) (string, bool, error) {
-		return "", true, nil
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
+		return verificationResult{Command: command, Outcome: verificationPassed}
 	}
 	if err := env.coord.run(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
@@ -712,7 +731,7 @@ func TestDeepLoopRecordsIncidents(t *testing.T) {
 		t.Error("no landed incident: the session end must be recorded")
 	}
 	for _, d := range verifyDetails {
-		if !strings.Contains(d, "command=`true`") || !strings.Contains(d, "result=pass") {
+		if !strings.Contains(d, "command=`true`") || !strings.Contains(d, "outcome=passed") {
 			t.Errorf("verify incident does not name the command and result: %q", d)
 		}
 	}
@@ -731,9 +750,9 @@ func TestDeepLoopVerifyBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.coord.verifyTimeout = 30 * time.Millisecond
-	env.coord.verify = func(ctx context.Context, command, _ string) (string, bool, error) {
+	env.coord.verify = func(ctx context.Context, command, _ string) verificationResult {
 		<-ctx.Done() // emulate a hung command killed by the bound
-		return "", false, nil
+		return verificationResult{Command: command, Outcome: verificationTimedOut, Error: ctx.Err().Error()}
 	}
 	if err := env.coord.run(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
@@ -747,7 +766,7 @@ func TestDeepLoopVerifyBounded(t *testing.T) {
 	}
 	fails := 0
 	for _, in := range incs {
-		if in.Kind == deep.IncidentVerifyRun && (strings.Contains(in.Detail, "result=fail") || strings.Contains(in.Detail, "result=error:")) {
+		if in.Kind == deep.IncidentVerifyRun && (strings.Contains(in.Detail, "outcome=failed") || strings.Contains(in.Detail, "outcome=timed_out") || strings.Contains(in.Detail, "outcome=execution_error")) {
 			fails++
 		}
 	}

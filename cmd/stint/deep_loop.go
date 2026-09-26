@@ -33,11 +33,11 @@ type deepCoordinator struct {
 	verifyTimeout time.Duration
 	// verify runs one verification command in the worktree; the coordinator
 	// decides which command (the task's own, else the mission's) to hand it.
-	verify func(ctx context.Context, command, workdir string) (string, bool, error)
+	verify func(ctx context.Context, command, workdir string) verificationResult
 	// finalVerify runs the mission-level command at landing; it may differ
 	// from verify when the worktree is remote (on the compute box). Nil
 	// skips the landing check.
-	finalVerify func(ctx context.Context, command string) (string, bool, error)
+	finalVerify func(ctx context.Context, command string) verificationResult
 	// worktreeWrite writes a file into the session worktree. It differs
 	// when the worktree is remote (on the compute box): the landing
 	// handoff write must reach the box, not the operator's machine. Nil
@@ -184,15 +184,9 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	}
 	c.logf("task %s attempt %d result: %s", t.ID, t.Attempts, res.summary())
 
-	verified, verifyOut, verifyCmd, verifyErr := c.accept(ctx, t)
+	verifyResult, verifyCmd := c.accept(ctx, t)
 	if verifyCmd != "" {
-		if verifyErr != nil {
-			c.incident(deep.IncidentVerifyRun, t.ID, "command=`"+verifyCmd+"` result=error: "+verifyErr.Error())
-		} else if verified {
-			c.incident(deep.IncidentVerifyRun, t.ID, "command=`"+verifyCmd+"` result=pass")
-		} else {
-			c.incident(deep.IncidentVerifyRun, t.ID, "command=`"+verifyCmd+"` result=fail")
-		}
+		c.incident(deep.IncidentVerifyRun, t.ID, verifyResult.IncidentDetail())
 	}
 	t.LastResult = res.summary()
 	t.ExecutionError = ""
@@ -201,23 +195,13 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		t.LastResult += " | executor error: " + execErr.Error()
 	}
 	t.VerificationCommand = verifyCmd
-	t.VerificationOutput = strings.TrimSpace(tailLine(verifyOut, 3))
-	t.VerificationResult = "not run"
-	if verifyCmd != "" {
-		switch {
-		case verifyErr != nil:
-			t.VerificationResult = "error: " + verifyErr.Error()
-		case verified:
-			t.VerificationResult = "repository verification passed"
-		default:
-			t.VerificationResult = "repository verification failed"
-		}
-	}
+	t.VerificationOutput = strings.TrimSpace(tailLine(verifyResult.Output, 3))
+	t.VerificationResult = verifyResult.Summary()
 
 	executionSucceeded := execErr == nil && res.completed && res.exitCode == 0
 
 	switch {
-	case executionSucceeded && verified:
+	case executionSucceeded && verifyResult.Passed():
 		if msg, err := c.git.commitAll(c.state.WorktreePath, fmt.Sprintf("deep: %s %s verified", c.state.SessionID, t.ID)); err != nil {
 			c.logf("checkpoint commit for %s: %v (%s)", t.ID, err, msg)
 			c.incident(deep.IncidentCheckpointFail, t.ID, "checkpoint commit failed: "+err.Error())
@@ -266,7 +250,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	default:
 		t.Status = deep.StatusBlocked
 		if t.Blocker == "" {
-			t.Blocker = blockReason(res, execErr, verified, verifyOut, verifyErr)
+			t.Blocker = blockReason(res, execErr, verifyResult)
 		}
 		c.logf("task %s BLOCKED: %s", t.ID, t.Blocker)
 	}
@@ -296,13 +280,13 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 // unverified. The verification run is bounded: a hung command must not
 // stall the coordinator. It returns the command it used so the caller can
 // record it in the incident log.
-func (c *deepCoordinator) accept(ctx context.Context, t *deep.Task) (bool, string, string, error) {
+func (c *deepCoordinator) accept(ctx context.Context, t *deep.Task) (verificationResult, string) {
 	command := t.Verify
 	if command == "" {
 		command = c.state.Verify
 	}
 	if command == "" {
-		return false, "", "", nil
+		return verificationResult{Outcome: verificationNotRun}, ""
 	}
 	bound := c.verifyTimeout
 	if bound <= 0 {
@@ -310,28 +294,34 @@ func (c *deepCoordinator) accept(ctx context.Context, t *deep.Task) (bool, strin
 	}
 	vctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
-	out, ok, err := c.verify(vctx, command, c.state.WorktreePath)
-	if err == nil && vctx.Err() != nil {
-		err = vctx.Err()
+	result := c.verify(vctx, command, c.state.WorktreePath)
+	if vctx.Err() != nil && result.Outcome != verificationInvalid {
+		if vctx.Err() == context.DeadlineExceeded {
+			result.Outcome = verificationTimedOut
+		} else {
+			result.Outcome = verificationCanceled
+		}
+		result.Error = vctx.Err().Error()
+		result.CompletedAt = time.Now().UTC()
 	}
-	return ok && err == nil, out, command, err
+	return result, command
 }
 
-func blockReason(res execResult, execErr error, verified bool, verifyOut string, verifyErr error) string {
+func blockReason(res execResult, execErr error, verification verificationResult) string {
 	if execErr != nil {
 		return "executor failed: " + execErr.Error()
 	}
 	if !res.completed || res.exitCode != 0 {
 		return fmt.Sprintf("executor did not complete successfully (exit %d): %s", res.exitCode, tailLine(res.stderrTail, 2))
 	}
-	if verifyErr != nil {
-		return "verification could not complete: " + verifyErr.Error()
-	}
-	if !verified {
-		if verifyOut != "" {
-			return "verification failed: " + strings.TrimSpace(tailLine(verifyOut, 2))
+	if !verification.Passed() {
+		if verification.Error != "" {
+			return verification.Summary()
 		}
-		return "verification did not pass"
+		if verification.Output != "" {
+			return verification.Summary() + ": " + strings.TrimSpace(tailLine(verification.Output, 2))
+		}
+		return verification.Summary()
 	}
 	if res.exitCode != 0 {
 		return fmt.Sprintf("invocation failed (exit %d): %s", res.exitCode, tailLine(res.stderrTail, 2))

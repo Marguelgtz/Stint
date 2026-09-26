@@ -170,6 +170,13 @@ func runDeepOnBox(args []string) error {
 	if err := paths.Ensure(); err != nil {
 		return err
 	}
+	var resumeState deep.DeepState
+	if f.resume {
+		resumeState, err = loadValidatedDeepResumeState(paths.StateDir, "")
+		if err != nil {
+			return err
+		}
+	}
 	compute, err := sessionstate.Load(paths)
 	if err != nil {
 		return fmt.Errorf("on-box compute identity is unavailable: %w", err)
@@ -182,7 +189,7 @@ func runDeepOnBox(args []string) error {
 	}
 
 	if f.resume {
-		return resumeDeepOnBox(paths, f)
+		return resumeDeepOnBox(paths, f, resumeState)
 	}
 	if f.missionPath == "" || f.repoPath == "" {
 		return errors.New("deep onbox requires --mission and --repo for a new session")
@@ -532,11 +539,8 @@ func onBoxEndpointModelIDs() ([]string, error) {
 	return ids, nil
 }
 
-func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags) error {
-	state, err := deep.LoadLatestState(paths.StateDir)
-	if err != nil {
-		return err
-	}
+func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags, state deep.DeepState) error {
+	var err error
 	if state.Exec == nil || state.Exec.Worker != workerHermesOnBox {
 		return errors.New("latest Deep Work session is not an on-box Hermes session")
 	}
