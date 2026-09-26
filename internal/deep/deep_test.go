@@ -99,6 +99,72 @@ func TestParseMissionFencedVerification(t *testing.T) {
 	}
 }
 
+func TestParseMissionShellFencedVerification(t *testing.T) {
+	m, err := ParseMission("# x\n\n## Objective\no\n\n## Verification\n```sh\nnpx pnpm test && git diff --check\n```\n\n## Tasks\n- [ ] T1: a\n")
+	if err != nil {
+		t.Fatalf("ParseMission: %v", err)
+	}
+	if want := "npx pnpm test && git diff --check"; m.Verify != want {
+		t.Errorf("verify = %q, want %q", m.Verify, want)
+	}
+}
+
+func TestParseMissionRejectsMarkdownWrappedVerification(t *testing.T) {
+	for _, command := range []string{"`npx pnpm test`", "``npx pnpm test``"} {
+		content := "# x\n\n## Objective\no\n\n## Verification\n" + command + "\n\n## Tasks\n- [ ] T1: a\n"
+		if _, err := ParseMission(content); err == nil || !strings.Contains(err.Error(), "Markdown wrapper") {
+			t.Errorf("ParseMission command %q error = %v, want Markdown-wrapper error", command, err)
+		}
+	}
+}
+
+func TestParseMissionRejectsMalformedVerificationFence(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{name: "unsupported language", command: "```python\nprint('not shell')\n```", want: "unsupported verification fence label"},
+		{name: "unterminated", command: "```sh\nnpx pnpm test", want: "unterminated"},
+		{name: "empty", command: "```\n```", want: "empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := "# x\n\n## Objective\no\n\n## Verification\n" + tc.command + "\n\n## Tasks\n- [ ] T1: a\n"
+			if _, err := ParseMission(content); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ParseMission error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseTaskVerifyFenceAndRejectsInlineMarkdown(t *testing.T) {
+	mission := "# x\n\n## Objective\no\n\n## Tasks\n- [ ] T1: a\n  - verify: ```test -f a.txt```\n"
+	m, err := ParseMission(mission)
+	if err != nil {
+		t.Fatalf("ParseMission fenced task command: %v", err)
+	}
+	if m.Tasks[0].Verify != "test -f a.txt" {
+		t.Fatalf("task verify = %q, want raw command", m.Tasks[0].Verify)
+	}
+
+	mission = "# x\n\n## Objective\no\n\n## Tasks\n- [ ] T1: a\n  - verify: `test -f a.txt`\n"
+	if _, err := ParseMission(mission); err == nil || !strings.Contains(err.Error(), "task T1 verify command") || !strings.Contains(err.Error(), "Markdown wrapper") {
+		t.Fatalf("ParseMission inline-wrapped task command error = %v", err)
+	}
+}
+
+func TestValidateVerifyCommandPreservesShellSubstitution(t *testing.T) {
+	if err := ValidateVerifyCommand("echo `date`"); err != nil {
+		t.Fatalf("valid shell substitution rejected: %v", err)
+	}
+	for _, command := range []string{"", "   ", "echo\x00", "`echo wrapped`"} {
+		if err := ValidateVerifyCommand(command); err == nil {
+			t.Errorf("ValidateVerifyCommand(%q) succeeded", command)
+		}
+	}
+}
+
 func TestCommandPolicySection(t *testing.T) {
 	if CommandPolicySection(nil) != "" {
 		t.Error("no allow-list: no policy section (legacy missions unchanged)")
