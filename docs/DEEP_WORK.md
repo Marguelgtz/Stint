@@ -101,7 +101,69 @@ the Stint Go repository, bootstrap runs `go test ./...` before `RUNNING`. Other
 repositories must provide their own reproducible dependency setup; a present
 executable does not prove project dependencies are installed.
 
-Coordinator task IDs beginning `STINT-PLAN-` and `STINT-CLOSE-` are reserved. `--action-plan` adds a coordinator-owned xhigh planning task using the reserved namespace.
+Coordinator-added IDs beginning `STINT-PLAN-` and `STINT-CLOSE-` are reserved.
+
+## Work units and the living action plan
+
+Each item under `## Tasks` is currently a bounded work unit. In product terms,
+an item such as `MCP-001` is an Objective / Work Unit: it may involve many
+implementation actions, and its ID stays the same when the route changes. The
+Go type remains `deep.Task` for compatibility. The mission-declared task list
+is static; Stint may add or retarget the one optional plan-bootstrap row
+described below, but it does not turn action-plan edits or review findings
+into new coordinator work items. The coordinator invokes Hermes once per work-unit
+attempt. A retry is another attempt at that same work unit, not a child action.
+`depends-on` currently means that the earlier work unit must have `verified`
+status; it does not represent a semantic-acceptance decision.
+
+The mission's `acceptance` text is guidance included in the Hermes prompt. It
+does not itself produce deterministic acceptance evidence. A task-level
+`verify:` command (or the mission-level command when no task command is set)
+produces verifier evidence for the current work-unit attempt and exact
+repository subject. In journal-aware runs, `verified` is set after the verifier
+and matching checkpoint requirements pass. Older persisted `verified` states
+may lack that provenance. In either case, `verified` is not the stronger
+Objective C claim that the requested work-unit objective is established.
+Objective C must add that separate acceptance outcome while keeping executor
+runs, verifier runs, and checkpoints as evidence attached to the stable
+work-unit identity.
+
+The living action plan is optional today. If a new session omits
+`--action-plan`, Stint creates no plan file, adds no `STINT-PLAN-*` work unit,
+and includes no plan path in Hermes prompts. On resume, omitting the option
+keeps the path already stored in the session; it does not remove it. If a plan
+is configured for a new production session, the operator-side launcher copies
+the seed to the GPU and the on-box coordinator inserts one `STINT-PLAN-*`
+bootstrap work unit. Stint creates that row and assigns its xhigh effort;
+Hermes executes it and creates or updates the file. The bootstrap verifier only
+checks that the file is non-empty. Later Hermes prompts continue to include the
+same plan path and instruct the agent to read and update it. Stint stores the
+path and manages execution lifecycle, but it does not decide the strategy or
+parse plan edits into actions. Once the detached on-box run starts, the plan
+copy is GPU-resident and maintained by the agent.
+
+On an on-box resume, an explicit new plan path may retarget or add the bootstrap
+row while no task has reached `verified`; after a task checkpoint is published,
+changing the path fails to preserve publication identity. Omitting the option
+does not retarget the saved path.
+
+The action plan is strategy, not proof that its listed work happened. Under
+the A2 repository-subject rules, a configured plan path is treated as run
+bookkeeping while it is untracked: Stint records its identity separately and
+excludes it from the product checkpoint. If the mission intentionally makes
+that file a product output, the worker must make it Git-visible (for example,
+by staging it); then it participates in the verified product tree. Making a
+plan the default should be a later focused change: assign a per-run,
+worktree-relative GPU path for fresh sessions, persist it, and pass it in each
+Hermes prompt without creating a synthetic objective row. Legacy sessions with
+no configured plan should remain readable and retain their current behavior.
+
+Objective C should define deterministic acceptance for the bounded work unit
+identified by the current task ID. It must not require a fixed set of child
+actions, a single Hermes invocation, a single verifier invocation, or an
+action-plan file. A mission contract version must distinguish legacy missions
+from missions that explicitly declare the new acceptance semantics; the run
+journal schema version is not a substitute for that contract version.
 
 ## Verification and command guidance
 
