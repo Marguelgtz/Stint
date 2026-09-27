@@ -20,13 +20,15 @@ func readAll(path string) (string, error) {
 type Status string
 
 const (
-	StatusQueued     Status = "queued"
-	StatusActive     Status = "active"
-	StatusVerified   Status = "verified" // legacy terminal state; not Objective C acceptance
-	StatusIncomplete Status = "incomplete"
-	StatusBlocked    Status = "blocked"
-	StatusNeedsHuman Status = "needs_human"
-	StatusDropped    Status = "dropped"
+	StatusQueued       Status = "queued"
+	StatusActive       Status = "active"
+	StatusVerified     Status = "verified"     // legacy terminal state; not Objective C acceptance
+	StatusCheckpointed Status = "checkpointed" // v2 execution checkpoint without a generic verifier
+	StatusAccepted     Status = "accepted"     // v2 deterministic Objective acceptance
+	StatusIncomplete   Status = "incomplete"
+	StatusBlocked      Status = "blocked"
+	StatusNeedsHuman   Status = "needs_human"
+	StatusDropped      Status = "dropped"
 )
 
 // Terminal reports the legacy coordinator scheduling rule: terminal statuses
@@ -36,11 +38,22 @@ const (
 // Blocked and needs_human tasks stay parked; they surface in the handoff.
 func (s Status) Terminal() bool {
 	switch s {
-	case StatusVerified, StatusBlocked, StatusNeedsHuman, StatusDropped:
+	case StatusVerified, StatusAccepted, StatusBlocked, StatusNeedsHuman, StatusDropped:
 		return true
 	}
 	return false
 }
+
+func taskTerminalInContract(task Task, contractVersion int) bool {
+	if contractVersion == DeterministicAcceptanceContractVersion && isAcceptanceContractTask(task) && task.Status == StatusVerified {
+		return task.AcceptanceOutcome == AcceptanceAccepted
+	}
+	return task.Status.Terminal()
+}
+
+// IsAcceptanceContractTask reports whether this is a mission-authored Work
+// Unit governed by the versioned Objective acceptance contract.
+func (task Task) IsAcceptanceContractTask() bool { return isAcceptanceContractTask(task) }
 
 func (s Status) String() string { return string(s) }
 

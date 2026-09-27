@@ -33,31 +33,34 @@ type AcceptanceRun struct {
 	StartEventID     string `json:"startEventId"`
 	StartedInEpochID string `json:"startedInEpochId"`
 	// TaskID is the stable Objective / Work Unit identity, not an atomic action ID.
-	TaskID                   string                      `json:"taskId"`
-	Attempt                  int                         `json:"attempt"`
-	ContractSHA256           string                      `json:"contractSha256"`
-	CommandSHA256            string                      `json:"commandSha256"`
-	RepositoryChange         RepositoryChangeExpectation `json:"repositoryChange"`
-	RepositoryBaseline       VerificationSubject         `json:"repositoryBaseline"`
-	SubjectBefore            VerificationSubject         `json:"subjectBefore"`
-	CheckpointEventID        string                      `json:"checkpointEventId"`
-	Checkpoint               TaskCheckpoint              `json:"checkpoint"`
-	Runtime                  AcceptanceRuntime           `json:"runtime"`
-	StartedAt                time.Time                   `json:"startedAt"`
-	TimeoutSeconds           int                         `json:"timeoutSeconds"`
-	RemainingDeadlineSeconds int                         `json:"remainingDeadlineSeconds,omitempty"`
-	CheckOutcome             AcceptanceCheckOutcome      `json:"checkOutcome"`
-	Decision                 AcceptanceOutcome           `json:"decision"`
-	Reason                   string                      `json:"reason,omitempty"`
-	EndedAt                  time.Time                   `json:"endedAt,omitempty"`
-	HasExitCode              bool                        `json:"hasExitCode,omitempty"`
-	ExitCode                 int                         `json:"exitCode,omitempty"`
-	Error                    string                      `json:"error,omitempty"`
-	QuiescenceUnconfirmed    bool                        `json:"quiescenceUnconfirmed,omitempty"`
-	SubjectAfter             *VerificationSubject        `json:"subjectAfter,omitempty"`
-	SubjectAfterError        string                      `json:"subjectAfterError,omitempty"`
-	DurationMilliseconds     int64                       `json:"durationMilliseconds,omitempty"`
-	ArtifactRefs             []string                    `json:"artifactRefs,omitempty"`
+	TaskID             string                      `json:"taskId"`
+	Attempt            int                         `json:"attempt"`
+	ContractSHA256     string                      `json:"contractSha256"`
+	CommandSHA256      string                      `json:"commandSha256"`
+	RepositoryChange   RepositoryChangeExpectation `json:"repositoryChange"`
+	RepositoryBaseline VerificationSubject         `json:"repositoryBaseline"`
+	// SubjectBefore is the checkpoint HEAD/tree that the acceptance command
+	// actually exercises. It differs from Checkpoint.VerificationSubject when
+	// Stint had to create a semantic commit after executor/verifier evidence.
+	SubjectBefore            VerificationSubject    `json:"subjectBefore"`
+	CheckpointEventID        string                 `json:"checkpointEventId"`
+	Checkpoint               TaskCheckpoint         `json:"checkpoint"`
+	Runtime                  AcceptanceRuntime      `json:"runtime"`
+	StartedAt                time.Time              `json:"startedAt"`
+	TimeoutSeconds           int                    `json:"timeoutSeconds"`
+	RemainingDeadlineSeconds int                    `json:"remainingDeadlineSeconds,omitempty"`
+	CheckOutcome             AcceptanceCheckOutcome `json:"checkOutcome"`
+	Decision                 AcceptanceOutcome      `json:"decision"`
+	Reason                   string                 `json:"reason,omitempty"`
+	EndedAt                  time.Time              `json:"endedAt,omitempty"`
+	HasExitCode              bool                   `json:"hasExitCode,omitempty"`
+	ExitCode                 int                    `json:"exitCode,omitempty"`
+	Error                    string                 `json:"error,omitempty"`
+	QuiescenceUnconfirmed    bool                   `json:"quiescenceUnconfirmed,omitempty"`
+	SubjectAfter             *VerificationSubject   `json:"subjectAfter,omitempty"`
+	SubjectAfterError        string                 `json:"subjectAfterError,omitempty"`
+	DurationMilliseconds     int64                  `json:"durationMilliseconds,omitempty"`
+	ArtifactRefs             []string               `json:"artifactRefs,omitempty"`
 }
 
 func NewAcceptanceRunID() (string, error) {
@@ -85,7 +88,10 @@ func BeginAcceptanceRun(stateDir string, state *DeepState, run AcceptanceRun) (A
 		return AcceptanceRun{}, errors.New("acceptance start requires a valid explicit deterministic acceptance contract")
 	}
 	task, ok := findTask(state, run.TaskID)
-	if !ok || task.Status != StatusVerified || task.Attempts != run.Attempt ||
+	if !ok {
+		return AcceptanceRun{}, errors.New("acceptance start must identify a verified Work Unit checkpoint")
+	}
+	if task.Status != taskCheckpointTaskStatus(run.Checkpoint) || task.Attempts != run.Attempt ||
 		task.ExecutorRunID != run.Checkpoint.ExecutorRunID || task.VerificationRunID != run.Checkpoint.VerificationRunID ||
 		task.VerificationSubject == nil || *task.VerificationSubject != run.Checkpoint.VerificationSubject ||
 		task.CheckpointCommit != run.Checkpoint.Commit || task.CheckpointTreeSHA != run.Checkpoint.TreeSHA {
@@ -213,7 +219,7 @@ func acceptedRepositoryChange(expectation RepositoryChangeExpectation, baseline,
 
 func deriveAcceptanceOutcome(run AcceptanceRun) AcceptanceOutcome {
 	if run.QuiescenceUnconfirmed || run.SubjectAfterError != "" || run.SubjectAfter == nil ||
-		run.SubjectBefore != run.Checkpoint.VerificationSubject || *run.SubjectAfter != run.SubjectBefore {
+		run.SubjectBefore != TaskCheckpointSubject(run.Checkpoint) || *run.SubjectAfter != run.SubjectBefore {
 		return AcceptanceUnresolved
 	}
 	switch run.CheckOutcome {
@@ -252,9 +258,9 @@ func validateAcceptanceRun(run AcceptanceRun, starting bool) error {
 		len(run.RepositoryBaseline.HeadCommit) > 128 || len(run.RepositoryBaseline.TreeSHA) > 128 {
 		return errors.New("acceptance run start identity or repository baseline is invalid")
 	}
-	if run.CheckpointEventID == "" || run.CheckpointEventID != taskCheckpointEventID(run.Checkpoint.VerificationRunID) ||
+	if run.CheckpointEventID == "" || run.CheckpointEventID != taskCheckpointRecordEventID(run.Checkpoint) ||
 		run.Checkpoint.TaskID != run.TaskID || run.Checkpoint.Attempt != run.Attempt ||
-		run.SubjectBefore != run.Checkpoint.VerificationSubject {
+		run.SubjectBefore != TaskCheckpointSubject(run.Checkpoint) {
 		return errors.New("acceptance run checkpoint identity does not match its Work Unit")
 	}
 	if err := validateTaskCheckpoint(run.Checkpoint); err != nil {
@@ -401,7 +407,7 @@ func validAcceptanceArtifactRef(id, ref string) bool {
 
 func applyAcceptanceStarted(state *DeepState, run AcceptanceRun) error {
 	task, ok := findTask(state, run.TaskID)
-	if !ok || task.Attempts != run.Attempt || task.Status != StatusVerified || task.ExecutorRunID != run.Checkpoint.ExecutorRunID ||
+	if !ok || task.Attempts != run.Attempt || task.Status != taskCheckpointTaskStatus(run.Checkpoint) || task.ExecutorRunID != run.Checkpoint.ExecutorRunID ||
 		task.VerificationRunID != run.Checkpoint.VerificationRunID || task.VerificationSubject == nil ||
 		*task.VerificationSubject != run.Checkpoint.VerificationSubject || task.CheckpointCommit != run.Checkpoint.Commit ||
 		task.CheckpointTreeSHA != run.Checkpoint.TreeSHA {
@@ -411,7 +417,7 @@ func applyAcceptanceStarted(state *DeepState, run AcceptanceRun) error {
 	task.AcceptanceRunID = run.ID
 	task.AcceptanceCheckOutcome = AcceptanceCheckStarted
 	task.AcceptanceReason = ""
-	task.AcceptanceSubject = &run.Checkpoint.VerificationSubject
+	task.AcceptanceSubject = &run.SubjectBefore
 	task.AcceptanceCheckpointEventID = run.CheckpointEventID
 	task.AcceptanceCheckpointCommit = run.Checkpoint.Commit
 	task.AcceptanceCheckpointTreeSHA = run.Checkpoint.TreeSHA
@@ -419,15 +425,33 @@ func applyAcceptanceStarted(state *DeepState, run AcceptanceRun) error {
 	return nil
 }
 
+func taskCheckpointTaskStatus(checkpoint TaskCheckpoint) Status {
+	if checkpoint.Basis == TaskCheckpointBasisExecutor {
+		return StatusCheckpointed
+	}
+	return StatusVerified
+}
+
 func applyAcceptanceResult(state *DeepState, run AcceptanceRun) error {
 	task, ok := findTask(state, run.TaskID)
 	if !ok || task.AcceptanceRunID != run.ID || task.Attempts != run.Attempt || task.AcceptanceSubject == nil ||
-		*task.AcceptanceSubject != run.Checkpoint.VerificationSubject || task.AcceptanceCheckpointEventID != run.CheckpointEventID {
+		*task.AcceptanceSubject != run.SubjectBefore || task.AcceptanceCheckpointEventID != run.CheckpointEventID {
 		return errors.New("acceptance result does not match its projected start and checkpoint")
 	}
 	task.AcceptanceOutcome = run.Decision
 	task.AcceptanceCheckOutcome = run.CheckOutcome
 	task.AcceptanceReason = run.Reason
+	switch run.Decision {
+	case AcceptanceAccepted:
+		task.Status = StatusAccepted
+		task.Blocker = ""
+	case AcceptanceNotSatisfied:
+		task.Status = StatusIncomplete
+		task.Blocker = run.Reason
+	case AcceptanceUnresolved:
+		task.Status = StatusNeedsHuman
+		task.Blocker = run.Reason
+	}
 	if run.QuiescenceUnconfirmed {
 		state.ExecutionQuiescenceUnconfirmed = true
 		state.ExecutionQuiescenceTaskID = task.ID
@@ -454,19 +478,31 @@ func hydrateAcceptanceProjection(state *DeepState, event RunEvent, dir string) e
 func acceptanceProjectionMatches(dir string, state DeepState, run AcceptanceRun, starting bool, recovery bool) bool {
 	task, ok := findTask(&state, run.TaskID)
 	if !ok || task.AcceptanceRunID != run.ID || task.Attempts != run.Attempt || task.AcceptanceSubject == nil ||
-		*task.AcceptanceSubject != run.Checkpoint.VerificationSubject || task.AcceptanceCheckpointEventID != run.CheckpointEventID ||
+		*task.AcceptanceSubject != run.SubjectBefore || task.AcceptanceCheckpointEventID != run.CheckpointEventID ||
 		task.AcceptanceCheckpointCommit != run.Checkpoint.Commit || task.AcceptanceCheckpointTreeSHA != run.Checkpoint.TreeSHA {
 		return false
 	}
 	if starting {
-		return task.AcceptanceOutcome == AcceptanceNotEvaluated && task.AcceptanceCheckOutcome == AcceptanceCheckStarted &&
+		return task.Status == taskCheckpointTaskStatus(run.Checkpoint) && task.AcceptanceOutcome == AcceptanceNotEvaluated && task.AcceptanceCheckOutcome == AcceptanceCheckStarted &&
 			task.AcceptanceReason == "" && task.AcceptanceOutput == ""
 	}
 	if recovery {
-		return task.AcceptanceOutcome == AcceptanceUnresolved && task.AcceptanceCheckOutcome == AcceptanceCheckUnknown &&
+		return task.Status == StatusNeedsHuman && task.AcceptanceOutcome == AcceptanceUnresolved && task.AcceptanceCheckOutcome == AcceptanceCheckUnknown &&
 			task.AcceptanceReason == run.Reason && task.AcceptanceOutput == "" && state.ExecutionQuiescenceUnconfirmed && state.ExecutionQuiescenceTaskID == task.ID
 	}
 	if task.AcceptanceOutcome != run.Decision || task.AcceptanceCheckOutcome != run.CheckOutcome || task.AcceptanceReason != run.Reason {
+		return false
+	}
+	wantStatus := StatusIncomplete
+	switch run.Decision {
+	case AcceptanceAccepted:
+		wantStatus = StatusAccepted
+	case AcceptanceNotSatisfied:
+		wantStatus = StatusIncomplete
+	case AcceptanceUnresolved:
+		wantStatus = StatusNeedsHuman
+	}
+	if task.Status != wantStatus {
 		return false
 	}
 	output, err := acceptanceArtifactOutput(dir, run)
@@ -497,6 +533,8 @@ func applyAcceptanceRecovery(state *DeepState, run AcceptanceRun, reason string)
 	task.AcceptanceCheckOutcome = AcceptanceCheckUnknown
 	task.AcceptanceReason = reason
 	task.AcceptanceOutput = ""
+	task.Status = StatusNeedsHuman
+	task.Blocker = reason
 	state.ExecutionQuiescenceUnconfirmed = true
 	state.ExecutionQuiescenceTaskID = task.ID
 	return nil

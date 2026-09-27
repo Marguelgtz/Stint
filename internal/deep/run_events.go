@@ -58,15 +58,17 @@ const (
 // RunTaskSummary preserves bounded task-state context at lifecycle boundaries
 // without copying objectives, prompts, or attempt output into the journal.
 type RunTaskSummary struct {
-	Total      int `json:"total"`
-	Queued     int `json:"queued"`
-	Active     int `json:"active"`
-	Verified   int `json:"verified"`
-	Incomplete int `json:"incomplete"`
-	Blocked    int `json:"blocked"`
-	NeedsHuman int `json:"needsHuman"`
-	Dropped    int `json:"dropped"`
-	Other      int `json:"other"`
+	Total        int `json:"total"`
+	Queued       int `json:"queued"`
+	Active       int `json:"active"`
+	Verified     int `json:"verified"`
+	Checkpointed int `json:"checkpointed"`
+	Accepted     int `json:"accepted"`
+	Incomplete   int `json:"incomplete"`
+	Blocked      int `json:"blocked"`
+	NeedsHuman   int `json:"needsHuman"`
+	Dropped      int `json:"dropped"`
+	Other        int `json:"other"`
 }
 
 // RunEvent is a bounded, versioned fact in one Deep Work run's append-only
@@ -249,6 +251,10 @@ func summarizeRunTasks(tasks []Task) *RunTaskSummary {
 			summary.Active++
 		case StatusVerified:
 			summary.Verified++
+		case StatusCheckpointed:
+			summary.Checkpointed++
+		case StatusAccepted:
+			summary.Accepted++
 		case StatusIncomplete:
 			summary.Incomplete++
 		case StatusBlocked:
@@ -711,7 +717,7 @@ func validateRunEvent(event RunEvent) error {
 
 func validRunTaskSummary(summary RunTaskSummary) bool {
 	const maxRunTaskCount = 1_000_000
-	counts := []int{summary.Total, summary.Queued, summary.Active, summary.Verified, summary.Incomplete,
+	counts := []int{summary.Total, summary.Queued, summary.Active, summary.Verified, summary.Checkpointed, summary.Accepted, summary.Incomplete,
 		summary.Blocked, summary.NeedsHuman, summary.Dropped, summary.Other}
 	var sum int
 	for _, count := range counts {
@@ -1359,10 +1365,10 @@ func applyRunEvent(state *DeepState, event RunEvent) error {
 			return errors.New("executor-start event does not follow the current executing epoch")
 		}
 		task, ok := findTask(state, event.ExecutorRun.TaskID)
-		if !ok || event.ExecutorRun.Attempt != task.Attempts+1 || task.Status.Terminal() {
+		if !ok || event.ExecutorRun.Attempt != task.Attempts+1 || taskTerminalInContract(*task, state.AcceptanceContractVersion) {
 			return errors.New("executor-start event does not follow the projected task attempt")
 		}
-		applyExecutorStarted(task, *event.ExecutorRun, state.AcceptanceContractVersion == DeterministicAcceptanceContractVersion)
+		applyExecutorStarted(task, *event.ExecutorRun, state.AcceptanceContractVersion == DeterministicAcceptanceContractVersion && isAcceptanceContractTask(*task))
 	case RunEventExecutorResult:
 		if event.EpochID != state.ExecutionEpochID || event.ExecutorRun == nil {
 			return errors.New("executor-result event does not belong to the current epoch")
