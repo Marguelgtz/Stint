@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Marguelgtz/Stint/internal/deep"
 )
 
 var errAcceptanceCheckpointChanged = errors.New("acceptance checkpoint is no longer the current repository subject")
+var errAcceptanceWindowUnavailable = errors.New("insufficient landing window for the acceptance-check")
 
 // runJournaledAcceptanceCheck evaluates one Objective-specific command only
 // after the task checkpoint exists. The command is bound to that checkpoint,
@@ -47,9 +49,9 @@ func (c *deepCoordinator) runJournaledAcceptanceCheck(ctx context.Context, taskI
 		return fmt.Errorf("task %s has no durable first-executor repository baseline", taskID)
 	}
 
-	bound := c.verifyTimeout
+	bound := c.effectiveAcceptanceTimeout(c.now())
 	if bound <= 0 {
-		bound = defaultTaskVerifyReserve
+		return errAcceptanceWindowUnavailable
 	}
 	now := c.now().UTC()
 	remaining := max(0, int(c.state.Deadline.Sub(now).Seconds()))
@@ -146,6 +148,45 @@ func (c *deepCoordinator) runJournaledAcceptanceCheck(ctx context.Context, taskI
 		return fmt.Errorf("task %s acceptance-check process quiescence is unconfirmed; further execution is stopped", taskID)
 	}
 	return nil
+}
+
+func (c *deepCoordinator) effectiveAcceptanceTimeout(now time.Time) time.Duration {
+	maximum := c.verifyTimeout
+	if maximum <= 0 {
+		maximum = defaultTaskVerifyReserve
+	}
+	usable := c.state.LandBefore.Sub(now) - coordinatorReserve
+	if usable <= 0 {
+		return 0
+	}
+	return minDuration(maximum, usable)
+}
+
+// pendingAcceptanceCheckpoint reports whether a v2 checkpoint can be checked
+// without another executor attempt. A stale checkpoint falls back to normal
+// execution only while the Work Unit still has retry budget.
+func (c *deepCoordinator) pendingAcceptanceCheckpoint(task deep.Task) (deep.TaskCheckpoint, string, bool, error) {
+	if c.state.AcceptanceContractVersion != deep.DeterministicAcceptanceContractVersion || !task.IsAcceptanceContractTask() ||
+		(task.Status != deep.StatusVerified && task.Status != deep.StatusCheckpointed) ||
+		(task.AcceptanceOutcome != "" && task.AcceptanceOutcome != deep.AcceptanceNotEvaluated) {
+		return deep.TaskCheckpoint{}, "", false, nil
+	}
+	checkpoint, eventID, found, err := deep.LoadTaskCheckpoint(c.stateDir, c.state.SessionID, task.ID)
+	if err != nil {
+		return deep.TaskCheckpoint{}, "", false, err
+	}
+	if !found || checkpoint.Attempt != task.Attempts || checkpoint.Commit != task.CheckpointCommit ||
+		checkpoint.TreeSHA != task.CheckpointTreeSHA {
+		return deep.TaskCheckpoint{}, "", false, nil
+	}
+	current, err := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+	if err != nil {
+		return deep.TaskCheckpoint{}, "", false, fmt.Errorf("capture current repository subject for task %s acceptance: %w", task.ID, err)
+	}
+	if current.Subject != deep.TaskCheckpointSubject(checkpoint) {
+		return deep.TaskCheckpoint{}, "", false, nil
+	}
+	return checkpoint, eventID, true, nil
 }
 
 func (c *deepCoordinator) taskByID(taskID string) *deep.Task {

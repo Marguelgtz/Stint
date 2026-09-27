@@ -65,6 +65,9 @@ func TestDetermineMissionOutcomeV2RequiresBoundObjectiveAcceptance(t *testing.T)
 		want   MissionOutcome
 	}{
 		{name: "all Objective outcomes accepted", want: MissionOutcomeSucceeded},
+		{name: "optional coordinator bootstrap does not gate Objective acceptance", mutate: func(s *DeepState) {
+			s.Tasks = append(s.Tasks, Task{ID: "STINT-PLAN-001", Source: "coordinator", Status: StatusBlocked})
+		}, want: MissionOutcomeSucceeded},
 		{name: "verified checkpoint is not acceptance", mutate: func(s *DeepState) {
 			s.Tasks[0].Status = StatusVerified
 			s.Tasks[0].AcceptanceOutcome = AcceptanceNotEvaluated

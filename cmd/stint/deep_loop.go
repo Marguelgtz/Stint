@@ -262,8 +262,8 @@ func (c *deepCoordinator) repoSummary() deep.RepoSummary {
 	return s
 }
 
-// runTask invokes the executor once for the task and transitions its state
-// from repository evidence, never from the worker's word alone.
+// runTask advances one task, invoking the executor when useful work remains,
+// and transitions state from durable repository and acceptance evidence.
 func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) error {
 	executing, err := c.stillExecuting()
 	if err != nil {
@@ -276,7 +276,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	if prerequisite := c.failedPrerequisite(*t); prerequisite != "" {
 		t.Status = deep.StatusBlocked
 		t.Blocker = prerequisite
-		t.LastResult = "not run: prerequisite was not verified"
+		t.LastResult = prerequisite
 		if err := c.save(); err != nil {
 			return fmt.Errorf("persist blocked dependent task %s: %w", t.ID, err)
 		}
@@ -296,8 +296,17 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 			err := c.runJournaledAcceptanceCheck(ctx, t.ID, checkpoint, checkpointEventID)
 			if errors.Is(err, errAcceptanceCheckpointChanged) {
 				c.logf("task %s: prior checkpoint subject changed before acceptance; continuing the Work Unit with a new executor attempt", t.ID)
+			} else if errors.Is(err, errAcceptanceWindowUnavailable) {
+				return nil
 			} else {
 				return err
+			}
+			if err == nil {
+				task := c.state.Tasks[idx]
+				if task.AcceptanceOutcome == deep.AcceptanceAccepted ||
+					(c.state.TaskAttemptCap > 0 && task.Attempts >= c.state.TaskAttemptCap) {
+					return nil
+				}
 			}
 		}
 	}
@@ -734,6 +743,9 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 							c.logf("task %s: checkpoint subject changed before acceptance; a later executor attempt must establish a current subject", t.ID)
 							return nil
 						}
+						if errors.Is(err, errAcceptanceWindowUnavailable) {
+							return nil
+						}
 						return err
 					}
 					t = &c.state.Tasks[idx]
@@ -923,19 +935,30 @@ func minDuration(a, b time.Duration) time.Duration {
 
 func (c *deepCoordinator) failedPrerequisite(task deep.Task) string {
 	for _, prerequisite := range task.DependsOn {
-		status := deep.Status("")
+		var required *deep.Task
 		for _, candidate := range c.state.Tasks {
 			if candidate.ID == prerequisite {
-				status = candidate.Status
+				required = &candidate
 				break
 			}
 		}
-		if status != deep.StatusVerified {
+		status := deep.Status("")
+		satisfied := false
+		requires := "verified"
+		if required != nil {
+			status = required.Status
+			satisfied = status == deep.StatusVerified
+			if c.state.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion && required.IsAcceptanceContractTask() {
+				requires = "accepted"
+				satisfied = status == deep.StatusAccepted && required.AcceptanceOutcome == deep.AcceptanceAccepted
+			}
+		}
+		if !satisfied {
 			statusLabel := string(status)
 			if statusLabel == "" {
 				statusLabel = "missing"
 			}
-			return fmt.Sprintf("not run: prerequisite %s has status %s; implementation review requires a verified implementation", prerequisite, statusLabel)
+			return fmt.Sprintf("not run: prerequisite %s has status %s; this Work Unit requires it to be %s", prerequisite, statusLabel, requires)
 		}
 	}
 	return ""
@@ -946,16 +969,27 @@ func (c *deepCoordinator) hasUsefulTaskWindow(now time.Time, task deep.Task) boo
 	return timeout > 0
 }
 
-// selectTask returns the first task that still has useful work: queued
-// tasks and retryable incomplete tasks in list order; parked (terminal)
-// tasks are skipped.
+// selectTask returns the first task with useful executor or pending acceptance
+// work in list order. Contract-terminal tasks and attempts beyond the cap are
+// skipped, except that a current pending checkpoint may still be accepted.
 func (c *deepCoordinator) selectTask() (int, bool) {
 	for i := range c.state.Tasks {
-		if !c.state.Tasks[i].Status.Terminal() {
-			return i, true
+		task := c.state.Tasks[i]
+		if task.TerminalInContract(c.state.AcceptanceContractVersion) {
+			continue
 		}
+		if c.state.TaskAttemptCap > 0 && task.Attempts >= c.state.TaskAttemptCap && !taskHasPendingAcceptanceProjection(task, c.state.AcceptanceContractVersion) {
+			continue
+		}
+		return i, true
 	}
 	return 0, false
+}
+
+func taskHasPendingAcceptanceProjection(task deep.Task, contractVersion int) bool {
+	return contractVersion == deep.DeterministicAcceptanceContractVersion && task.IsAcceptanceContractTask() &&
+		(task.Status == deep.StatusVerified || task.Status == deep.StatusCheckpointed) &&
+		(task.AcceptanceOutcome == "" || task.AcceptanceOutcome == deep.AcceptanceNotEvaluated)
 }
 
 func (c *deepCoordinator) run(ctx context.Context) error {
@@ -1046,6 +1080,25 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 		idx, ok := c.selectTask()
 		if !ok {
 			return c.land(ctx, "no safe useful work remaining")
+		}
+		task := c.state.Tasks[idx]
+		if taskHasPendingAcceptanceProjection(task, c.state.AcceptanceContractVersion) {
+			_, _, pending, err := c.pendingAcceptanceCheckpoint(task)
+			if err != nil {
+				return err
+			}
+			if pending {
+				if c.effectiveAcceptanceTimeout(now) <= 0 {
+					return c.land(ctx, "insufficient acceptance-check window before landing cutoff")
+				}
+				if err := c.runTask(ctx, idx, now); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		if c.state.TaskAttemptCap > 0 && task.Attempts >= c.state.TaskAttemptCap {
+			return c.land(ctx, "Work Unit attempt cap reached with deterministic acceptance incomplete")
 		}
 		effective, decision := c.effectiveTaskTimeout(now, c.state.Tasks[idx])
 		if effective <= 0 {

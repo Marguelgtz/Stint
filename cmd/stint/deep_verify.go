@@ -102,13 +102,12 @@ func validateMissionVerifyCommands(mission deep.Mission) error {
 	return nil
 }
 
-// Objective C is being introduced as a stacked change. Until the coordinator
-// has the journaled acceptance lifecycle and contract-aware scheduling,
-// command entrypoints fail closed instead of running a versioned mission with
-// legacy verified-is-terminal semantics.
+// requireAcceptanceRuntimeSupport keeps the semantic-version boundary
+// explicit. Version 2 is executable only after its contract validates; the
+// coordinator uses its separate acceptance lifecycle and outcome semantics.
 func requireAcceptanceRuntimeSupport(mission deep.Mission) error {
-	if mission.AcceptanceContractVersion != 0 {
-		return fmt.Errorf("mission acceptance contract version %d is not executable by this Stint build", mission.AcceptanceContractVersion)
+	if err := deep.ValidateMissionAcceptanceContract(mission); err != nil {
+		return fmt.Errorf("mission acceptance contract is invalid: %w", err)
 	}
 	return nil
 }

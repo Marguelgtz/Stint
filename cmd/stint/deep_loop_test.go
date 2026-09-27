@@ -219,6 +219,128 @@ func TestDeepLoopContinuation(t *testing.T) {
 	}
 }
 
+func TestSelectTaskUsesContractAcceptanceAndAttemptCap(t *testing.T) {
+	tests := []struct {
+		name         string
+		contract     int
+		first        deep.Task
+		wantSelected int
+	}{
+		{
+			name:         "legacy verified remains terminal",
+			first:        deep.Task{ID: "OBJ-1", Source: "mission", Status: deep.StatusVerified},
+			wantSelected: 1,
+		},
+		{
+			name:         "v2 verified checkpoint still needs acceptance",
+			contract:     deep.DeterministicAcceptanceContractVersion,
+			first:        deep.Task{ID: "OBJ-1", Source: "mission", Status: deep.StatusVerified, AcceptanceOutcome: deep.AcceptanceNotEvaluated},
+			wantSelected: 0,
+		},
+		{
+			name:         "v2 accepted task is terminal",
+			contract:     deep.DeterministicAcceptanceContractVersion,
+			first:        deep.Task{ID: "OBJ-1", Source: "mission", Status: deep.StatusAccepted, AcceptanceOutcome: deep.AcceptanceAccepted},
+			wantSelected: 1,
+		},
+		{
+			name:         "pending acceptance may finish at executor attempt cap",
+			contract:     deep.DeterministicAcceptanceContractVersion,
+			first:        deep.Task{ID: "OBJ-1", Source: "mission", Status: deep.StatusCheckpointed, Attempts: 2, AcceptanceOutcome: deep.AcceptanceNotEvaluated},
+			wantSelected: 0,
+		},
+		{
+			name:         "attempt cap does not authorize another executor after rejection",
+			contract:     deep.DeterministicAcceptanceContractVersion,
+			first:        deep.Task{ID: "OBJ-1", Source: "mission", Status: deep.StatusIncomplete, Attempts: 2, AcceptanceOutcome: deep.AcceptanceNotSatisfied},
+			wantSelected: 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestEnv(t, nil, 2)
+			env.state.AcceptanceContractVersion = tc.contract
+			env.state.Tasks = []deep.Task{
+				tc.first,
+				{ID: "NEXT-1", Objective: "next", Status: deep.StatusQueued},
+			}
+			idx, ok := env.coord.selectTask()
+			if !ok || idx != tc.wantSelected {
+				t.Fatalf("selectTask() = (%d, %t), want (%d, true)", idx, ok, tc.wantSelected)
+			}
+		})
+	}
+}
+
+func TestFailedPrerequisiteUsesContractCompletionSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		contract        int
+		prerequisite    deep.Task
+		dependentID     string
+		dependencyID    string
+		wantBlocked     bool
+		wantRequirement string
+	}{
+		{
+			name:         "legacy verified prerequisite remains satisfied",
+			prerequisite: deep.Task{ID: "OBJ-1", Source: "mission", Status: deep.StatusVerified},
+		},
+		{
+			name:         "v2 verified is evidence but not a satisfied dependency",
+			contract:     deep.DeterministicAcceptanceContractVersion,
+			prerequisite: deep.Task{ID: "OBJ-1", Source: "mission", Status: deep.StatusVerified, AcceptanceOutcome: deep.AcceptanceNotEvaluated},
+			wantBlocked:  true, wantRequirement: "requires it to be accepted",
+		},
+		{
+			name:         "v2 accepted prerequisite is satisfied",
+			contract:     deep.DeterministicAcceptanceContractVersion,
+			prerequisite: deep.Task{ID: "OBJ-1", Source: "mission", Status: deep.StatusAccepted, AcceptanceOutcome: deep.AcceptanceAccepted},
+		},
+		{
+			name:         "coordinator verification retains operational dependency meaning",
+			contract:     deep.DeterministicAcceptanceContractVersion,
+			prerequisite: deep.Task{ID: "STINT-PLAN-001", Source: "coordinator", Status: deep.StatusVerified},
+			dependentID:  "NEXT-1", dependencyID: "STINT-PLAN-001",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestEnv(t, nil, 2)
+			if tc.dependentID == "" {
+				tc.dependentID, tc.dependencyID = "NEXT-1", "OBJ-1"
+			}
+			env.state.AcceptanceContractVersion = tc.contract
+			env.state.Tasks = []deep.Task{
+				tc.prerequisite,
+				{ID: tc.dependentID, Source: "mission", DependsOn: []string{tc.dependencyID}, Status: deep.StatusQueued},
+			}
+			got := env.coord.failedPrerequisite(env.state.Tasks[1])
+			if (got != "") != tc.wantBlocked || (tc.wantRequirement != "" && !strings.Contains(got, tc.wantRequirement)) {
+				t.Fatalf("failedPrerequisite() = %q, blocked=%t; want blocked=%t requirement=%q", got, got != "", tc.wantBlocked, tc.wantRequirement)
+			}
+		})
+	}
+}
+
+func TestV2DependencyBlockDoesNotClaimVerifiedPrerequisiteWasUnverified(t *testing.T) {
+	env := newV2AcceptanceEnv(t, "", "", deep.RepositoryChangeOptional)
+	env.state.Tasks[0].Status = deep.StatusVerified
+	env.state.Tasks[0].AcceptanceOutcome = deep.AcceptanceNotEvaluated
+	env.state.Tasks = append(env.state.Tasks, deep.Task{
+		ID: "OBJ-2", Objective: "build on OBJ-1", Source: "mission", Status: deep.StatusQueued,
+		DependsOn: []string{"OBJ-1"}, RepositoryChange: deep.RepositoryChangeOptional, AcceptanceCheck: "true",
+	})
+	env.coord.persist = func(string, *deep.DeepState) error { return nil }
+	if err := env.coord.runTask(context.Background(), 1, env.clock.now); err != nil {
+		t.Fatalf("record blocked v2 dependency: %v", err)
+	}
+	dependent := env.state.Tasks[1]
+	if dependent.Status != deep.StatusBlocked || !strings.Contains(dependent.LastResult, "requires it to be accepted") ||
+		strings.Contains(dependent.LastResult, "was not verified") || env.fake.calls != 0 {
+		t.Fatalf("dependency block mislabeled verified-but-unaccepted evidence or invoked the executor: %+v calls=%d", dependent, env.fake.calls)
+	}
+}
+
 // A worker may commit its own verified changes before returning. When that
 // commit already represents the exact verified tree, the task checkpoint
 // reuses it instead of creating an empty coordinator marker.

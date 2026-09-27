@@ -106,15 +106,9 @@ func determineAcceptedMissionOutcome(state DeepState) MissionOutcome {
 			}
 			continue
 		}
-		// Coordinator-owned Work Units are outside the mission's acceptance
-		// contract, but their existing verified operational work must still be
-		// complete before a mission can succeed.
-		if task.Status != StatusVerified {
-			return MissionOutcomeIncomplete
-		}
-		if !taskHasBoundVerification(task) {
-			return MissionOutcomeUnresolved
-		}
+		// Coordinator-owned rows such as the optional action-plan bootstrap are
+		// operational helpers, not mission-authored Objectives. Their state
+		// cannot gate version 2 mission acceptance.
 	}
 	if strings.TrimSpace(state.Verify) != "" {
 		if !state.LandingVerifyDone || state.LandingVerificationOutcome != VerificationPassed ||

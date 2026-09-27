@@ -17,13 +17,17 @@ func (noOpDeepExecutor) run(context.Context, execInput) (execResult, error) {
 }
 
 func newV2AcceptanceEnv(t *testing.T, taskVerify, missionVerify string, expectation deep.RepositoryChangeExpectation) *testEnv {
+	return newV2AcceptanceEnvWithCheck(t, taskVerify, missionVerify, expectation, "test -e work-1.txt")
+}
+
+func newV2AcceptanceEnvWithCheck(t *testing.T, taskVerify, missionVerify string, expectation deep.RepositoryChangeExpectation, acceptanceCheck string) *testEnv {
 	t.Helper()
 	env := newTestEnv(t, nil, 3)
 	mission := deep.Mission{
 		Name: "deterministic acceptance fixture", Objective: "prove a bounded outcome",
 		Verify: missionVerify, AcceptanceContractVersion: deep.DeterministicAcceptanceContractVersion,
 		Tasks: []deep.Task{{ID: "OBJ-1", Objective: "produce the requested outcome", Verify: taskVerify,
-			RepositoryChange: expectation, AcceptanceCheck: "test -e work-1.txt", Status: deep.StatusQueued}},
+			RepositoryChange: expectation, AcceptanceCheck: acceptanceCheck, Status: deep.StatusQueued}},
 	}
 	identity, err := deep.AcceptanceContractIdentity(mission)
 	if err != nil {
@@ -69,6 +73,99 @@ func TestV2AcceptanceAcceptsSuccessfulNoVerifierWorkUnit(t *testing.T) {
 	}
 	if _, err := deep.LoadState(env.coord.stateDir, env.state.SessionID); err != nil {
 		t.Fatalf("accepted no-verifier projection did not reload: %v", err)
+	}
+}
+
+func TestV2PendingCheckpointCanBeAcceptedAfterAttemptCapWithoutRerunningExecutor(t *testing.T) {
+	env := newV2AcceptanceEnv(t, "", "", deep.RepositoryChangeRequired)
+	env.state.TaskAttemptCap = 1
+	env.coord.taskTimeout = time.Minute
+	env.fake.after = func() { env.clock.advance(61 * time.Minute) }
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("create checkpoint when acceptance window expires: %v", err)
+	}
+	pending := env.state.Tasks[0]
+	if pending.Attempts != 1 || pending.Status != deep.StatusCheckpointed || pending.AcceptanceOutcome != deep.AcceptanceNotEvaluated {
+		t.Fatalf("checkpoint without enough acceptance time = %+v", pending)
+	}
+
+	// A later resume receives a fresh acceptance window. It must finish the
+	// already checkpointed objective even though no executor attempts remain.
+	env.fake.after = nil
+	env.state.LandBefore = env.clock.now.Add(10 * time.Minute)
+	if err := deep.BeginResumeEpoch(env.coord.stateDir, env.state, deep.PhaseExecuting, env.clock.now); err != nil {
+		t.Fatalf("resume acceptance window: %v", err)
+	}
+	if idx, ok := env.coord.selectTask(); !ok || idx != 0 {
+		t.Fatalf("pending checkpoint at attempt cap was not selected: (%d, %t)", idx, ok)
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("evaluate pending checkpoint after resume: %v", err)
+	}
+	if env.fake.calls != 1 || env.state.Tasks[0].Status != deep.StatusAccepted || env.state.Tasks[0].AcceptanceOutcome != deep.AcceptanceAccepted {
+		t.Fatalf("resume duplicated executor or failed acceptance: executor calls=%d task=%+v", env.fake.calls, env.state.Tasks[0])
+	}
+}
+
+func TestV2RejectedPendingCheckpointAtAttemptCapDoesNotRerunExecutor(t *testing.T) {
+	env := newV2AcceptanceEnv(t, "", "", deep.RepositoryChangeRequired)
+	env.state.TaskAttemptCap = 1
+	env.coord.taskTimeout = time.Minute
+	env.fake.after = func() { env.clock.advance(61 * time.Minute) }
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
+		return verificationResult{Command: command, Outcome: verificationFailed, HasExitCode: true, ExitCode: 1}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("create checkpoint when acceptance window expires: %v", err)
+	}
+	if task := env.state.Tasks[0]; task.Status != deep.StatusCheckpointed || task.AcceptanceOutcome != deep.AcceptanceNotEvaluated {
+		t.Fatalf("expected a pending checkpoint before resume, got %+v", task)
+	}
+	env.fake.after = nil
+	env.state.LandBefore = env.clock.now.Add(10 * time.Minute)
+	if err := deep.BeginResumeEpoch(env.coord.stateDir, env.state, deep.PhaseExecuting, env.clock.now); err != nil {
+		t.Fatalf("resume acceptance window: %v", err)
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("evaluate pending checkpoint after resume: %v", err)
+	}
+	task := env.state.Tasks[0]
+	if env.fake.calls != 1 || task.Attempts != 1 || task.Status != deep.StatusIncomplete || task.AcceptanceOutcome != deep.AcceptanceNotSatisfied {
+		t.Fatalf("attempt cap was exceeded after failed acceptance check: executor calls=%d task=%+v", env.fake.calls, task)
+	}
+}
+
+func TestV2CoordinatorCompletesMissionFromBoundAcceptance(t *testing.T) {
+	env := newV2AcceptanceEnv(t, "", "", deep.RepositoryChangeRequired)
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run versioned deterministic mission: %v", err)
+	}
+	if env.fake.calls != 1 || env.state.Tasks[0].Status != deep.StatusAccepted ||
+		env.state.MissionOutcome != deep.MissionOutcomeSucceeded || env.state.Phase != deep.PhaseLanded {
+		t.Fatalf("versioned mission result = executor calls %d, phase %s, task %+v, outcome %s", env.fake.calls, env.state.Phase, env.state.Tasks[0], env.state.MissionOutcome)
+	}
+}
+
+func TestV2FinalMissionFailurePreservesAcceptedObjectiveEvidence(t *testing.T) {
+	env := newV2AcceptanceEnv(t, "", "required-final-check", deep.RepositoryChangeRequired)
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+	}
+	env.coord.finalVerify = func(context.Context, string) verificationResult {
+		return verificationResult{Command: "required-final-check", Outcome: verificationFailed, HasExitCode: true, ExitCode: 9, Output: "final assertion failed"}
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("land versioned mission after final verifier failure: %v", err)
+	}
+	task := env.state.Tasks[0]
+	if task.Status != deep.StatusAccepted || task.AcceptanceOutcome != deep.AcceptanceAccepted || env.state.MissionOutcome != deep.MissionOutcomeFailed {
+		t.Fatalf("failed final verifier changed task acceptance or reported mission success: task=%+v outcome=%s", task, env.state.MissionOutcome)
 	}
 }
 
@@ -191,13 +288,17 @@ func TestV2NoChangeObjectiveCanBeAcceptedWithoutEmptyMarkerCommit(t *testing.T) 
 		wantAccept deep.AcceptanceOutcome
 	}{
 		{name: "forbidden change accepted", change: deep.RepositoryChangeForbidden, wantStatus: deep.StatusAccepted, wantAccept: deep.AcceptanceAccepted},
+		{name: "optional no-change accepted", change: deep.RepositoryChangeOptional, wantStatus: deep.StatusAccepted, wantAccept: deep.AcceptanceAccepted},
 		{name: "required change rejected", change: deep.RepositoryChangeRequired, wantStatus: deep.StatusIncomplete, wantAccept: deep.AcceptanceNotSatisfied},
 	} {
 		t.Run(expectation.name, func(t *testing.T) {
-			env := newV2AcceptanceEnv(t, "", "", expectation.change)
+			env := newV2AcceptanceEnvWithCheck(t, "", "", expectation.change, "test -f README.md")
 			env.coord.executor = noOpDeepExecutor{}
 			env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
-				return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0}
+				if command != "test -f README.md" {
+					t.Fatalf("acceptance runner received %q, want the objective-specific check", command)
+				}
+				return verificationResult{Command: command, Outcome: verificationPassed, StartedAt: env.clock.now, CompletedAt: env.clock.now.Add(time.Second), HasExitCode: true, ExitCode: 0}
 			}
 			before, err := env.coord.git.headCommit(env.wt)
 			if err != nil {
@@ -218,6 +319,24 @@ func TestV2NoChangeObjectiveCanBeAcceptedWithoutEmptyMarkerCommit(t *testing.T) 
 				t.Fatalf("no-op checkpoint did not reuse the existing commit: %+v", task)
 			}
 		})
+	}
+}
+
+func TestV2ForbiddenRepositoryChangeCannotBeAcceptedByPassingCheck(t *testing.T) {
+	env := newV2AcceptanceEnvWithCheck(t, "", "", deep.RepositoryChangeForbidden, "test -f README.md")
+	env.coord.verify = func(_ context.Context, command, _ string) verificationResult {
+		if command != "test -f README.md" {
+			t.Fatalf("acceptance runner received %q, want the objective-specific check", command)
+		}
+		return verificationResult{Command: command, Outcome: verificationPassed, StartedAt: env.clock.now, CompletedAt: env.clock.now.Add(time.Second), HasExitCode: true, ExitCode: 0}
+	}
+	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err != nil {
+		t.Fatalf("run forbidden-change Work Unit: %v", err)
+	}
+	task := env.state.Tasks[0]
+	if task.AcceptanceCheckOutcome != deep.AcceptanceCheckPassed || task.VerificationOutcome != deep.VerificationNotRun ||
+		task.AcceptanceOutcome != deep.AcceptanceNotSatisfied || task.Status != deep.StatusIncomplete || task.CheckpointCommit == "" {
+		t.Fatalf("passing Objective check overrode the forbidden repository change: %+v", task)
 	}
 }
 
