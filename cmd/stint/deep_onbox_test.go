@@ -142,16 +142,23 @@ func TestApplyDeepOnBoxOverridesUsesExplicitSettings(t *testing.T) {
 }
 
 func TestApplyDeepOnBoxOverridesRefusesPublishedPlanRetarget(t *testing.T) {
-	state := deep.DeepState{
-		Exec:  &deep.ExecSettings{ActionPlanPath: "plans/old.md"},
-		Tasks: []deep.Task{{ID: "STINT-PLAN-001", Status: deep.StatusVerified, CheckpointCommit: "abc"}},
-	}
-	err := applyDeepOnBoxOverrides(&state, &deepOnBoxFlags{actionPlan: "plans/new.md", actionPlanSet: true})
-	if err == nil || !strings.Contains(err.Error(), "start a fresh session") {
-		t.Fatalf("retargeting a published plan err = %v", err)
-	}
-	if state.Exec.ActionPlanPath != "plans/old.md" {
-		t.Fatalf("failed retarget changed persisted path in memory: %q", state.Exec.ActionPlanPath)
+	for _, task := range []deep.Task{
+		{ID: "STINT-PLAN-001", Status: deep.StatusVerified}, // legacy checkpoint semantics
+		{ID: "OBJ-1", Status: deep.StatusCheckpointed, CheckpointCommit: "abc"},
+		{ID: "OBJ-1", Status: deep.StatusIncomplete, CheckpointTreeSHA: "tree"}, // evidence remains published after rejection
+		{ID: "OBJ-1", Status: deep.StatusAccepted, CheckpointCommit: "abc"},
+	} {
+		state := deep.DeepState{
+			Exec:  &deep.ExecSettings{ActionPlanPath: "plans/old.md"},
+			Tasks: []deep.Task{task},
+		}
+		err := applyDeepOnBoxOverrides(&state, &deepOnBoxFlags{actionPlan: "plans/new.md", actionPlanSet: true})
+		if err == nil || !strings.Contains(err.Error(), "start a fresh session") {
+			t.Fatalf("retargeting published task %s/%s err = %v", task.Status, task.CheckpointCommit, err)
+		}
+		if state.Exec.ActionPlanPath != "plans/old.md" {
+			t.Fatalf("failed retarget changed persisted path in memory: %q", state.Exec.ActionPlanPath)
+		}
 	}
 }
 

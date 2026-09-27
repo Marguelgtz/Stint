@@ -379,10 +379,17 @@ func TestTerminalTaskSemanticsAreContractScoped(t *testing.T) {
 	if taskTerminalInContract(workUnit, DeterministicAcceptanceContractVersion) {
 		t.Fatal("v2 verified checkpoint was treated as Objective acceptance")
 	}
-	workUnit.Status = StatusAccepted
 	workUnit.AcceptanceOutcome = AcceptanceAccepted
+	if taskTerminalInContract(workUnit, DeterministicAcceptanceContractVersion) {
+		t.Fatal("v2 acceptance outcome bypassed the separate accepted task state")
+	}
+	workUnit.Status = StatusAccepted
 	if !taskTerminalInContract(workUnit, DeterministicAcceptanceContractVersion) {
 		t.Fatal("v2 accepted Work Unit is not terminal")
+	}
+	workUnit.AcceptanceOutcome = AcceptanceNotSatisfied
+	if taskTerminalInContract(workUnit, DeterministicAcceptanceContractVersion) {
+		t.Fatal("v2 accepted status without accepted outcome was treated as terminal")
 	}
 	coordinatorTask := Task{ID: "STINT-PLAN-001", Source: "coordinator", Status: StatusVerified}
 	if !taskTerminalInContract(coordinatorTask, DeterministicAcceptanceContractVersion) {

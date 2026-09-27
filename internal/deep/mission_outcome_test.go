@@ -57,12 +57,97 @@ func TestDetermineMissionOutcomeRequiresBoundTaskAndFinalEvidence(t *testing.T) 
 	}
 }
 
+func TestDetermineMissionOutcomeV2RequiresBoundObjectiveAcceptance(t *testing.T) {
+	base := acceptedMissionOutcomeFixture(t)
+	tests := []struct {
+		name   string
+		mutate func(*DeepState)
+		want   MissionOutcome
+	}{
+		{name: "all Objective outcomes accepted", want: MissionOutcomeSucceeded},
+		{name: "optional coordinator bootstrap does not gate Objective acceptance", mutate: func(s *DeepState) {
+			s.Tasks = append(s.Tasks, Task{ID: "STINT-PLAN-001", Source: "coordinator", Status: StatusBlocked})
+		}, want: MissionOutcomeSucceeded},
+		{name: "verified checkpoint is not acceptance", mutate: func(s *DeepState) {
+			s.Tasks[0].Status = StatusVerified
+			s.Tasks[0].AcceptanceOutcome = AcceptanceNotEvaluated
+			s.Tasks[0].AcceptanceCheckOutcome = ""
+		}, want: MissionOutcomeIncomplete},
+		{name: "accepted outcome without accepted task state is unresolved", mutate: func(s *DeepState) {
+			s.Tasks[0].Status = StatusVerified
+		}, want: MissionOutcomeUnresolved},
+		{name: "insufficient deterministic evidence is unresolved", mutate: func(s *DeepState) {
+			s.Tasks[0].AcceptanceOutcome = AcceptanceUnresolved
+			s.Tasks[0].AcceptanceCheckOutcome = AcceptanceCheckTimedOut
+		}, want: MissionOutcomeUnresolved},
+		{name: "accepted outcome without matching checkpoint is unresolved", mutate: func(s *DeepState) {
+			s.Tasks[0].AcceptanceCheckpointTreeSHA = "different-tree"
+		}, want: MissionOutcomeUnresolved},
+		{name: "required final verifier still gates mission success", mutate: func(s *DeepState) {
+			s.Verify = "final-check"
+		}, want: MissionOutcomeUnresolved},
+		{name: "final verifier pass allows accepted mission", mutate: func(s *DeepState) {
+			*s = withFinalVerification(*s, VerificationPassed, "landing-tree")
+		}, want: MissionOutcomeSucceeded},
+		{name: "required final verifier failure overrides accepted tasks", mutate: func(s *DeepState) {
+			*s = withFinalVerification(*s, VerificationFailed, "landing-tree")
+		}, want: MissionOutcomeFailed},
+		{name: "failed final verifier on another tree is unresolved", mutate: func(s *DeepState) {
+			*s = withFinalVerification(*s, VerificationFailed, "other-tree")
+		}, want: MissionOutcomeUnresolved},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := base
+			state.Tasks = append([]Task(nil), base.Tasks...)
+			if tc.mutate != nil {
+				tc.mutate(&state)
+			}
+			if got := DetermineMissionOutcome(state); got != tc.want {
+				t.Fatalf("DetermineMissionOutcome() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func acceptedMissionOutcomeFixture(t *testing.T) DeepState {
+	t.Helper()
+	task := Task{
+		ID: "OBJ-1", Objective: "produce the requested result", Status: StatusAccepted,
+		RepositoryChange: RepositoryChangeOptional, AcceptanceCheck: "test -e result.txt",
+		AcceptanceOutcome: AcceptanceAccepted, AcceptanceCheckOutcome: AcceptanceCheckPassed,
+		AcceptanceRunID: strings.Repeat("a", 32), AcceptanceCheckpointEventID: "task-checkpoint/executor/" + strings.Repeat("b", 32) + "/created",
+		ExecutorRunID: strings.Repeat("b", 32), Attempts: 1,
+		AcceptanceCheckpointCommit: "task-checkpoint", AcceptanceCheckpointTreeSHA: "task-tree",
+		CheckpointCommit: "task-checkpoint", CheckpointTreeSHA: "task-tree",
+		VerificationSubject: &VerificationSubject{HeadCommit: "before-checkpoint", TreeSHA: "task-tree"},
+		AcceptanceSubject:   &VerificationSubject{HeadCommit: "task-checkpoint", TreeSHA: "task-tree"},
+	}
+	mission := Mission{Objective: "complete the mission", Tasks: []Task{task}, AcceptanceContractVersion: DeterministicAcceptanceContractVersion}
+	identity, err := AcceptanceContractIdentity(mission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mission.AcceptanceContractSHA256 = identity
+	return DeepState{
+		MissionName: mission.Name, Objective: mission.Objective, Tasks: mission.Tasks,
+		AcceptanceContractVersion: mission.AcceptanceContractVersion, AcceptanceContractSHA256: mission.AcceptanceContractSHA256,
+		LandingCommit: "landing-commit", LandingCheckpointTreeSHA: "landing-tree",
+	}
+}
+
 func withFinalVerification(state DeepState, outcome VerificationOutcome, tree string) DeepState {
 	state.Verify = "test -f result.txt"
 	state.LandingVerifyDone = true
 	state.LandingVerificationOutcome = outcome
 	state.LandingVerificationSubject = &VerificationSubject{HeadCommit: "landing-head", TreeSHA: tree}
 	state.LandingCheckpointTreeSHA = "landing-tree"
+	if state.AcceptanceContractVersion != 0 {
+		identity, err := AcceptanceContractIdentity(state.MissionDefinition())
+		if err == nil {
+			state.AcceptanceContractSHA256 = identity
+		}
+	}
 	return state
 }
 

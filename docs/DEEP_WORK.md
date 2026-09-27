@@ -113,11 +113,13 @@ repository-change expectations, and exact acceptance-check commands.
 Acceptance checks are trusted shell input like `verify:` and support
 the same raw-command and shell-fence handling. Version zero remains the
 legacy contract, even if an old mission contains similarly named fields.
-The journaled coordinator now records deterministic acceptance-check runs and
+The journaled coordinator records deterministic acceptance-check runs and
 their outcomes, including successful executor-result checkpoints when a v2
-Work Unit has no generic verifier. V2 mission start/resume remains gated until
-task selection, dependency satisfaction, and mission outcome all consume
-acceptance outcomes rather than legacy `verified` terminal semantics.
+Work Unit has no generic verifier. V2 mission entrypoints validate this
+contract, and task selection, dependency satisfaction, handoff/dashboard
+projections, and mission outcome use acceptance semantics. A verified
+checkpoint remains available as durable evidence when acceptance is not yet
+satisfied.
 
 Production on-box missions must persist an explicit GitHub policy. The launcher
 configuration (mode, repository, base, allowed authors, and approval) must match
@@ -142,8 +144,10 @@ is static; Stint may add or retarget the one optional plan-bootstrap row
 described below, but it does not turn action-plan edits or review findings
 into new coordinator work items. The coordinator invokes Hermes once per work-unit
 attempt. A retry is another attempt at that same work unit, not a child action.
-`depends-on` currently means that the earlier work unit must have `verified`
-status; it does not represent a semantic-acceptance decision.
+For legacy missions, `depends-on` requires the earlier work unit to have
+`verified` status. For version 2 missions, a mission-authored Objective / Work
+Unit must be `accepted`. The optional `STINT-PLAN-*` bootstrap row is not an
+implicit dependency and does not participate in Objective acceptance.
 
 The mission's `acceptance` text is guidance included in the Hermes prompt. It
 does not itself produce deterministic acceptance evidence. A task-level
@@ -151,24 +155,24 @@ does not itself produce deterministic acceptance evidence. A task-level
 produces verifier evidence for the current work-unit attempt and exact
 repository subject. In journal-aware runs, `verified` is set after the verifier
 and matching checkpoint requirements pass. Older persisted `verified` states
-may lack that provenance. In either case, `verified` is not the stronger
-Objective C claim that the requested work-unit objective is established.
-Objective C must add that separate acceptance outcome while keeping executor
-runs, verifier runs, and checkpoints as evidence attached to the stable
-work-unit identity.
+may lack that provenance. In version 2, `verified` remains verification and
+checkpoint evidence only; the separate `accepted` status is emitted only when
+the declared deterministic acceptance check passes against the bound
+checkpoint and repository-change expectation. A successful generic verifier
+does not establish the Objective by itself.
 
 The current `verified` value is also a legacy terminal coordinator state, not
 just a verifier result: `Status.Terminal` makes task selection skip it,
 `depends-on` requires it, and `DetermineMissionOutcome` counts it toward
 mission completion when the verification/checkpoint provenance is present.
-Objective C must preserve those rules for legacy missions, while the explicitly
+Objective C preserves those rules for legacy missions, while the explicitly
 versioned contract uses acceptance outcome—not verifier status—to decide
 whether a Work Unit is complete, can satisfy a dependency, or contributes to
 mission success. A passing verifier and its checkpoint remain durable evidence
-even when new-contract acceptance is unresolved and more work is needed. The
-new contract must allow that Work Unit to remain unresolved and explicitly
-require or permit further execution without treating the verifier or checkpoint
-as acceptance. In journal-aware runs, keep the original `VerificationRun` and
+even when new-contract acceptance is unresolved and more work is needed. Such a
+checkpoint is not discarded or relabeled as acceptance; the Work Unit remains
+eligible for further execution when the attempt policy permits it. In
+journal-aware runs, keep the original `VerificationRun` and
 `TaskCheckpoint` facts in the append-only run history when later work advances
 the task projection; do not discard or reinterpret them as acceptance. Do not
 synthesize those events for legacy runs.
@@ -222,13 +226,13 @@ Configured action-plan files and `DEEP_WORK_HANDOFF.md` are treated separately w
 
 Mission-level final verification uses the same subject boundary as task verification: Stint captures the product subject, runs the configured verifier, captures it again, and persists the result only if the subject remained unchanged. An interrupted landing may reuse that result only when the persisted subject and any relevant untracked action-plan identity still match. Otherwise it clears the stale evidence and reruns the verifier. The landing checkpoint tree SHA must equal the final verification tree SHA. Legacy `LandingVerifyDone` values without a subject are not reused when a mission verifier is configured. A stop request received during an active task defers landing verification until the executor owner confirms it returned; if the owner never returns, Stint leaves an explicit quiescence block rather than verifying concurrently.
 
-`landed` is an operational phase: Stint reached a recoverable stopping and handoff boundary. It does not by itself mean the mission succeeded. The separate `missionOutcome` is `succeeded` only when every task has verified evidence bound to its checkpoint and any configured final mission verifier passed on the landing checkpoint tree. An explicit non-zero final mission verifier on that exact checkpoint produces `failed` without changing previously verified task evidence. Remaining unaccepted tasks produce `incomplete`; when task evidence is otherwise complete, missing final-verifier provenance or a timeout, cancellation, execution error, or absent required proof produces `unresolved`. A2 state without the typed final-verifier outcome is rechecked on resume rather than promoted from its prose summary. Legacy landed state without a recorded mission outcome remains unknown; Stint does not synthesize a historical outcome. The handoff and `stint deep status` show phase and mission outcome separately, and `deep start`/`deep resume` returns an error after safely landing a mission whose required final verifier failed.
+`landed` is an operational phase: Stint reached a recoverable stopping and handoff boundary. It does not by itself mean the mission succeeded. For legacy missions, `missionOutcome` is `succeeded` only when every task has verified evidence bound to its checkpoint and any configured final mission verifier passed on the landing checkpoint tree. For version 2 missions, each mission-authored Objective / Work Unit must instead have bound deterministic acceptance evidence; optional coordinator rows such as the `STINT-PLAN-*` bootstrap row do not gate mission acceptance. An explicit non-zero final mission verifier on that exact checkpoint produces `failed` without changing previously accepted or verified task evidence. Remaining unaccepted tasks produce `incomplete`; when task evidence is otherwise complete, missing final-verifier provenance or a timeout, cancellation, execution error, or absent required proof produces `unresolved`. A2 state without the typed final-verifier outcome is rechecked on resume rather than promoted from its prose summary. Legacy landed state without a recorded mission outcome remains unknown; Stint does not synthesize a historical outcome. The handoff, dashboard, and `stint deep status` show phase and mission outcome separately, and `deep start`/`deep resume` returns an error after safely landing a mission whose required final verifier failed.
 
 Verification can run after an executor failure for diagnostics, but that result cannot accept the task. Durable state and the dashboard retain executor and verification outcomes separately. A task without a verifier remains `needs_human`. Legacy task records remain readable; absent subject fields stay absent and do not gain synthetic historical evidence.
 
 Mission and task verification values are trusted shell input and run through `sh -c`; Stint does not sandbox them. A mission may express a command in a supported shell fenced block, which the mission parser stores as raw command data. Persisted commands must remain raw: inline backtick wrappers are rejected during mission parsing, state preflight, and immediately before local or remote execution. Shell syntax inside a raw command, including command substitution such as ``echo `date` ``, remains shell syntax and is preserved. Verifier outcomes distinguish pass, nonzero exit, timeout, cancellation, invalid command, and execution or transport error, with the exit status and bounded output retained where available.
 
-Review tasks may use `depends-on: IMPLEMENT-001, TEST-001` to name prerequisites declared earlier in the mission. The coordinator runs the review only after each prerequisite reaches `verified`; if a prerequisite ends blocked or needs human input, the review is recorded as blocked without invoking Hermes. The Tasks view shows a task's configured reasoning level, or `inherit` when it uses the session default.
+Review tasks may use `depends-on: IMPLEMENT-001, TEST-001` to name prerequisites declared earlier in the mission. The coordinator runs the review only after each prerequisite reaches the contract-appropriate completion state: `verified` for legacy missions and `accepted` for version 2 Objective / Work Units. If a prerequisite is blocked or needs human input, the dependent work is recorded as blocked without invoking Hermes. The Tasks view shows a task's configured reasoning level, or `inherit` when it uses the session default.
 
 `--task-timeout` is a per-invocation maximum. When less time remains before the landing cutoff, the coordinator shortens an invocation only if it can still reserve the task-verification bound and checkpoint overhead. It defers work when the remaining executor window is below five minutes (or below the configured maximum when that maximum is shorter). The chosen timeout and its reason are persisted with the task attempt.
 
@@ -252,7 +256,7 @@ Deep Work state is stored on the GPU under the supervisor's state root (default 
 
 Executor records include task and attempt identity, configured/effective timeout and remaining-deadline context, bounded worker/provider/model identity (including the resolved provider actually passed to Hermes), compute binding, end-time clock source, and Git-visible repository identity before and after execution. Verification records include task or mission-final purpose, command source and SHA-256 identity, the exact Git-visible subject, bounded runner/protocol identity, timeout/deadline context, typed result facts, and a private bounded output artifact reference. Raw prompts, environment dumps, full logs, and secrets are excluded. A task checkpoint event links its task attempt and executor result either to the passed verification run or, for a v2 Work Unit with no generic verifier, to the successful executor result. It preserves the subject, checkpoint commit, and checkpoint tree, but does not itself establish Objective acceptance.
 
-The journal also defines an `AcceptanceRun` for version 2 missions. Its start event binds the stable Objective/Work Unit ID and attempt to the mission-contract digest, objective-check command identity, the first executor's pre-work repository baseline, and the exact prior checkpoint. The acceptance subject is the checkpoint's resulting `Commit`/`TreeSHA` pair: the verifier/executor subject can have the prior `HEAD` while Stint creates the semantic checkpoint commit for the same tree. The command runs only while that checkpoint subject is current, and its result records typed command outcome, post-check subject/quiescence facts, and a decision derived from those facts plus the declared repository-change expectation. Bounded output is stored as a private artifact and referenced by the event; raw command text and output are not copied into the journal. A v2 Work Unit without generic `verify:` can checkpoint a successful executor result; a configured generic verifier must pass before a verification-basis checkpoint can be created. If an acceptance start has no result when Stint resumes, recovery records acceptance as unresolved and quiescence as unknown, activating the existing hard block on further execution. The coordinator now records these outcomes, but v2 mission entrypoints remain gated until selection, dependencies, and mission outcome consume acceptance semantics.
+The journal also defines an `AcceptanceRun` for version 2 missions. Its start event binds the stable Objective/Work Unit ID and attempt to the mission-contract digest, objective-check command identity, the first executor's pre-work repository baseline, and the exact prior checkpoint. The acceptance subject is the checkpoint's resulting `Commit`/`TreeSHA` pair: the verifier/executor subject can have the prior `HEAD` while Stint creates the semantic checkpoint commit for the same tree. The command runs only while that checkpoint subject is current, and its result records typed command outcome, post-check subject/quiescence facts, and a decision derived from those facts plus the declared repository-change expectation. Bounded output is stored as a private artifact and referenced by the event; raw command text and output are not copied into the journal. A v2 Work Unit without generic `verify:` can checkpoint a successful executor result; a configured generic verifier must pass before a verification-basis checkpoint can be created. If an acceptance start has no result when Stint resumes, recovery records acceptance as unresolved and quiescence as unknown, activating the existing hard block on further execution. Contract-aware task selection can evaluate a still-current pending checkpoint without consuming another executor attempt, subject to the reserved acceptance window.
 
 For journal-aware runs, `executor.started` and its projected active-task attempt are synced immediately before Hermes is launched. This is the durable invocation boundary; by itself it does not prove the Hermes process was reached. Local and remote Hermes supervisors write a bounded, mode-0600 receipt outside the product worktree either for a definite pre-launch setup failure or after recording the child exit and confirming its process group is quiescent. The receipt is atomically installed and synced before the setup-failure or result frame is emitted. A normal `executor.result` is then synced before task verification starts and records the observed exit/outcome and resulting Git-visible product-tree identity. A timeout or known execution failure remains an executor result; an unconfirmed process group records that uncertainty and sets the existing hard quiescence block. For an unconfirmed result without a supervisor receipt, `RunEvent.OccurredAt` records when Stint observed the transport/protocol failure and `ExecutorRun.EndedAt` remains empty until a receipt proves the process end.
 

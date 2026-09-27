@@ -21,13 +21,14 @@ const (
 )
 
 type Task struct {
-	ID, Objective, Status, LastResult, Blocker, Reasoning   string
-	Verify, CheckpointCommit, VerifiedAt                    string
-	ExecutionError, VerificationCommand, VerificationResult string
-	TimeoutDecision                                         string
-	ConfiguredTimeoutSec, EffectiveTimeoutSec               int
-	DependsOn                                               []string
-	Attempts                                                int
+	ID, Objective, Status, LastResult, Blocker, Reasoning       string
+	Verify, CheckpointCommit, VerifiedAt                        string
+	ExecutionError, VerificationCommand, VerificationResult     string
+	AcceptanceOutcome, AcceptanceCheckOutcome, AcceptanceReason string
+	TimeoutDecision                                             string
+	ConfiguredTimeoutSec, EffectiveTimeoutSec                   int
+	DependsOn                                                   []string
+	Attempts                                                    int
 }
 
 type Event struct {
@@ -66,6 +67,7 @@ type Model struct {
 	BaseCommit        string
 	Branch            string
 	Verify            string
+	MissionOutcome    string
 	ComputeBinding    string
 	LandingReason     string
 	LandingCommit     string
@@ -177,6 +179,9 @@ func runView(m Model, p palette) string {
 		worker += " · compute binding not currently verified"
 	}
 	fmt.Fprintf(&b, "%s  %s\n", p.bold(or(m.Mission, "unnamed mission")), p.muted("session "+m.SessionID))
+	if m.MissionOutcome != "" && m.MissionOutcome != "pending" {
+		fmt.Fprintf(&b, "Mission outcome %s\n", missionOutcomeLabel(m.MissionOutcome, p))
+	}
 	fmt.Fprintf(&b, "Worker     %s\n", worker)
 	fmt.Fprintf(&b, "Coordinator %s\n", or(m.Coordinator, "unknown"))
 
@@ -198,8 +203,8 @@ func runView(m Model, p palette) string {
 	} else {
 		b.WriteString(next.ID + "  " + compact(next.Objective, max(12, m.Width-22)))
 	}
-	verified, queued, blocked, incomplete := taskCounts(m.Tasks)
-	fmt.Fprintf(&b, "\nPROGRESS   %d verified · %d active/retry · %d queued · %d blocked", verified, incomplete, queued, blocked)
+	accepted, verified, checkpointed, queued, blocked, working := taskCounts(m.Tasks)
+	fmt.Fprintf(&b, "\nPROGRESS   %d accepted · %d verified · %d checkpointed · %d active/retry · %d queued · %d blocked", accepted, verified, checkpointed, working, queued, blocked)
 
 	b.WriteString("\n\n" + p.bold("COMPUTE") + "    ")
 	if !m.Compute.Available {
@@ -243,6 +248,16 @@ func tasksView(m Model, p palette) string {
 		}
 		if task.CheckpointCommit != "" {
 			lines = append(lines, "             checkpoint SHA "+task.CheckpointCommit)
+		}
+		if task.AcceptanceOutcome != "" {
+			acceptance := "acceptance " + task.AcceptanceOutcome
+			if task.AcceptanceCheckOutcome != "" {
+				acceptance += " · check " + task.AcceptanceCheckOutcome
+			}
+			lines = append(lines, "             "+p.accent(compact(acceptance, max(12, m.Width-14))))
+			if task.AcceptanceReason != "" {
+				lines = append(lines, "             "+p.muted(compact("acceptance reason: "+task.AcceptanceReason, max(12, m.Width-14))))
+			}
 		}
 		if task.Verify != "" {
 			lines = append(lines, "             verify "+compact(task.Verify, max(12, m.Width-25)))
@@ -327,19 +342,37 @@ func phaseView(m Model, p palette) string {
 	if !m.StartedAt.IsZero() {
 		lines = append(lines, "Started          "+m.StartedAt.Local().Format(time.RFC3339))
 	}
-	lines = append(lines, "\n"+p.bold("TASK VERIFICATION AND CHECKPOINTS"))
+	lines = append(lines, "\n"+p.bold("MISSION AND TASK EVIDENCE"))
+	lines = append(lines, "Mission outcome  "+missionOutcomeLabel(or(m.MissionOutcome, "unknown"), p))
 	if len(m.Tasks) == 0 {
 		lines = append(lines, p.muted("No tasks recorded."))
 	} else {
 		for _, task := range m.Tasks {
-			verification := "not verified"
-			if task.Status == "verified" {
-				verification = "verified"
-				if task.VerifiedAt != "" {
-					verification += " at " + task.VerifiedAt
+			verification := task.VerificationResult
+			if verification == "" {
+				verification = "not verified"
+				if task.Status == "verified" {
+					verification = "verified"
 				}
+			} else if verification == "not run" {
+				verification = "verification not run"
+			} else {
+				verification = "verification " + verificationStatusLabel(verification)
+			}
+			if task.Status == "verified" && task.VerifiedAt != "" && verification == "verified" {
+				verification += " at " + task.VerifiedAt
 			}
 			lines = append(lines, task.ID+" · "+task.Status+" · "+verification)
+			if task.AcceptanceOutcome != "" {
+				acceptance := "  acceptance " + task.AcceptanceOutcome
+				if task.AcceptanceCheckOutcome != "" {
+					acceptance += " · check " + task.AcceptanceCheckOutcome
+				}
+				lines = append(lines, acceptance)
+				if task.AcceptanceReason != "" {
+					lines = append(lines, "  acceptance reason "+compact(task.AcceptanceReason, max(12, m.Width-22)))
+				}
+			}
 			if task.CheckpointCommit != "" {
 				lines = append(lines, "  checkpoint SHA "+task.CheckpointCommit)
 			}
@@ -510,13 +543,13 @@ func status(value string, p palette) string {
 
 func taskStatus(value string, p palette) string {
 	switch value {
-	case "verified":
+	case "verified", "accepted":
 		return p.success(value)
 	case "active":
 		return p.accent(value)
 	case "blocked", "needs_human":
 		return p.danger(value)
-	case "incomplete":
+	case "incomplete", "checkpointed":
 		return p.warn(value)
 	default:
 		return p.muted(or(value, "queued"))
@@ -544,18 +577,24 @@ func activeTask(tasks []Task) *Task {
 
 func nextTask(tasks []Task) *Task {
 	for i := range tasks {
-		if tasks[i].Status == "queued" || tasks[i].Status == "incomplete" {
+		task := tasks[i]
+		if task.Status == "queued" || task.Status == "incomplete" || task.Status == "checkpointed" ||
+			(task.Status == "verified" && task.AcceptanceOutcome != "" && task.AcceptanceOutcome != "accepted" && task.AcceptanceOutcome != "unresolved") {
 			return &tasks[i]
 		}
 	}
 	return nil
 }
 
-func taskCounts(tasks []Task) (verified, queued, blocked, working int) {
+func taskCounts(tasks []Task) (accepted, verified, checkpointed, queued, blocked, working int) {
 	for _, task := range tasks {
 		switch task.Status {
+		case "accepted":
+			accepted++
 		case "verified":
 			verified++
+		case "checkpointed":
+			checkpointed++
 		case "queued":
 			queued++
 		case "blocked", "needs_human":
@@ -565,6 +604,19 @@ func taskCounts(tasks []Task) (verified, queued, blocked, working int) {
 		}
 	}
 	return
+}
+
+func missionOutcomeLabel(value string, p palette) string {
+	switch value {
+	case "succeeded":
+		return p.success(value)
+	case "failed":
+		return p.danger(value)
+	case "incomplete", "unresolved":
+		return p.warn(value)
+	default:
+		return p.muted(value)
+	}
 }
 
 func elapsed(then, now time.Time) time.Duration {

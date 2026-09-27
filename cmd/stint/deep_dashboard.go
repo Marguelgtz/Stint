@@ -357,6 +357,7 @@ func (c *deepDashboardController) project() {
 	m.BaseCommit = s.BaseCommit
 	m.Branch = s.Branch
 	m.Verify = s.Verify
+	m.MissionOutcome = string(deep.DisplayMissionOutcome(s.MissionOutcome, s.Phase))
 	m.LandingReason = s.LandingReason
 	m.LandingCommit = s.LandingCommit
 	m.LandingVerify = s.LandingVerify
@@ -391,6 +392,7 @@ func (c *deepDashboardController) project() {
 			CheckpointCommit: task.CheckpointCommit, VerifiedAt: verifiedAt,
 			ExecutionError: task.ExecutionError, VerificationCommand: task.VerificationCommand,
 			VerificationResult: task.VerificationResult, TimeoutDecision: task.TimeoutDecision,
+			AcceptanceOutcome: string(task.AcceptanceOutcome), AcceptanceCheckOutcome: string(task.AcceptanceCheckOutcome), AcceptanceReason: task.AcceptanceReason,
 			ConfiguredTimeoutSec: task.ConfiguredTimeoutSec, EffectiveTimeoutSec: task.EffectiveTimeoutSec,
 			DependsOn: append([]string(nil), task.DependsOn...),
 		})
