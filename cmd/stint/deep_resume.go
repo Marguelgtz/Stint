@@ -145,7 +145,7 @@ func runDeepResume(args []string) error {
 	if err != nil {
 		return fmt.Errorf("the compute-box model endpoint is not answering: %w", err)
 	}
-	if err := preflightRemoteVerifyTools(deep.Mission{Verify: state.Verify, Tasks: state.Tasks}, remoteFn); err != nil {
+	if err := preflightRemoteVerifyTools(missionFromState(state), remoteFn); err != nil {
 		return err
 	}
 
@@ -246,8 +246,12 @@ func loadValidatedDeepResumeState(stateDir, sessionID string) (deep.DeepState, e
 	if err != nil {
 		return deep.DeepState{}, err
 	}
-	if err := validateMissionVerifyCommands(deep.Mission{Verify: state.Verify, Tasks: state.Tasks}); err != nil {
+	mission := missionFromState(state)
+	if err := validateMissionVerifyCommands(mission); err != nil {
 		return deep.DeepState{}, fmt.Errorf("persisted verification command data is invalid: %w", err)
+	}
+	if err := requireAcceptanceRuntimeSupport(mission); err != nil {
+		return deep.DeepState{}, err
 	}
 	return state, nil
 }

@@ -61,6 +61,121 @@ func TestParseMissionFull(t *testing.T) {
 	}
 }
 
+func TestParseMissionVersionedAcceptanceContract(t *testing.T) {
+	content := `# explicit contract
+
+## Objective
+Prove a specific work-unit outcome.
+
+## Acceptance Contract
+version: 2
+
+## Tasks
+- [ ] OBJECTIVE-1: expose the behavior
+  - repository-change: required
+  - acceptance-check: test -x ./bin/serve && ./bin/serve --list-tools | grep -qx evaluate_change
+  - verify: go test ./...
+`
+	mission, err := ParseMission(content)
+	if err != nil {
+		t.Fatalf("ParseMission: %v", err)
+	}
+	if mission.AcceptanceContractVersion != DeterministicAcceptanceContractVersion || mission.AcceptanceContractSHA256 == "" {
+		t.Fatalf("contract identity/version = %d/%q", mission.AcceptanceContractVersion, mission.AcceptanceContractSHA256)
+	}
+	task := mission.Tasks[0]
+	if task.RepositoryChange != RepositoryChangeRequired || task.AcceptanceCheck != "test -x ./bin/serve && ./bin/serve --list-tools | grep -qx evaluate_change" || task.Verify != "go test ./..." {
+		t.Fatalf("task acceptance contract = %+v", task)
+	}
+	if err := ValidateMissionAcceptanceContract(mission); err != nil {
+		t.Fatalf("parsed contract did not validate: %v", err)
+	}
+
+	changed := mission
+	changed.Tasks = append([]Task(nil), mission.Tasks...)
+	changed.Tasks[0].AcceptanceCheck += " --different"
+	if err := ValidateMissionAcceptanceContract(changed); err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("changed persisted check did not invalidate contract identity: %v", err)
+	}
+	changed = mission
+	changed.Tasks = append([]Task(nil), mission.Tasks...)
+	changed.Tasks[0].Objective = "a different requested outcome"
+	if err := ValidateMissionAcceptanceContract(changed); err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("changed Work Unit objective did not invalidate contract identity: %v", err)
+	}
+	changed = mission
+	changed.Success = append(append([]string(nil), mission.Success...), "another criterion")
+	if err := ValidateMissionAcceptanceContract(changed); err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("changed mission success contract did not invalidate identity: %v", err)
+	}
+}
+
+func TestParseTaskAcceptanceCheckSupportsShellFence(t *testing.T) {
+	content := "# fenced\n\n## Objective\no\n\n## Acceptance Contract\nversion: 2\n\n## Tasks\n- [ ] T1: prove output\n  - repository-change: optional\n  - acceptance-check: ```sh test -e output.txt```\n"
+	mission, err := ParseMission(content)
+	if err != nil {
+		t.Fatalf("ParseMission: %v", err)
+	}
+	if got, want := mission.Tasks[0].AcceptanceCheck, "test -e output.txt"; got != want {
+		t.Fatalf("acceptance-check = %q, want %q", got, want)
+	}
+}
+
+func TestParseMissionAcceptanceContractFailsClosed(t *testing.T) {
+	if _, err := ParseMission("# x\n\n## Objective\no\n\n## Acceptance Contract\n\n## Tasks\n- [ ] T1: work\n"); err == nil || !strings.Contains(err.Error(), "explicit supported version") {
+		t.Fatalf("empty acceptance contract section error = %v", err)
+	}
+	base := "# x\n\n## Objective\no\n\n## Acceptance Contract\nversion: 2\n\n## Tasks\n- [ ] T1: work\n"
+	for _, tc := range []struct{ suffix, want string }{
+		{"", "repository-change"},
+		{"  - repository-change: maybe\n  - acceptance-check: true\n", "repository-change"},
+		{"  - repository-change: optional\n", "acceptance-check"},
+		{"  - repository-change: optional\n  - acceptance-check: `true`\n", "Markdown wrapper"},
+		{"  - repository-change: forbidden\n  - acceptance-check: true\n  - acceptance-check: false\n", "declared more than once"},
+	} {
+		if _, err := ParseMission(base + tc.suffix); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("ParseMission error = %v, want %q", err, tc.want)
+		}
+	}
+	if _, err := ParseMission("# x\n\n## Objective\no\n\n## Acceptance Contract\nversion: 99\n\n## Tasks\n- [ ] T1: work\n"); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("unsupported acceptance version error = %v", err)
+	}
+}
+
+func TestAcceptanceLikeFieldsDoNotUpgradeLegacyMission(t *testing.T) {
+	mission, err := ParseMission("# legacy\n\n## Objective\no\n\n## Tasks\n- [ ] T1: work\n  - repository-change: required\n  - acceptance-check: `wrapped but never executable`\n")
+	if err != nil {
+		t.Fatalf("legacy mission with unknown fields should remain readable: %v", err)
+	}
+	if mission.AcceptanceContractVersion != 0 || mission.AcceptanceContractSHA256 != "" ||
+		mission.Tasks[0].RepositoryChange != "" || mission.Tasks[0].AcceptanceCheck != "" {
+		t.Fatalf("legacy mission picked up versioned acceptance semantics: %+v", mission)
+	}
+}
+
+func TestAcceptanceContractPersistsAndDetectsProjectionDrift(t *testing.T) {
+	mission, err := ParseMission("# v2\n\n## Objective\no\n\n## Acceptance Contract\nversion: 2\n\n## Tasks\n- [ ] T1: work\n  - repository-change: optional\n  - acceptance-check: test -e result\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := NewState("20260927-120000", mission, "/repo", "/repo/.stint-deep/test", time.Now().Add(time.Hour), time.Now().Add(50*time.Minute), 2, time.Now())
+	stateDir := t.TempDir()
+	if err := state.SaveDir(stateDir); err != nil {
+		t.Fatalf("SaveDir: %v", err)
+	}
+	loaded, err := LoadState(stateDir, state.SessionID)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if loaded.AcceptanceContractVersion != 2 || loaded.AcceptanceContractSHA256 != mission.AcceptanceContractSHA256 {
+		t.Fatalf("loaded contract = %d/%q", loaded.AcceptanceContractVersion, loaded.AcceptanceContractSHA256)
+	}
+	loaded.Tasks[0].AcceptanceCheck = "false"
+	if err := loaded.SaveDir(stateDir); err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("SaveDir accepted edited contract identity: %v", err)
+	}
+}
+
 func TestParseMissionRejectsMissingObjective(t *testing.T) {
 	if _, err := ParseMission("# x\n\n## Tasks\n- [ ] T1: do it\n"); err == nil {
 		t.Fatal("expected error for missing objective")

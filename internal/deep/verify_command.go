@@ -95,6 +95,10 @@ func isShellFenceLabel(label string) bool {
 }
 
 func parseTaskVerifyCommand(raw string) (string, error) {
+	return parseTaskCommand(raw, "task verify")
+}
+
+func parseTaskCommand(raw, fieldName string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	for _, marker := range []string{"```", "~~~"} {
 		if !strings.HasPrefix(trimmed, marker) {
@@ -103,7 +107,7 @@ func parseTaskVerifyCommand(raw string) (string, error) {
 		rest := strings.TrimSpace(strings.TrimPrefix(trimmed, marker))
 		closeAt := strings.Index(rest, marker)
 		if closeAt < 0 || strings.TrimSpace(rest[closeAt+len(marker):]) != "" {
-			return "", errors.New("task verify must use a complete single-line fence")
+			return "", fmt.Errorf("%s must use a complete single-line fence", fieldName)
 		}
 		command, err := commandFromFenceBody(rest[:closeAt])
 		if err != nil {

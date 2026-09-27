@@ -208,10 +208,19 @@ func splitShellCommands(command string) []string {
 }
 
 func preflightRemoteVerifyTools(mission deep.Mission, remote remoteCmd) error {
+	if err := validateMissionVerifyCommands(mission); err != nil {
+		return err
+	}
+	if err := requireAcceptanceRuntimeSupport(mission); err != nil {
+		return err
+	}
 	commands := make([]string, 0, len(mission.Tasks)+1)
 	commands = append(commands, mission.Verify)
 	for _, task := range mission.Tasks {
 		commands = append(commands, task.Verify)
+		if mission.AcceptanceContractVersion != 0 {
+			commands = append(commands, task.AcceptanceCheck)
+		}
 	}
 	for _, tool := range verificationToolNames(commands) {
 		if _, err := remote(context.Background(), "command -v "+shellQuote(tool)+" >/dev/null 2>&1"); err != nil {
@@ -222,10 +231,19 @@ func preflightRemoteVerifyTools(mission deep.Mission, remote remoteCmd) error {
 }
 
 func preflightLocalVerifyTools(mission deep.Mission) error {
+	if err := validateMissionVerifyCommands(mission); err != nil {
+		return err
+	}
+	if err := requireAcceptanceRuntimeSupport(mission); err != nil {
+		return err
+	}
 	commands := make([]string, 0, len(mission.Tasks)+1)
 	commands = append(commands, mission.Verify)
 	for _, task := range mission.Tasks {
 		commands = append(commands, task.Verify)
+		if mission.AcceptanceContractVersion != 0 {
+			commands = append(commands, task.AcceptanceCheck)
+		}
 	}
 	for _, tool := range verificationToolNames(commands) {
 		if _, err := lookPath(tool); err != nil {

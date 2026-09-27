@@ -44,6 +44,18 @@ func (s Status) Terminal() bool {
 
 func (s Status) String() string { return string(s) }
 
+// RepositoryChangeExpectation declares whether a new-contract Work Unit is
+// required, permitted, or forbidden to change the Git-visible product tree.
+// The comparison is against the Work Unit's durable first-executor baseline,
+// not against each individual attempt.
+type RepositoryChangeExpectation string
+
+const (
+	RepositoryChangeRequired  RepositoryChangeExpectation = "required"
+	RepositoryChangeOptional  RepositoryChangeExpectation = "optional"
+	RepositoryChangeForbidden RepositoryChangeExpectation = "forbidden"
+)
+
 // Task is the current compatibility model for one bounded Deep Work work unit
 // (called an Objective in product discussions). A work unit may involve many
 // actions; it is not an atomic action. Current mission IDs come from the
@@ -60,7 +72,13 @@ type Task struct {
 	// a deterministic acceptance outcome or evidence record.
 	Acceptance string `json:"acceptance,omitempty"`
 	Verify     string `json:"verify,omitempty"`
-	Reasoning  string `json:"reasoning,omitempty"`
+	// AcceptanceCheck is deterministic, Objective-specific evidence. It is
+	// intentionally distinct from Verify, which checks general repository
+	// health. These fields are effective only under an explicit mission
+	// acceptance contract version.
+	RepositoryChange RepositoryChangeExpectation `json:"repositoryChange,omitempty"`
+	AcceptanceCheck  string                      `json:"acceptanceCheck,omitempty"`
+	Reasoning        string                      `json:"reasoning,omitempty"`
 	// DependsOn names earlier tasks that must be verified before this task can
 	// run. This supports review tasks that inspect completed implementations.
 	DependsOn  []string `json:"dependsOn,omitempty"`
