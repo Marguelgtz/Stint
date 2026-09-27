@@ -38,6 +38,8 @@ type DeepState struct {
 	Success                        []string             `json:"success,omitempty"`
 	Constraints                    []string             `json:"constraints,omitempty"`
 	Verify                         string               `json:"verify,omitempty"`
+	AcceptanceContractVersion      int                  `json:"acceptanceContractVersion,omitempty"`
+	AcceptanceContractSHA256       string               `json:"acceptanceContractSha256,omitempty"`
 	GitHub                         GitHubPolicy         `json:"github"`
 	RepoPath                       string               `json:"repoPath"`
 	WorktreePath                   string               `json:"worktreePath"`
@@ -78,6 +80,19 @@ type DeepState struct {
 	Exec                     *ExecSettings `json:"exec,omitempty"`
 	StartedAt                time.Time     `json:"startedAt"`
 	UpdatedAt                time.Time     `json:"updatedAt,omitempty"`
+}
+
+// MissionDefinition reconstructs the immutable mission contract stored in a
+// session projection. It deliberately excludes runtime-only coordinator rows
+// from the acceptance identity through their reserved/source markers.
+func (state DeepState) MissionDefinition() Mission {
+	return Mission{
+		Name: state.MissionName, Objective: state.Objective,
+		Success: state.Success, Constraints: state.Constraints, Verify: state.Verify,
+		AcceptanceContractVersion: state.AcceptanceContractVersion,
+		AcceptanceContractSHA256:  state.AcceptanceContractSHA256,
+		GitHub:                    state.GitHub, Tasks: state.Tasks,
+	}
 }
 
 // LandingRecord preserves the identity and terminal reason of an earlier
@@ -138,22 +153,24 @@ func BranchName(sessionID string) string {
 // NewState builds the initial state for a parsed mission.
 func NewState(sessionID string, mission Mission, repoPath, worktreePath string, deadline time.Time, landBefore time.Time, taskAttemptCap int, now time.Time) DeepState {
 	return DeepState{
-		SessionID:      sessionID,
-		MissionName:    mission.Name,
-		Objective:      mission.Objective,
-		Success:        mission.Success,
-		Constraints:    mission.Constraints,
-		Verify:         mission.Verify,
-		GitHub:         mission.GitHub,
-		RepoPath:       repoPath,
-		WorktreePath:   worktreePath,
-		Branch:         BranchName(sessionID),
-		Tasks:          mission.Tasks,
-		Phase:          PhaseExecuting,
-		MissionOutcome: MissionOutcomePending,
-		Deadline:       deadline.UTC(),
-		LandBefore:     landBefore.UTC(),
-		TaskAttemptCap: taskAttemptCap,
-		StartedAt:      now.UTC(),
+		SessionID:                 sessionID,
+		MissionName:               mission.Name,
+		Objective:                 mission.Objective,
+		Success:                   mission.Success,
+		Constraints:               mission.Constraints,
+		Verify:                    mission.Verify,
+		AcceptanceContractVersion: mission.AcceptanceContractVersion,
+		AcceptanceContractSHA256:  mission.AcceptanceContractSHA256,
+		GitHub:                    mission.GitHub,
+		RepoPath:                  repoPath,
+		WorktreePath:              worktreePath,
+		Branch:                    BranchName(sessionID),
+		Tasks:                     mission.Tasks,
+		Phase:                     PhaseExecuting,
+		MissionOutcome:            MissionOutcomePending,
+		Deadline:                  deadline.UTC(),
+		LandBefore:                landBefore.UTC(),
+		TaskAttemptCap:            taskAttemptCap,
+		StartedAt:                 now.UTC(),
 	}
 }

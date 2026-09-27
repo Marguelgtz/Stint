@@ -90,6 +90,33 @@ go test ./...
 - allowed-authors: alice, bob
 ```
 
+Missions opt into deterministic Objective acceptance explicitly:
+
+```markdown
+## Acceptance Contract
+version: 2
+
+## Tasks
+- [ ] PARSE-001: Reject the malformed retry header.
+  - repository-change: required
+  - acceptance-check: go test ./internal/parser -run TestMalformedRetryHeader
+  - verify: go test ./internal/parser
+```
+
+Version 2 requires both `repository-change` and an Objective-specific
+`acceptance-check` on every mission Work Unit. `verify:` remains general
+correctness/regression evidence; it does not substitute for the acceptance
+check. The contract version is persisted separately from the RunEvent schema,
+and its identity covers the mission/Work Unit objectives, mission success and
+constraints, dependencies, configured generic-verifier identities,
+repository-change expectations, and exact acceptance-check commands.
+Acceptance checks are trusted shell input like `verify:` and support
+the same raw-command and shell-fence handling. Version zero remains the
+legacy contract, even if an old mission contains similarly named fields.
+Until the complete Objective C coordinator stack is available, Stint rejects
+execution and resume of version 2 missions instead of applying legacy
+`verified` completion behavior to them.
+
 Production on-box missions must persist an explicit GitHub policy. The launcher
 configuration (mode, repository, base, allowed authors, and approval) must match
 that mission section exactly or launch fails. The current on-box publisher only
@@ -174,8 +201,8 @@ worktree-relative GPU path for fresh sessions, persist it, and pass it in each
 Hermes prompt without creating a synthetic objective row. Legacy sessions with
 no configured plan should remain readable and retain their current behavior.
 
-Objective C should define deterministic acceptance for the bounded work unit
-identified by the current task ID. It must not require a fixed set of child
+Objective C uses the version 2 contract to define deterministic acceptance for
+the bounded work unit identified by the current task ID. It must not require a fixed set of child
 actions, a single Hermes invocation, a single verifier invocation, or an
 action-plan file. A mission contract version must distinguish legacy missions
 from missions that explicitly declare the new acceptance semantics; the run

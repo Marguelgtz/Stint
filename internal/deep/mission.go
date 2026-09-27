@@ -1,6 +1,7 @@
 package deep
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -24,24 +25,33 @@ import (
 //	## Verification
 //	<raw trusted shell command the coordinator runs to verify the workspace>
 //
+//	## Acceptance Contract
+//	version: 2
+//
 //	## Tasks
 //	- [ ] <ID>: <objective>
 //	  - acceptance: <narrative objective intent included in the executor prompt>
 //	  - verify: <raw trusted shell command producing evidence for THIS work unit;
 //	    overrides the mission-level ## Verification command for this work unit>
+//	  - repository-change: required | optional | forbidden
+//	  - acceptance-check: <raw trusted shell command proving the specific outcome>
 //	  - depends-on: IMPLEMENT-001
 //
 // Unknown sections are ignored so the format can grow. Objective and a
 // non-empty task list are required; anything else is optional.
 type Mission struct {
-	Name             string
-	Objective        string
-	Success          []string
-	Constraints      []string
-	Verify           string
-	GitHub           GitHubPolicy
-	GitHubConfigured bool
-	Tasks            []Task
+	Name        string
+	Objective   string
+	Success     []string
+	Constraints []string
+	Verify      string
+	// AcceptanceContractVersion is zero for missions authored before the
+	// deterministic acceptance contract was explicitly opted into.
+	AcceptanceContractVersion int
+	AcceptanceContractSHA256  string
+	GitHub                    GitHubPolicy
+	GitHubConfigured          bool
+	Tasks                     []Task
 }
 
 // ParseMission parses mission Markdown content into a Mission.
@@ -51,6 +61,9 @@ func ParseMission(content string) (Mission, error) {
 	var taskIdx = -1
 	var verifyFence string
 	var verifyFenceBody []string
+	acceptanceContractDeclared := false
+	acceptanceContractFields := make(map[string]bool)
+	taskAcceptanceFields := make(map[string]map[string]int)
 	var githubMode, githubRepository, githubBase, githubAuthors, githubApproval string
 	githubFields := make(map[string]bool)
 
@@ -77,6 +90,9 @@ func ParseMission(content string) (Mission, error) {
 
 		if strings.HasPrefix(trimmed, "## ") {
 			section = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(trimmed, "## ")))
+			if section == "acceptance contract" {
+				acceptanceContractDeclared = true
+			}
 			if section == "github" {
 				m.GitHubConfigured = true
 			}
@@ -117,6 +133,22 @@ func ParseMission(content string) (Mission, error) {
 				}
 				m.Verify = command
 			}
+		case "acceptance contract":
+			key, value, ok := policyField(trimmed)
+			if !ok {
+				return m, errors.New("acceptance contract requires a version field")
+			}
+			if key != "version" {
+				return m, fmt.Errorf("unknown acceptance contract field %q", key)
+			}
+			if acceptanceContractFields[key] {
+				return m, errors.New("acceptance contract version is declared more than once")
+			}
+			acceptanceContractFields[key] = true
+			if value != "2" {
+				return m, fmt.Errorf("unsupported mission acceptance contract version %q", value)
+			}
+			m.AcceptanceContractVersion = DeterministicAcceptanceContractVersion
 		case "github":
 			key, value, ok := policyField(trimmed)
 			if !ok {
@@ -165,6 +197,13 @@ func ParseMission(content string) (Mission, error) {
 					}
 					m.Tasks[taskIdx].DependsOn = append(m.Tasks[taskIdx].DependsOn, id)
 				}
+			} else if strings.HasPrefix(body, "repository-change:") && taskIdx >= 0 {
+				markTaskAcceptanceField(taskAcceptanceFields, m.Tasks[taskIdx].ID, "repository-change")
+				value := RepositoryChangeExpectation(strings.ToLower(strings.TrimSpace(strings.TrimPrefix(body, "repository-change:"))))
+				m.Tasks[taskIdx].RepositoryChange = value
+			} else if strings.HasPrefix(body, "acceptance-check:") && taskIdx >= 0 {
+				markTaskAcceptanceField(taskAcceptanceFields, m.Tasks[taskIdx].ID, "acceptance-check")
+				m.Tasks[taskIdx].AcceptanceCheck = strings.TrimSpace(strings.TrimPrefix(body, "acceptance-check:"))
 			} else if strings.HasPrefix(body, "acceptance:") && taskIdx >= 0 {
 				m.Tasks[taskIdx].Acceptance = strings.TrimSpace(strings.TrimPrefix(body, "acceptance:"))
 			} else if strings.HasPrefix(body, "verify:") && taskIdx >= 0 {
@@ -206,6 +245,35 @@ func ParseMission(content string) (Mission, error) {
 	if len(m.Tasks) == 0 {
 		return m, fmt.Errorf("mission requires at least one task (## Tasks: '- [ ] ID: objective')")
 	}
+	if acceptanceContractDeclared && m.AcceptanceContractVersion == 0 {
+		return m, errors.New("acceptance contract section requires an explicit supported version")
+	}
+	if m.AcceptanceContractVersion == 0 {
+		// These names were previously unknown task annotations. Keep a legacy
+		// mission on its original behavior, including when it contains
+		// malformed values that were never executable under that contract.
+		for i := range m.Tasks {
+			m.Tasks[i].RepositoryChange = ""
+			m.Tasks[i].AcceptanceCheck = ""
+		}
+	} else {
+		for i := range m.Tasks {
+			if duplicates := taskAcceptanceFields[m.Tasks[i].ID]; duplicates != nil {
+				for field, count := range duplicates {
+					if count > 1 {
+						return m, fmt.Errorf("task %s: %s is declared more than once", m.Tasks[i].ID, field)
+					}
+				}
+			}
+			if strings.TrimSpace(m.Tasks[i].AcceptanceCheck) != "" {
+				command, err := parseTaskCommand(m.Tasks[i].AcceptanceCheck, "acceptance-check")
+				if err != nil {
+					return m, fmt.Errorf("task %s acceptance-check command: %w", m.Tasks[i].ID, err)
+				}
+				m.Tasks[i].AcceptanceCheck = command
+			}
+		}
+	}
 	seenTasks := make(map[string]bool, len(m.Tasks))
 	for _, task := range m.Tasks {
 		for _, dependency := range task.DependsOn {
@@ -233,7 +301,25 @@ func ParseMission(content string) (Mission, error) {
 	if err := m.GitHub.Validate(); err != nil {
 		return m, err
 	}
+	if err := ValidateAcceptanceContract(m.AcceptanceContractVersion, m.Tasks); err != nil {
+		return m, err
+	}
+	if m.AcceptanceContractVersion != 0 {
+		m.AcceptanceContractSHA256, err = AcceptanceContractIdentity(m)
+		if err != nil {
+			return m, err
+		}
+	}
 	return m, nil
+}
+
+func markTaskAcceptanceField(fields map[string]map[string]int, taskID, field string) {
+	taskFields := fields[taskID]
+	if taskFields == nil {
+		taskFields = make(map[string]int)
+		fields[taskID] = taskFields
+	}
+	taskFields[field]++
 }
 
 func policyField(line string) (key, value string, ok bool) {

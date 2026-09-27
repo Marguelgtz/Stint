@@ -396,6 +396,12 @@ func prepareDeepProductionLaunch(f *deepProductionStartFlags, paths config.Paths
 	if err != nil {
 		return nil, fmt.Errorf("validate mission %s: %w", missionPath, err)
 	}
+	if err := validateMissionVerifyCommands(mission); err != nil {
+		return nil, fmt.Errorf("validate mission commands: %w", err)
+	}
+	if err := requireAcceptanceRuntimeSupport(mission); err != nil {
+		return nil, err
+	}
 	if !mission.GitHubConfigured {
 		return nil, errors.New("production missions must declare an explicit ## GitHub policy (mode, repository, base, approval)")
 	}

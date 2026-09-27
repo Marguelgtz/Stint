@@ -548,7 +548,7 @@ func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags, state deep.DeepState
 	if err != nil {
 		return fmt.Errorf("on-box compute identity is unavailable: %w", err)
 	}
-	if err := preflightLocalVerifyTools(deep.Mission{Verify: state.Verify, Tasks: state.Tasks}); err != nil {
+	if err := preflightLocalVerifyTools(missionFromState(state)); err != nil {
 		return err
 	}
 	if _, err := assertNoLiveCoordinator(paths.StateDir, state.SessionID); err != nil {

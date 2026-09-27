@@ -79,18 +79,40 @@ func (r verificationResult) IncidentDetail() string {
 // validateMissionVerifyCommands is pure: it inspects persisted executable
 // command data without probing tools, contacting compute, or starting a shell.
 func validateMissionVerifyCommands(mission deep.Mission) error {
+	if err := deep.ValidateMissionAcceptanceContract(mission); err != nil {
+		return fmt.Errorf("mission acceptance contract is invalid: %w", err)
+	}
 	if strings.TrimSpace(mission.Verify) != "" {
 		if err := deep.ValidateVerifyCommand(mission.Verify); err != nil {
 			return fmt.Errorf("mission verification command is invalid: %w", err)
 		}
 	}
 	for _, task := range mission.Tasks {
-		if strings.TrimSpace(task.Verify) == "" {
-			continue
+		if strings.TrimSpace(task.Verify) != "" {
+			if err := deep.ValidateVerifyCommand(task.Verify); err != nil {
+				return fmt.Errorf("task %s verification command is invalid: %w", task.ID, err)
+			}
 		}
-		if err := deep.ValidateVerifyCommand(task.Verify); err != nil {
-			return fmt.Errorf("task %s verification command is invalid: %w", task.ID, err)
+		if mission.AcceptanceContractVersion != 0 && strings.TrimSpace(task.AcceptanceCheck) != "" {
+			if err := deep.ValidateVerifyCommand(task.AcceptanceCheck); err != nil {
+				return fmt.Errorf("task %s acceptance-check command is invalid: %w", task.ID, err)
+			}
 		}
 	}
 	return nil
+}
+
+// Objective C is being introduced as a stacked change. Until the coordinator
+// has the journaled acceptance lifecycle and contract-aware scheduling,
+// command entrypoints fail closed instead of running a versioned mission with
+// legacy verified-is-terminal semantics.
+func requireAcceptanceRuntimeSupport(mission deep.Mission) error {
+	if mission.AcceptanceContractVersion != 0 {
+		return fmt.Errorf("mission acceptance contract version %d is not executable by this Stint build", mission.AcceptanceContractVersion)
+	}
+	return nil
+}
+
+func missionFromState(state deep.DeepState) deep.Mission {
+	return state.MissionDefinition()
 }
