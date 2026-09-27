@@ -87,8 +87,10 @@ type Task struct {
 	VerificationSubject     *VerificationSubject `json:"verificationSubject,omitempty"`
 	VerificationBookkeeping map[string]string    `json:"verificationBookkeeping,omitempty"`
 	// CheckpointCommit and CheckpointTreeSHA identify the repository state
-	// accepted for this task. The commit may be an existing worker commit when
-	// it already represents the verified tree; no empty marker commit is needed.
+	// recorded for this task's passed verification. Checkpoint identity is
+	// separate from the later deterministic task acceptance contract. The
+	// commit may be an existing worker commit when it already represents the
+	// verified tree; no empty marker commit is needed.
 	CheckpointCommit  string `json:"checkpointCommit,omitempty"`
 	CheckpointTreeSHA string `json:"checkpointTreeSha,omitempty"`
 	Source            string `json:"source,omitempty"`

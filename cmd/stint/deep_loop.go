@@ -655,12 +655,24 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 				}
 				return fmt.Errorf("checkpoint identity unavailable for task %s", t.ID)
 			}
-			t.CheckpointCommit = head
-			t.CheckpointTreeSHA = tree
-			ts := c.now()
-			t.Status = deep.StatusVerified
-			t.VerifiedAt = &ts
-			t.Blocker = ""
+			ts := c.now().UTC()
+			if journaled && verifyCmd != "" {
+				checkpoint := deep.TaskCheckpoint{
+					TaskID: t.ID, Attempt: t.Attempts, ExecutorRunID: t.ExecutorRunID,
+					VerificationRunID: t.VerificationRunID, VerificationSubject: subject.Subject,
+					Commit: head, TreeSHA: tree,
+				}
+				if err := deep.RecordTaskCheckpoint(c.stateDir, c.state, checkpoint, ts); err != nil {
+					return fmt.Errorf("journal exact task checkpoint for %s: %w", t.ID, err)
+				}
+				t = &c.state.Tasks[idx]
+			} else {
+				t.CheckpointCommit = head
+				t.CheckpointTreeSHA = tree
+				t.Status = deep.StatusVerified
+				t.VerifiedAt = &ts
+				t.Blocker = ""
+			}
 		}
 		c.logf("task %s VERIFIED", t.ID)
 	case verifyCmd == "" && executionSucceeded:
