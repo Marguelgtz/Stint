@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
@@ -543,7 +545,25 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 		return res, fmt.Errorf("%w: hermes invocation over SSH: %v", errExecutorQuiescenceUnconfirmed, err)
 	}
 	if code, body, ok := takeTrailingVerifierMarker(out, hermesExitMarker); ok {
+		if in.executorRunID != "" {
+			receipt, found, receiptErr := e.loadExecutorReceipt(ctx, "", in.sessionID, in.executorRunID)
+			if receiptErr != nil || !found {
+				if receiptErr == nil {
+					receiptErr = errors.New("remote Hermes supervisor returned an exit frame without its durable completion receipt")
+				}
+				res.exitCode = -1
+				return res, fmt.Errorf("%w: %v", errExecutorQuiescenceUnconfirmed, receiptErr)
+			}
+			if code != receipt.ExitCode && !(receipt.Canceled && code > 0) {
+				res.exitCode = -1
+				return res, fmt.Errorf("%w: remote Hermes result frame disagrees with its durable receipt", errExecutorQuiescenceUnconfirmed)
+			}
+			res = executorReceiptResult(receipt, strings.TrimSpace(stripHermesInvocationStartMarker(body)), out, time.Duration(receipt.DurationMillis)*time.Millisecond)
+			return res, executorReceiptError(receipt)
+		}
 		res.exitCode = code
+		res.endedAt = time.Now().UTC()
+		res.endedAtSource = deep.ExecutorEndTimeCoordinator
 		res.completed = code == 0
 		res.timedOut = code == 124
 		res.outputText = strings.TrimSpace(stripHermesInvocationStartMarker(body))
@@ -558,12 +578,36 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 	}
 	if code, ok := takeExactHermesSetupFailure(out); ok {
 		res.exitCode = code
+		res.endedAt = time.Now().UTC()
+		res.endedAtSource = deep.ExecutorEndTimeCoordinator
 		res.finishReason = fmt.Sprintf("setup failed before invocation (exit %d)", code)
 		res.stderrTail = ""
 		return res, fmt.Errorf("remote Hermes setup failed before process launch (exit %d)", code)
 	}
 	res.exitCode = -1
 	return res, fmt.Errorf("%w: Hermes invocation over SSH returned no trailing exit marker", errExecutorQuiescenceUnconfirmed)
+}
+
+func (e *hermesExecutor) loadExecutorReceipt(ctx context.Context, _ string, sessionID, runID string) (deep.ExecutorReceipt, bool, error) {
+	command, err := remoteExecutorReceiptReadCommand(sessionID, runID)
+	if err != nil {
+		return deep.ExecutorReceipt{}, false, err
+	}
+	out, err := e.remote(ctx, command)
+	if err != nil {
+		return deep.ExecutorReceipt{}, false, fmt.Errorf("read remote executor completion receipt: %w", err)
+	}
+	if strings.TrimSpace(out) == "__STINT_NO_EXECUTOR_RECEIPT__" {
+		return deep.ExecutorReceipt{}, false, nil
+	}
+	receipt, err := deep.DecodeExecutorReceipt([]byte(out))
+	if err != nil {
+		return deep.ExecutorReceipt{}, false, err
+	}
+	if receipt.ExecutorRunID != runID {
+		return deep.ExecutorReceipt{}, false, errors.New("remote executor receipt identity differs from the unresolved invocation")
+	}
+	return receipt, true, nil
 }
 
 // takeExactHermesSetupFailure accepts only the wrapper's single-line
@@ -607,32 +651,164 @@ func stripHermesInvocationStartMarker(output string) string {
 }
 
 func remoteHermesCommand(in execInput, b64, hermesArgs string, timeoutSeconds int) string {
+	receiptDir := ""
+	if _, err := deep.ExecutorReceiptPath("", in.sessionID, in.executorRunID); err == nil {
+		receiptDir = `"${XDG_STATE_HOME:-$HOME/.local/state}/stint/deep/` + in.sessionID + `/executor-receipts"`
+	}
+	return hermesSupervisorCommand(in, b64, hermesArgs, timeoutSeconds, receiptDir)
+}
+
+func localHermesSupervisorCommand(in execInput, b64, hermesArgs string, timeoutSeconds int) (string, error) {
+	path, err := deep.ExecutorReceiptPath(in.stateDir, in.sessionID, in.executorRunID)
+	if err != nil {
+		return "", err
+	}
+	return hermesSupervisorCommand(in, b64, hermesArgs, timeoutSeconds, shellQuote(filepath.Dir(path))), nil
+}
+
+// hermesSupervisorCommand runs Hermes in a separately quiesced process group
+// and writes its bounded completion receipt before emitting the trailing
+// result frame. The local supervisor runs independently of the coordinator's
+// process group, so an abrupt coordinator exit does not erase the completed
+// invocation's only recovery evidence.
+func hermesSupervisorCommand(in execInput, b64, hermesArgs string, timeoutSeconds int, receiptDir string) string {
 	statusFile := `"$stint_status_file"`
 	groupFile := `"$stint_group_file"`
 	inner := remoteProcessGroupInvocation(hermesArgs, timeoutSeconds, "stint-hermes", "__STINT_STATUS_FILE__", "__STINT_GROUP_FILE__")
 	inner = strings.Replace(inner, shellQuote("__STINT_STATUS_FILE__"), statusFile, 1)
 	inner = strings.Replace(inner, shellQuote("__STINT_GROUP_FILE__"), groupFile, 1)
-	setupFailure := "stint_setup_failure() { stint_setup_status=$1; printf " +
-		shellQuote(hermesSetupFailureMarker+"%%s\\n") + " \"$stint_setup_status\"; exit 0; }; "
-	return fmt.Sprintf(
-		setupFailure+"umask 077 || stint_setup_failure $?; "+
-			"for stint_tool in mktemp base64 setsid timeout cat rm; do command -v \"$stint_tool\" >/dev/null 2>&1 || stint_setup_failure 127; done; "+
-			"stint_prompt_file=; stint_status_file=; stint_group_file=; "+
-			"trap 'for stint_tmp in \"$stint_prompt_file\" \"$stint_status_file\" \"$stint_group_file\"; do [ -z \"$stint_tmp\" ] || rm -f \"$stint_tmp\"; done' EXIT; "+
-			"stint_prompt_file=$(mktemp /tmp/stint-deep-prompt.XXXXXX 2>/dev/null) || stint_setup_failure $?; "+
-			"stint_status_file=$(mktemp /tmp/stint-hermes-status.XXXXXX 2>/dev/null) || stint_setup_failure $?; "+
-			"stint_group_file=$(mktemp /tmp/stint-hermes-group.XXXXXX 2>/dev/null) || stint_setup_failure $?; "+
-			"printf %%s %s | base64 -d > \"$stint_prompt_file\" 2>/dev/null || stint_setup_failure $?; "+
-			"cd %s >/dev/null 2>&1 || stint_setup_failure $?; export stint_prompt_file; "+
-			"printf '%%s\\n' "+shellQuote(hermesInvocationStartMarker)+"; "+
-			"%s & stint_hermes_pid=$!; wait \"$stint_hermes_pid\" 2>/dev/null || true; "+
-			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || exit 125; "+
-			"case \"$stint_group\" in ''|*[!0-9]*) exit 125;; esac; "+
-			"if ! kill -KILL -- -\"$stint_group\" 2>/dev/null && kill -0 -- -\"$stint_group\" 2>/dev/null; then exit 125; fi; "+
-			"ec=$(cat \"$stint_status_file\" 2>/dev/null) || exit 125; "+
-			"case \"$ec\" in ''|*[!0-9]*) exit 125;; esac; printf '\\n%s%%s\\n' \"$ec\"; exit 0",
-		shellQuote(b64), shellQuote(in.workdir), inner, hermesExitMarker,
-	)
+	receiptSetup := ""
+	receiptFunctions := ""
+	receiptFinish := ""
+	receiptCapture := ""
+	if receiptDir != "" {
+		receiptFunctions = `stint_receipt_ready=0
+stint_subject_tmp=
+stint_finalize_times() {
+  stint_receipt_ended=$(date +%s%3N) || return 1
+  case "$stint_receipt_ended" in ''|*[!0-9]*) return 1;; esac
+  stint_receipt_duration=$((stint_receipt_ended - stint_started_ms)); [ "$stint_receipt_duration" -ge 0 ] || stint_receipt_duration=0
+  stint_receipt_ended_ns=$((stint_receipt_ended * 1000000))
+}
+stint_write_receipt() {
+  stint_receipt_launched=$1; stint_receipt_status=$2; stint_receipt_completed=$3; stint_receipt_timed_out=$4; stint_receipt_canceled=$5
+  stint_receipt_head=$6; stint_receipt_tree=$7; stint_receipt_subject_observed_ns=$8; stint_receipt_subject_error=$9
+  stint_receipt_tmp="$stint_receipt_file.tmp.$$"
+  printf '{"schemaVersion":1,"executorRunId":"%s","endedAtUnixNano":%s,"durationMilliseconds":%s,"exitCode":%s,"launched":%s,"completed":%s,"timedOut":%s,"canceled":%s,"processQuiescent":true,"repositoryAfterHeadCommit":"%s","repositoryAfterTreeSha":"%s","repositoryAfterObservedAtUnixNano":%s,"repositoryAfterError":"%s"}\n' \
+    ` + shellQuote(in.executorRunID) + ` "$stint_receipt_ended_ns" "$stint_receipt_duration" "$stint_receipt_status" \
+    "$stint_receipt_launched" "$stint_receipt_completed" "$stint_receipt_timed_out" "$stint_receipt_canceled" \
+    "$stint_receipt_head" "$stint_receipt_tree" "$stint_receipt_subject_observed_ns" "$stint_receipt_subject_error" > "$stint_receipt_tmp" || return 1
+  chmod 600 "$stint_receipt_tmp" && sync -f "$stint_receipt_tmp" && mv -f "$stint_receipt_tmp" "$stint_receipt_file" && sync -f "$stint_receipt_dir" || {
+    rm -f "$stint_receipt_tmp"; return 1;
+  }
+}
+`
+		receiptCapture = "stint_finalize_times || exit 125; " + executorRepositorySubjectCaptureShell(in)
+		receiptSetup = `stint_receipt_dir=` + receiptDir + `; ` +
+			`stint_receipt_file="$stint_receipt_dir/` + in.executorRunID + `.json"; ` +
+			`mkdir -p "$stint_receipt_dir" && chmod 700 "$stint_receipt_dir" || stint_setup_failure 125; ` +
+			`stint_started_ms=$(date +%s%3N) || stint_setup_failure 125; ` +
+			`case "$stint_started_ms" in ''|*[!0-9]*) stint_setup_failure 125;; esac; stint_receipt_ready=1; `
+		receiptFinish = `stint_receipt_completed=false; stint_receipt_timed_out=false; stint_receipt_canceled=false; stint_receipt_status=$ec; ` +
+			`[ "$stint_cancel_requested" = 1 ] && stint_receipt_canceled=true; ` +
+			`[ "$ec" = 0 ] && stint_receipt_completed=true; [ "$ec" = 124 ] && stint_receipt_timed_out=true; ` +
+			`[ "$stint_cancel_requested" = 1 ] && { stint_receipt_status=-1; stint_receipt_completed=false; }; ` +
+			`stint_write_receipt true "$stint_receipt_status" "$stint_receipt_completed" "$stint_receipt_timed_out" "$stint_receipt_canceled" "$stint_subject_head" "$stint_subject_tree" "$stint_subject_observed_ns" "$stint_subject_error" || exit 125; `
+	}
+	setupFailure := "stint_setup_failure() { stint_setup_status=$1; " +
+		"if [ \"$stint_receipt_ready\" = 1 ]; then stint_finalize_times || exit 125; " + executorRepositorySubjectCaptureShell(in) +
+		"stint_write_receipt false \"$stint_setup_status\" false false false \"$stint_subject_head\" \"$stint_subject_tree\" \"$stint_subject_observed_ns\" \"$stint_subject_error\" || exit 125; fi; " +
+		"printf " + shellQuote(hermesSetupFailureMarker+"%s\\n") + " \"$stint_setup_status\"; exit 0; }; "
+	command := setupFailure + receiptFunctions + "umask 077 || stint_setup_failure $?; "
+	if receiptDir != "" {
+		// Establish the synced outbox before checking invocation tools such as
+		// setsid. A missing setup tool is a known pre-launch failure and should
+		// leave a recoverable receipt if the receipt's own storage tools exist.
+		command += "for stint_tool in date mkdir chmod sync mv rm; do command -v \"$stint_tool\" >/dev/null 2>&1 || stint_setup_failure 127; done; " + receiptSetup +
+			"stint_prompt_file=; stint_status_file=; stint_group_file=; stint_subject_tmp=; " +
+			"trap 'for stint_tmp in \"$stint_prompt_file\" \"$stint_status_file\" \"$stint_group_file\"; do [ -z \"$stint_tmp\" ] || rm -f \"$stint_tmp\"; done; [ -z \"$stint_subject_tmp\" ] || rm -rf \"$stint_subject_tmp\"' EXIT; "
+		command += "for stint_tool in mktemp base64 setsid timeout cat grep; do command -v \"$stint_tool\" >/dev/null 2>&1 || stint_setup_failure 127; done; "
+	} else {
+		command += "for stint_tool in mktemp base64 setsid timeout cat rm; do command -v \"$stint_tool\" >/dev/null 2>&1 || stint_setup_failure 127; done; " +
+			"stint_prompt_file=; stint_status_file=; stint_group_file=; stint_subject_tmp=; " +
+			"trap 'for stint_tmp in \"$stint_prompt_file\" \"$stint_status_file\" \"$stint_group_file\"; do [ -z \"$stint_tmp\" ] || rm -f \"$stint_tmp\"; done; [ -z \"$stint_subject_tmp\" ] || rm -rf \"$stint_subject_tmp\"' EXIT; "
+	}
+	command +=
+		"stint_prompt_file=$(mktemp /tmp/stint-deep-prompt.XXXXXX 2>/dev/null) || stint_setup_failure $?; " +
+			"stint_status_file=$(mktemp /tmp/stint-hermes-status.XXXXXX 2>/dev/null) || stint_setup_failure $?; " +
+			"stint_group_file=$(mktemp /tmp/stint-hermes-group.XXXXXX 2>/dev/null) || stint_setup_failure $?; " +
+			"printf %s " + shellQuote(b64) + " | base64 -d > \"$stint_prompt_file\" 2>/dev/null || stint_setup_failure $?; " +
+			"cd " + shellQuote(in.workdir) + " >/dev/null 2>&1 || stint_setup_failure $?; export stint_prompt_file; " +
+			"stint_cancel_requested=0; stint_group=; " +
+			`trap 'stint_cancel_requested=1; case "$stint_group" in ""|*[!0-9]*) :;; *) kill -KILL -- -"$stint_group" 2>/dev/null || true;; esac' HUP INT TERM; ` +
+			"printf '%s\\n' " + shellQuote(hermesInvocationStartMarker) + "; " +
+			inner + " & stint_hermes_pid=$!; wait \"$stint_hermes_pid\" 2>/dev/null || true; " +
+			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || exit 125; " +
+			"case \"$stint_group\" in ''|*[!0-9]*) exit 125;; esac; " +
+			`if [ "$stint_cancel_requested" = 1 ]; then kill -KILL -- -"$stint_group" 2>/dev/null || true; fi; ` +
+			"if ! kill -KILL -- -\"$stint_group\" 2>/dev/null && kill -0 -- -\"$stint_group\" 2>/dev/null; then exit 125; fi; " +
+			"ec=$(cat \"$stint_status_file\" 2>/dev/null) || exit 125; " +
+			"case \"$ec\" in ''|*[!0-9]*) exit 125;; esac; " +
+			receiptCapture +
+			receiptFinish +
+			"printf '\\n%s%s\\n' " + shellQuote(hermesExitMarker) + " \"$ec\"; exit 0"
+	return command
+}
+
+func executorRepositorySubjectCaptureShell(in execInput) string {
+	paths := []string{deepWorktreeHandoff}
+	if in.actionPlan != "" {
+		paths = append(paths, in.actionPlan)
+	}
+	paths, err := cleanBookkeepingPaths(paths)
+	if err != nil {
+		return `stint_subject_head=; stint_subject_tree=; stint_subject_error='invalid Stint bookkeeping path'; stint_subject_observed_ms=$(date +%s%3N) || exit 125; stint_subject_observed_ns=$((stint_subject_observed_ms * 1000000)); `
+	}
+	var script strings.Builder
+	script.WriteString(`stint_subject_head=; stint_subject_tree=; stint_subject_error=; `)
+	script.WriteString(`stint_subject_workdir=` + shellQuote(in.workdir) + `; `)
+	script.WriteString(`stint_capture_repository_subject() {
+  command -v grep >/dev/null 2>&1 || return 1
+  stint_subject_head=$(git -C "$stint_subject_workdir" rev-parse HEAD 2>/dev/null) || return 1
+  stint_submodule_status=$(git -C "$stint_subject_workdir" submodule status --recursive 2>/dev/null) || return 1
+  if printf '%s\n' "$stint_submodule_status" | grep -q '^-'; then return 1; fi
+  git -C "$stint_subject_workdir" submodule foreach --quiet --recursive 'test -z "$(git status --porcelain --untracked-files=all)"' >/dev/null 2>&1 || return 1
+  set --
+`)
+	for i, path := range paths {
+		pathspec := ":(literal)" + path
+		target := filepath.ToSlash(filepath.Join(in.workdir, filepath.FromSlash(path)))
+		script.WriteString(`  stint_book_index_` + strconv.Itoa(i) + `=$(git -C "$stint_subject_workdir" ls-files -- ` + shellQuote(pathspec) + ` 2>/dev/null) || return 1
+  stint_book_head_` + strconv.Itoa(i) + `=$(git -C "$stint_subject_workdir" ls-tree -r --name-only HEAD -- ` + shellQuote(pathspec) + ` 2>/dev/null) || return 1
+  if [ -z "$stint_book_index_` + strconv.Itoa(i) + `" ] && [ -z "$stint_book_head_` + strconv.Itoa(i) + `" ]; then
+    if [ -L ` + shellQuote(target) + ` ] || { [ -e ` + shellQuote(target) + ` ] && [ ! -f ` + shellQuote(target) + ` ]; }; then return 1; fi
+    set -- "$@" ` + shellQuote(":(top,exclude,literal)"+path) + `
+  fi
+`)
+	}
+	script.WriteString(`  stint_subject_tmp=$(mktemp -d "${TMPDIR:-/tmp}/stint-executor-index.XXXXXX") || return 1
+  GIT_INDEX_FILE="$stint_subject_tmp/index" git -C "$stint_subject_workdir" read-tree "$stint_subject_head" >/dev/null 2>&1 || return 1
+  GIT_INDEX_FILE="$stint_subject_tmp/index" git -C "$stint_subject_workdir" add -A -- . "$@" >/dev/null 2>&1 || return 1
+  stint_subject_tree=$(GIT_INDEX_FILE="$stint_subject_tmp/index" git -C "$stint_subject_workdir" write-tree 2>/dev/null) || return 1
+  stint_subject_head_after=$(git -C "$stint_subject_workdir" rev-parse HEAD 2>/dev/null) || return 1
+  [ "$stint_subject_head" = "$stint_subject_head_after" ] || return 1
+}
+if ! stint_capture_repository_subject; then
+  stint_subject_head=; stint_subject_tree=; stint_subject_error='Git-visible repository subject capture failed'
+fi
+stint_subject_observed_ms=$(date +%s%3N) || exit 125
+case "$stint_subject_observed_ms" in ''|*[!0-9]*) exit 125;; esac
+stint_subject_observed_ns=$((stint_subject_observed_ms * 1000000))
+`)
+	return script.String()
+}
+
+func remoteExecutorReceiptReadCommand(sessionID, runID string) (string, error) {
+	if _, err := deep.ExecutorReceiptPath("", sessionID, runID); err != nil {
+		return "", err
+	}
+	path := `"${XDG_STATE_HOME:-$HOME/.local/state}/stint/deep/` + sessionID + `/executor-receipts/` + runID + `.json"`
+	return `f=` + path + `; if [ -f "$f" ]; then cat -- "$f"; else printf '%s\n' '__STINT_NO_EXECUTOR_RECEIPT__'; fi`, nil
 }
 
 // localHermesExecutor runs Hermes in the same instance as the coordinator. It
@@ -658,6 +834,9 @@ func (e *localHermesExecutor) run(ctx context.Context, in execInput) (execResult
 		defer cancel()
 	}
 	start := time.Now()
+	if in.executorRunID != "" {
+		return e.runJournaled(ctx, in, start)
+	}
 	promptFile, err := os.CreateTemp("", "stint-hermes-prompt-*")
 	if err != nil {
 		return execResult{exitCode: -1, duration: time.Since(start)}, err
@@ -699,14 +878,18 @@ func (e *localHermesExecutor) run(ctx context.Context, in execInput) (execResult
 	}
 	cmd.Stdout, cmd.Stderr = outFile, errFile
 	runErr, quiesceErr := runQuiescedProcessGroup(cmd)
+	endedAt := time.Now().UTC()
+	processExit := processExitCode(cmd)
+	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	out, outReadErr := readAndRemoveOutputFile(outFile)
 	errOutput, errReadErr := readAndRemoveOutputFile(errFile)
 	res := execResult{
 		duration:   time.Since(start),
-		exitCode:   processExitCode(cmd),
-		timedOut:   errors.Is(ctx.Err(), context.DeadlineExceeded),
+		exitCode:   processExit,
+		timedOut:   timedOut,
 		outputText: strings.TrimSpace(string(out)),
 		stderrTail: tailLine(string(errOutput), 5),
+		endedAt:    endedAt,
 	}
 	if outReadErr != nil || errReadErr != nil {
 		res.exitCode = -1
@@ -727,4 +910,149 @@ func (e *localHermesExecutor) run(ctx context.Context, in execInput) (execResult
 		res.finishReason = ctx.Err().Error()
 	}
 	return res, fmt.Errorf("local hermes invocation: %w", runErr)
+}
+
+func (e *localHermesExecutor) runJournaled(ctx context.Context, in execInput, start time.Time) (execResult, error) {
+	provider := resolveHermesProvider(in.provider, in.reasoning)
+	hermesArgs := shellQuote(e.binary) + " chat --query-file \"$stint_prompt_file\" --oneshot --provider " + shellQuote(provider)
+	if in.model != "" {
+		hermesArgs += " -m " + shellQuote(in.model)
+	}
+	if in.reasoning != "" {
+		hermesArgs += " --reasoning " + shellQuote(in.reasoning)
+	}
+	timeoutSeconds := int(in.timeout.Seconds())
+	if timeoutSeconds < 1 {
+		timeoutSeconds = 1
+	}
+	b64 := base64.StdEncoding.EncodeToString([]byte(in.prompt))
+	command, err := localHermesSupervisorCommand(in, b64, hermesArgs, timeoutSeconds)
+	if err != nil {
+		return execResult{exitCode: -1, duration: time.Since(start)}, fmt.Errorf("prepare local Hermes supervisor: %w", err)
+	}
+	outFile, err := newPrivateOutputFile("stint-hermes-output-")
+	if err != nil {
+		return execResult{exitCode: -1, duration: time.Since(start)}, fmt.Errorf("create local Hermes output file: %w", err)
+	}
+	errFile, err := newPrivateOutputFile("stint-hermes-stderr-")
+	if err != nil {
+		_ = outFile.Close()
+		_ = os.Remove(outFile.Name())
+		return execResult{exitCode: -1, duration: time.Since(start)}, fmt.Errorf("create local Hermes stderr file: %w", err)
+	}
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Stdout, cmd.Stderr = outFile, errFile
+	runErr, quiesceErr := runReceiptSupervisor(ctx, cmd)
+	out, outReadErr := readAndRemoveOutputFile(outFile)
+	errOutput, errReadErr := readAndRemoveOutputFile(errFile)
+	output := string(out)
+	markerCode, body, hasMarker := takeTrailingVerifierMarker(output, hermesExitMarker)
+	if !hasMarker {
+		body = stripHermesInvocationStartMarker(output)
+	}
+	receipt, found, receiptErr := deep.LoadExecutorReceipt(in.stateDir, in.sessionID, in.executorRunID)
+	if receiptErr != nil {
+		return execResult{exitCode: -1, duration: time.Since(start)}, fmt.Errorf("%w: read local Hermes completion receipt: %v", errExecutorQuiescenceUnconfirmed, receiptErr)
+	}
+	if !found {
+		if quiesceErr != nil {
+			return execResult{exitCode: -1, duration: time.Since(start), stderrTail: tailLine(string(errOutput), 5)},
+				fmt.Errorf("%w: local Hermes supervisor process group could not be confirmed quiescent: %v", errExecutorQuiescenceUnconfirmed, quiesceErr)
+		}
+		if code, ok := takeExactHermesSetupFailure(output); ok {
+			result := execResult{exitCode: code, duration: time.Since(start), finishReason: fmt.Sprintf("setup failed before invocation (exit %d)", code), stderrTail: tailLine(string(errOutput), 5)}
+			return result, fmt.Errorf("local Hermes setup failed before process launch (exit %d)", code)
+		}
+		if outReadErr != nil || errReadErr != nil {
+			return execResult{exitCode: -1, duration: time.Since(start)}, fmt.Errorf("read local Hermes supervisor output (stdout: %v, stderr: %v)", outReadErr, errReadErr)
+		}
+		return execResult{exitCode: -1, duration: time.Since(start), stderrTail: tailLine(string(errOutput), 5)},
+			fmt.Errorf("%w: local Hermes supervisor returned no durable completion receipt or trailing result frame (wait: %v)", errExecutorQuiescenceUnconfirmed, runErr)
+	}
+	if hasMarker && markerCode != receipt.ExitCode && !(receipt.Canceled && markerCode > 0) {
+		return execResult{exitCode: -1, duration: time.Since(start)},
+			fmt.Errorf("%w: local Hermes result frame disagrees with its durable receipt", errExecutorQuiescenceUnconfirmed)
+	}
+	if quiesceErr != nil {
+		return execResult{exitCode: -1, duration: time.Since(start), stderrTail: tailLine(string(errOutput), 5)},
+			fmt.Errorf("%w: local Hermes supervisor process group could not be confirmed quiescent: %v", errExecutorQuiescenceUnconfirmed, quiesceErr)
+	}
+	result := executorReceiptResult(receipt, strings.TrimSpace(stripHermesInvocationStartMarker(body)), string(errOutput), time.Since(start))
+	return result, executorReceiptError(receipt)
+}
+
+func runReceiptSupervisor(ctx context.Context, cmd *exec.Cmd) (runErr, quiesceErr error) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		return err, nil
+	}
+	var mu sync.Mutex
+	active := true
+	stop := make(chan struct{})
+	go func(pid int) {
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.Canceled) {
+				mu.Lock()
+				if active {
+					_ = syscall.Kill(pid, syscall.SIGTERM)
+				}
+				mu.Unlock()
+			}
+		case <-stop:
+		}
+	}(cmd.Process.Pid)
+	runErr = cmd.Wait()
+	mu.Lock()
+	active = false
+	mu.Unlock()
+	close(stop)
+	if err := killProcessGroup(cmd.Process.Pid); err != nil {
+		quiesceErr = fmt.Errorf("terminate Hermes supervisor process group: %w", err)
+	}
+	return runErr, quiesceErr
+}
+
+func executorReceiptResult(receipt deep.ExecutorReceipt, output, stderr string, duration time.Duration) execResult {
+	result := execResult{
+		exitCode: receipt.ExitCode, completed: receipt.Completed, timedOut: receipt.TimedOut,
+		outputText: output, duration: duration, endedAt: time.Unix(0, receipt.EndedAtUnixNano).UTC(),
+		endedAtSource:        deep.ExecutorEndTimeSupervisor,
+		repositoryAfterError: receipt.RepositoryAfterError,
+		stderrTail:           tailLine(stderr, 5),
+	}
+	if receipt.RepositoryAfterHeadCommit != "" {
+		result.repositoryAfter = &deep.VerificationSubject{HeadCommit: receipt.RepositoryAfterHeadCommit, TreeSHA: receipt.RepositoryAfterTreeSHA}
+		result.repositoryAfterObservedAt = time.Unix(0, receipt.RepositoryAfterObservedAtUnixNano).UTC()
+	}
+	switch {
+	case receipt.TimedOut:
+		result.finishReason = "timed out"
+	case receipt.Canceled:
+		result.finishReason = "context canceled"
+	case receipt.Completed:
+		result.finishReason = "completed"
+	default:
+		result.finishReason = fmt.Sprintf("exit %d", receipt.ExitCode)
+	}
+	return result
+}
+
+func executorReceiptError(receipt deep.ExecutorReceipt) error {
+	switch {
+	case receipt.Canceled:
+		return context.Canceled
+	case receipt.TimedOut:
+		return context.DeadlineExceeded
+	case receipt.Completed:
+		return nil
+	case !receipt.Launched:
+		return fmt.Errorf("local Hermes setup failed before process launch (exit %d)", receipt.ExitCode)
+	default:
+		return fmt.Errorf("local Hermes invocation exited with status %d", receipt.ExitCode)
+	}
+}
+
+func (e *localHermesExecutor) loadExecutorReceipt(_ context.Context, stateDir, sessionID, runID string) (deep.ExecutorReceipt, bool, error) {
+	return deep.LoadExecutorReceipt(stateDir, sessionID, runID)
 }

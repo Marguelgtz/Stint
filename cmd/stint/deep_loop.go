@@ -405,7 +405,13 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		defer cancel()
 		c.incident(deep.IncidentExecutorInvoke, t.ID,
 			fmt.Sprintf("attempt %d %s (configured maximum %s; effective timeout %s; %s)", t.Attempts, policySummary(c.execCfg), c.taskTimeout, effectiveTimeout, timeoutDecision))
-		res, execErr = c.executor.run(tc, c.execInputFor(*t, effectiveTimeout))
+		input := c.execInputFor(*t, effectiveTimeout)
+		if journaled {
+			input.stateDir = c.stateDir
+			input.sessionID = c.state.SessionID
+			input.executorRunID = executorRun.ID
+		}
+		res, execErr = c.executor.run(tc, input)
 		if res.timedOut && execErr == nil {
 			execErr = context.DeadlineExceeded
 		}
@@ -427,14 +433,17 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 			}
 			*c.state = fresh
 			executorRun.Outcome = deep.ExecutorOutcomeQuiescenceUnconfirmed
-			executorRun.EndedAt = c.now().UTC()
+			if !res.endedAt.IsZero() {
+				executorRun.EndedAt = res.endedAt.UTC()
+				executorRun.EndTimeSource = executorResultEndTimeSource(res)
+			}
 			executorRun.ExitCode = res.exitCode
 			executorRun.Completed = res.completed
 			executorRun.FinishReason = boundedExecutionFact(res.finishReason, 512)
 			executorRun.Error = boundedExecutionFact(execErr.Error(), 512)
 			executorRun.ResultSummary = executorResultSummary(res)
 			executorRun.DurationMilliseconds = max(0, res.duration.Milliseconds())
-			if err := deep.CompleteExecutorRun(c.stateDir, c.state, executorRun); err != nil {
+			if err := deep.CompleteExecutorRun(c.stateDir, c.state, executorRun, c.now().UTC()); err != nil {
 				return fmt.Errorf("persist unconfirmed executor result for task %s: %w", t.ID, err)
 			}
 			return fmt.Errorf("task %s cannot be verified because executor process quiescence is unconfirmed", t.ID)
@@ -450,6 +459,13 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 			c.logf("task %s: capture verification subject: %v", t.ID, subjectErr)
 			c.incident(deep.IncidentCheckpointFail, t.ID, "could not capture verification subject: "+subjectErr.Error())
 		} else {
+			if res.repositoryAfterError != "" {
+				subjectErr = fmt.Errorf("executor supervisor could not capture its Git-visible result: %s", res.repositoryAfterError)
+			} else if res.repositoryAfter != nil &&
+				(res.repositoryAfter.HeadCommit != subject.Subject.HeadCommit || res.repositoryAfter.TreeSHA != subject.Subject.TreeSHA) {
+				subjectErr = fmt.Errorf("Git-visible repository state changed after the executor supervisor captured it (supervisor %s/%s; coordinator %s/%s)",
+					res.repositoryAfter.HeadCommit, res.repositoryAfter.TreeSHA, subject.Subject.HeadCommit, subject.Subject.TreeSHA)
+			}
 			t = &c.state.Tasks[idx]
 			t.VerificationSubject = &subject.Subject
 			t.VerificationBookkeeping = subject.Bookkeeping
@@ -467,7 +483,8 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 			default:
 				executorRun.Outcome = deep.ExecutorOutcomeFailed
 			}
-			executorRun.EndedAt = c.now().UTC()
+			executorRun.EndedAt = executorResultEndedAt(res, c.now())
+			executorRun.EndTimeSource = executorResultEndTimeSource(res)
 			executorRun.ExitCode = res.exitCode
 			executorRun.Completed = res.completed
 			executorRun.FinishReason = boundedExecutionFact(res.finishReason, 512)
@@ -476,12 +493,17 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 			}
 			executorRun.ResultSummary = executorResultSummary(res)
 			executorRun.DurationMilliseconds = max(0, res.duration.Milliseconds())
+			if res.repositoryAfter != nil {
+				executorRun.RepositoryAfter = res.repositoryAfter
+				executorRun.RepositoryAfterObservedAt = res.repositoryAfterObservedAt
+			} else if subjectErr == nil {
+				executorRun.RepositoryAfter = &subject.Subject
+				executorRun.RepositoryAfterObservedAt = c.now().UTC()
+			}
 			if subjectErr != nil {
 				executorRun.RepositoryAfterError = boundedExecutionFact(subjectErr.Error(), 512)
-			} else {
-				executorRun.RepositoryAfter = &subject.Subject
 			}
-			if err := deep.CompleteExecutorRun(c.stateDir, c.state, executorRun); err != nil {
+			if err := deep.CompleteExecutorRun(c.stateDir, c.state, executorRun, c.now().UTC()); err != nil {
 				return fmt.Errorf("persist executor result for task %s before verification: %w", t.ID, err)
 			}
 			resultRecorded = true
@@ -504,6 +526,16 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	if !continuing {
 		c.logf("task %s: external landing began before verification; verification is deferred", t.ID)
 		return nil
+	}
+	if journaled && resultRecorded && executorRun.RepositoryAfterError != "" {
+		t = &c.state.Tasks[idx]
+		t.Status = deep.StatusNeedsHuman
+		t.Blocker = "executor result is not bound to a stable Git-visible repository state: " + executorRun.RepositoryAfterError
+		t.ExecutorRunProcessed = true
+		if err := c.save(); err != nil {
+			return fmt.Errorf("persist task %s repository-result conflict: %w", t.ID, err)
+		}
+		return fmt.Errorf("task %s cannot be verified because its executor repository result is not stable", t.ID)
 	}
 
 	verifyResult, verifyCmd, verificationStarted, verifyErr := c.verifyTaskAttempt(ctx, t, subject, journaled)
@@ -709,6 +741,20 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 	return nil
 }
 
+func executorResultEndedAt(result execResult, fallback time.Time) time.Time {
+	if !result.endedAt.IsZero() {
+		return result.endedAt.UTC()
+	}
+	return fallback.UTC()
+}
+
+func executorResultEndTimeSource(result execResult) deep.ExecutorEndTimeSource {
+	if result.endedAtSource != "" {
+		return result.endedAtSource
+	}
+	return deep.ExecutorEndTimeCoordinator
+}
+
 // accept checks repository evidence for the attempt: the task's own
 // verification command when it defines one, else the mission-level command
 // (a per-task command is the precision step for missions whose single
@@ -865,11 +911,52 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("read durable Deep Work state: %w", err)
 		}
-		if unmatched, err := deep.RecoverUnmatchedExecutorRun(c.stateDir, &fresh, c.now()); err != nil {
-			return fmt.Errorf("recover unmatched executor invocation: %w", err)
-		} else if unmatched != nil {
-			*c.state = fresh
-			return fmt.Errorf("Deep Work is blocked: executor %s for task %s has no durable result and process quiescence is unknown", unmatched.ID, unmatched.TaskID)
+		unmatchedExecutor, err := deep.LoadUnmatchedExecutorRun(c.stateDir, fresh.SessionID)
+		if err != nil {
+			return fmt.Errorf("load unmatched executor invocation: %w", err)
+		}
+		if unmatchedExecutor != nil {
+			receiptFound := false
+			if reader, ok := c.executor.(executorReceiptReader); ok {
+				receipt, found, receiptErr := reader.loadExecutorReceipt(ctx, c.stateDir, fresh.SessionID, unmatchedExecutor.ID)
+				if receiptErr != nil {
+					if _, recoverErr := deep.RecoverUnmatchedExecutorRun(c.stateDir, &fresh, c.now()); recoverErr != nil {
+						return fmt.Errorf("record unresolved executor recovery after receipt lookup failed: %w", recoverErr)
+					}
+					*c.state = fresh
+					return fmt.Errorf("Deep Work is blocked: executor %s for task %s has no readable completion receipt; process quiescence is unknown: %w", unmatchedExecutor.ID, unmatchedExecutor.TaskID, receiptErr)
+				}
+				if found {
+					var repositoryAtRecovery *deep.VerificationSubject
+					repositoryAtRecoveryError := ""
+					snapshot, captureErr := c.git.verificationSubject(fresh.WorktreePath, c.verificationBookkeepingPaths())
+					if captureErr != nil {
+						repositoryAtRecoveryError = boundedExecutionFact(captureErr.Error(), 512)
+					} else {
+						subject := snapshot.Subject
+						repositoryAtRecovery = &subject
+					}
+					reconciled, err := deep.ReconcileExecutorRunReceipt(c.stateDir, &fresh, receipt, repositoryAtRecovery, repositoryAtRecoveryError, c.now().UTC())
+					if err != nil {
+						return fmt.Errorf("reconcile executor completion receipt: %w", err)
+					}
+					*c.state = fresh
+					if reconciled.RepositoryAfter == nil || reconciled.RepositoryAfterError != "" ||
+						reconciled.RepositoryAtRecovery == nil || reconciled.RepositoryAtRecoveryError != "" ||
+						reconciled.RepositoryAfter.HeadCommit != reconciled.RepositoryAtRecovery.HeadCommit ||
+						reconciled.RepositoryAfter.TreeSHA != reconciled.RepositoryAtRecovery.TreeSHA {
+						return fmt.Errorf("Deep Work is blocked: executor %s result repository state changed or is unidentified; verification and retries are stopped", unmatchedExecutor.ID)
+					}
+					receiptFound = true
+				}
+			}
+			if !receiptFound {
+				if _, err := deep.RecoverUnmatchedExecutorRun(c.stateDir, &fresh, c.now()); err != nil {
+					return fmt.Errorf("record unmatched executor recovery: %w", err)
+				}
+				*c.state = fresh
+				return fmt.Errorf("Deep Work is blocked: executor %s for task %s has no durable completion receipt and process quiescence is unknown", unmatchedExecutor.ID, unmatchedExecutor.TaskID)
+			}
 		}
 		if unmatched, err := deep.RecoverUnmatchedVerificationRun(c.stateDir, &fresh, c.now()); err != nil {
 			return fmt.Errorf("recover unmatched verification invocation: %w", err)

@@ -106,7 +106,7 @@ func TestTaskReusesDurableVerificationResultAfterCoordinatorCrash(t *testing.T) 
 	executorRun.Completed = true
 	executorRun.ResultSummary = "executor completed"
 	executorRun.RepositoryAfter = &after.Subject
-	if err := deep.CompleteExecutorRun(env.coord.stateDir, env.state, executorRun); err != nil {
+	if err := deep.CompleteExecutorRun(env.coord.stateDir, env.state, executorRun, executorRun.EndedAt); err != nil {
 		t.Fatal(err)
 	}
 	verificationID, err := deep.NewVerificationRunID()

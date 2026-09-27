@@ -26,7 +26,7 @@ func taskCheckpointFixture(t *testing.T) (string, DeepState, VerificationRun, Ta
 	executor.Completed = true
 	executor.ResultSummary = "executor completed"
 	executor.RepositoryAfter = &subject
-	if err := CompleteExecutorRun(stateDir, &state, executor); err != nil {
+	if err := CompleteExecutorRun(stateDir, &state, executor, executor.EndedAt); err != nil {
 		t.Fatal(err)
 	}
 	verificationID, err := NewVerificationRunID()
