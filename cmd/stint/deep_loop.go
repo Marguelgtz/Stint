@@ -19,9 +19,9 @@ const (
 )
 
 // deepCoordinator selects a bounded work unit, invokes the coding-agent
-// executor in the isolated worktree, records verifier/checkpoint evidence,
-// and repeats until landing. These operational facts do not define Objective
-// C acceptance. The coordinator is a plain foreground process: the machine
+// executor in the isolated worktree, records verification, checkpoint, and
+// versioned Objective-acceptance evidence, and repeats until landing. The
+// coordinator is a plain foreground process: the machine
 // must stay awake (D-3), and the existing compute watchdog remains the
 // hard-deadline authority.
 type deepCoordinator struct {
@@ -284,6 +284,23 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		return nil
 	}
 	journaled := c.state.RunEventSchemaVersion == deep.RunEventSchemaVersion
+	if journaled && c.state.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion &&
+		t.IsAcceptanceContractTask() && (t.Status == deep.StatusVerified || t.Status == deep.StatusCheckpointed) &&
+		(t.AcceptanceOutcome == "" || t.AcceptanceOutcome == deep.AcceptanceNotEvaluated) {
+		checkpoint, checkpointEventID, found, loadErr := deep.LoadTaskCheckpoint(c.stateDir, c.state.SessionID, t.ID)
+		if loadErr != nil {
+			return fmt.Errorf("load durable checkpoint for task %s acceptance: %w", t.ID, loadErr)
+		}
+		if found && checkpoint.Attempt == t.Attempts && checkpoint.Commit == t.CheckpointCommit &&
+			checkpoint.TreeSHA == t.CheckpointTreeSHA {
+			err := c.runJournaledAcceptanceCheck(ctx, t.ID, checkpoint, checkpointEventID)
+			if errors.Is(err, errAcceptanceCheckpointChanged) {
+				c.logf("task %s: prior checkpoint subject changed before acceptance; continuing the Work Unit with a new executor attempt", t.ID)
+			} else {
+				return err
+			}
+		}
+	}
 	var (
 		res              execResult
 		execErr          error
@@ -624,8 +641,9 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 
 	executionSucceeded := execErr == nil && res.completed && res.exitCode == 0
 
+	acceptanceContractTask := journaled && c.state.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion && t.IsAcceptanceContractTask()
 	switch {
-	case executionSucceeded && verifyResult.Passed():
+	case executionSucceeded && (verifyResult.Passed() || (verifyCmd == "" && acceptanceContractTask)):
 		if journaled && verifyCmd != "" {
 			durableRun, found, loadErr := deep.LoadVerificationRun(c.stateDir, c.state.SessionID, t.VerificationRunID)
 			if loadErr != nil {
@@ -689,16 +707,37 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 				return fmt.Errorf("checkpoint identity unavailable for task %s", t.ID)
 			}
 			ts := c.now().UTC()
-			if journaled && verifyCmd != "" {
+			if journaled && (verifyCmd != "" || acceptanceContractTask) {
 				checkpoint := deep.TaskCheckpoint{
 					TaskID: t.ID, Attempt: t.Attempts, ExecutorRunID: t.ExecutorRunID,
 					VerificationRunID: t.VerificationRunID, VerificationSubject: subject.Subject,
 					Commit: head, TreeSHA: tree,
 				}
+				if verifyCmd == "" {
+					checkpoint.Basis = deep.TaskCheckpointBasisExecutor
+					checkpoint.VerificationRunID = ""
+				}
 				if err := deep.RecordTaskCheckpoint(c.stateDir, c.state, checkpoint, ts); err != nil {
 					return fmt.Errorf("journal exact task checkpoint for %s: %w", t.ID, err)
 				}
 				t = &c.state.Tasks[idx]
+				if acceptanceContractTask {
+					stored, eventID, found, loadErr := deep.LoadTaskCheckpoint(c.stateDir, c.state.SessionID, t.ID)
+					if loadErr != nil || !found {
+						if loadErr == nil {
+							loadErr = errors.New("checkpoint event is missing after persistence")
+						}
+						return fmt.Errorf("load exact checkpoint for task %s acceptance: %w", t.ID, loadErr)
+					}
+					if err := c.runJournaledAcceptanceCheck(ctx, t.ID, stored, eventID); err != nil {
+						if errors.Is(err, errAcceptanceCheckpointChanged) {
+							c.logf("task %s: checkpoint subject changed before acceptance; a later executor attempt must establish a current subject", t.ID)
+							return nil
+						}
+						return err
+					}
+					t = &c.state.Tasks[idx]
+				}
 			} else {
 				t.CheckpointCommit = head
 				t.CheckpointTreeSHA = tree
@@ -707,7 +746,11 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 				t.Blocker = ""
 			}
 		}
-		c.logf("task %s VERIFIED", t.ID)
+		if acceptanceContractTask {
+			c.logf("task %s checkpointed; acceptance=%s", t.ID, t.AcceptanceOutcome)
+		} else {
+			c.logf("task %s VERIFIED", t.ID)
+		}
 	case verifyCmd == "" && executionSucceeded:
 		t.Status = deep.StatusNeedsHuman
 		t.Blocker = "worker reported completion, but no independent verification command is defined"
@@ -830,8 +873,8 @@ func blockReason(res execResult, execErr error, verification verificationResult)
 }
 
 // effectiveTaskTimeout treats the configured timeout as a maximum. It reserves
-// bounded time for task verification and coordinator checkpoint work before
-// shortening the invocation to the remaining window.
+// bounded time for task verification, Objective acceptance, and coordinator
+// checkpoint work before shortening the invocation to the remaining window.
 func (c *deepCoordinator) effectiveTaskTimeout(now time.Time, task deep.Task) (time.Duration, string) {
 	maximum := c.taskTimeout
 	if maximum <= 0 {
@@ -844,18 +887,29 @@ func (c *deepCoordinator) effectiveTaskTimeout(now time.Time, task deep.Task) (t
 			verifyReserve = defaultTaskVerifyReserve
 		}
 	}
+	acceptanceReserve := time.Duration(0)
+	if c.state.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion && task.IsAcceptanceContractTask() {
+		acceptanceReserve = c.verifyTimeout
+		if acceptanceReserve <= 0 {
+			acceptanceReserve = defaultTaskVerifyReserve
+		}
+	}
 	remaining := c.state.LandBefore.Sub(now)
-	usable := remaining - verifyReserve - coordinatorReserve
+	usable := remaining - verifyReserve - acceptanceReserve - coordinatorReserve
 	minimum := minDuration(maximum, minimumUsefulTaskWindow)
 	reserveLabel := "coordinator checkpoint work"
-	if verifyReserve > 0 {
+	if verifyReserve > 0 && acceptanceReserve > 0 {
+		reserveLabel = "verification, acceptance-check, and coordinator work"
+	} else if verifyReserve > 0 {
 		reserveLabel = "verification and coordinator work"
+	} else if acceptanceReserve > 0 {
+		reserveLabel = "acceptance-check and coordinator work"
 	}
 	if usable < minimum {
-		return 0, fmt.Sprintf("deferred: %s remains before landing cutoff; %s is reserved for %s, leaving less than the %s minimum useful invocation window (configured maximum %s)", remaining.Round(time.Second), (verifyReserve + coordinatorReserve).Round(time.Second), reserveLabel, minimum.Round(time.Second), maximum.Round(time.Second))
+		return 0, fmt.Sprintf("deferred: %s remains before landing cutoff; %s is reserved for %s, leaving less than the %s minimum useful invocation window (configured maximum %s)", remaining.Round(time.Second), (verifyReserve + acceptanceReserve + coordinatorReserve).Round(time.Second), reserveLabel, minimum.Round(time.Second), maximum.Round(time.Second))
 	}
 	if usable < maximum {
-		return usable, fmt.Sprintf("shortened from configured maximum %s to preserve %s for %s", maximum.Round(time.Second), (verifyReserve + coordinatorReserve).Round(time.Second), reserveLabel)
+		return usable, fmt.Sprintf("shortened from configured maximum %s to preserve %s for %s", maximum.Round(time.Second), (verifyReserve + acceptanceReserve + coordinatorReserve).Round(time.Second), reserveLabel)
 	}
 	return maximum, "started at configured maximum"
 }
@@ -964,6 +1018,12 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 		} else if unmatched != nil {
 			*c.state = fresh
 			return fmt.Errorf("Deep Work is blocked: verification %s has no durable result and process quiescence is unknown", unmatched.ID)
+		}
+		if unmatched, err := deep.RecoverUnmatchedAcceptanceRun(c.stateDir, &fresh, c.now()); err != nil {
+			return fmt.Errorf("recover unmatched acceptance-check invocation: %w", err)
+		} else if unmatched != nil {
+			*c.state = fresh
+			return fmt.Errorf("Deep Work is blocked: acceptance-check %s for task %s has no durable result and process quiescence is unknown", unmatched.ID, unmatched.TaskID)
 		}
 		if fresh.ExecutionQuiescenceUnconfirmed {
 			*c.state = fresh

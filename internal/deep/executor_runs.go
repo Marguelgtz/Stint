@@ -116,7 +116,7 @@ func BeginExecutorRun(stateDir string, state *DeepState, run ExecutorRun) (Execu
 	if run.Attempt != task.Attempts+1 {
 		return ExecutorRun{}, fmt.Errorf("executor start attempt %d does not follow task attempt %d", run.Attempt, task.Attempts)
 	}
-	if task.Status.Terminal() {
+	if taskTerminalInContract(*task, state.AcceptanceContractVersion) {
 		return ExecutorRun{}, fmt.Errorf("cannot start executor for terminal task %q", run.TaskID)
 	}
 	if task.ExecutorRunID != "" && !task.ExecutorRunProcessed {
@@ -130,7 +130,7 @@ func BeginExecutorRun(stateDir string, state *DeepState, run ExecutorRun) (Execu
 		OccurredAt: run.StartedAt, Actor: "deep-coordinator", Type: RunEventExecutorStarted,
 		FromPhase: state.Phase, ToPhase: state.Phase, ExecutorRun: &run,
 	}
-	applyExecutorStarted(task, run, state.AcceptanceContractVersion == DeterministicAcceptanceContractVersion)
+	applyExecutorStarted(task, run, state.AcceptanceContractVersion == DeterministicAcceptanceContractVersion && isAcceptanceContractTask(*task))
 	event.TaskSummary = summarizeRunTasks(prepared.Tasks)
 	if err := appendAndProjectRunEvent(stateDir, state, event, writeProjectionLocked); err != nil {
 		return ExecutorRun{}, err
@@ -354,6 +354,26 @@ func LoadExecutorRun(stateDir, sessionID, id string) (ExecutorRun, bool, error) 
 		}
 	}
 	return found, ok, nil
+}
+
+// LoadTaskRepositoryBaseline returns the repository subject captured before
+// the first journaled executor invocation for a stable Objective / Work Unit.
+// Retries and later checkpoints never move this comparison point.
+func LoadTaskRepositoryBaseline(stateDir, sessionID, taskID string) (VerificationSubject, bool, error) {
+	events, err := ReadRunEvents(stateDir, sessionID)
+	if err != nil {
+		return VerificationSubject{}, false, err
+	}
+	for _, event := range events {
+		if event.Type != RunEventExecutorStarted || event.ExecutorRun == nil || event.ExecutorRun.TaskID != taskID {
+			continue
+		}
+		if event.ExecutorRun.RepositoryBefore == nil {
+			return VerificationSubject{}, false, nil
+		}
+		return *event.ExecutorRun.RepositoryBefore, true, nil
+	}
+	return VerificationSubject{}, false, nil
 }
 
 func applyExecutorStarted(task *Task, run ExecutorRun, acceptanceContract bool) {

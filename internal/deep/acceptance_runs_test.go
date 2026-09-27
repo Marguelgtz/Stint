@@ -114,7 +114,7 @@ func acceptanceRunFixture(t *testing.T) (string, DeepState, AcceptanceRun, time.
 		CommandSHA256:      AcceptanceCommandIdentity(mission.Tasks[0].AcceptanceCheck),
 		RepositoryChange:   RepositoryChangeRequired,
 		RepositoryBaseline: VerificationSubject{HeadCommit: "baseline-head", TreeSHA: "baseline-tree"},
-		SubjectBefore:      subject,
+		SubjectBefore:      TaskCheckpointSubject(checkpoint),
 		CheckpointEventID:  taskCheckpointEventID(verification.ID), Checkpoint: checkpoint,
 		Runtime:   AcceptanceRuntime{Worker: "hermes-onbox", Location: "compute", Shell: "sh", Protocol: "local-process-group-v1"},
 		StartedAt: now.Add(22 * time.Second), TimeoutSeconds: 120, RemainingDeadlineSeconds: 3500,
@@ -136,6 +136,8 @@ func successfulAcceptanceRun(run AcceptanceRun, now time.Time, subject Verificat
 	return run
 }
 
+func ptrVerificationSubject(subject VerificationSubject) *VerificationSubject { return &subject }
+
 func TestAcceptanceRunRecordsObjectiveEvidenceSeparatelyFromVerification(t *testing.T) {
 	stateDir, state, run, now := acceptanceRunFixture(t)
 	if state.Tasks[0].Status != StatusVerified || state.Tasks[0].AcceptanceOutcome != AcceptanceNotEvaluated ||
@@ -152,13 +154,13 @@ func TestAcceptanceRunRecordsObjectiveEvidenceSeparatelyFromVerification(t *test
 	if err != nil || info.Mode().Perm()&0o077 != 0 || info.Size() > 4096 {
 		t.Fatalf("acceptance artifact mode/size=%v err=%v", info, err)
 	}
-	run = successfulAcceptanceRun(run, now, run.Checkpoint.VerificationSubject)
+	run = successfulAcceptanceRun(run, now, TaskCheckpointSubject(run.Checkpoint))
 	run.ArtifactRefs = []string{ref}
 	if err := CompleteAcceptanceRun(stateDir, &state, run); err != nil {
 		t.Fatalf("complete acceptance run: %v", err)
 	}
 	if state.Tasks[0].AcceptanceOutcome != AcceptanceAccepted || state.Tasks[0].AcceptanceCheckOutcome != AcceptanceCheckPassed ||
-		state.Tasks[0].Status != StatusVerified || state.Tasks[0].CheckpointTreeSHA != run.Checkpoint.TreeSHA ||
+		state.Tasks[0].Status != StatusAccepted || state.Tasks[0].CheckpointTreeSHA != run.Checkpoint.TreeSHA ||
 		!strings.Contains(state.Tasks[0].AcceptanceOutput, outputMarker) {
 		t.Fatalf("accepted projection lost distinction or evidence: %+v", state.Tasks[0])
 	}
@@ -189,7 +191,7 @@ func TestAcceptanceRunRecordsObjectiveEvidenceSeparatelyFromVerification(t *test
 
 func TestAcceptanceResultJournalReplaysAfterProjectionFailureExactlyOnce(t *testing.T) {
 	stateDir, state, run, now := acceptanceRunFixture(t)
-	run = successfulAcceptanceRun(run, now, run.Checkpoint.VerificationSubject)
+	run = successfulAcceptanceRun(run, now, TaskCheckpointSubject(run.Checkpoint))
 	run.Decision = deriveAcceptanceOutcome(run)
 	const outputMarker = "RECOVERED-ACCEPTANCE-OUTPUT"
 	ref, err := PersistAcceptanceOutput(stateDir, state.SessionID, run.ID, []byte(outputMarker))
@@ -305,11 +307,11 @@ func TestAcceptanceRunRejectsWrongBaselineAndContractCommand(t *testing.T) {
 
 func TestAcceptanceDecisionRequiresTypedEvidenceAndDeclaredRepositoryChange(t *testing.T) {
 	baseline := VerificationSubject{HeadCommit: "before", TreeSHA: "tree-before"}
-	changed := TaskCheckpoint{VerificationSubject: VerificationSubject{HeadCommit: "after", TreeSHA: "tree-after"}}
-	unchanged := TaskCheckpoint{VerificationSubject: baseline}
+	changed := TaskCheckpoint{VerificationSubject: VerificationSubject{HeadCommit: "before", TreeSHA: "tree-after"}, Commit: "after", TreeSHA: "tree-after"}
+	unchanged := TaskCheckpoint{VerificationSubject: baseline, Commit: "before", TreeSHA: "tree-before"}
 	base := AcceptanceRun{
-		CheckOutcome: AcceptanceCheckPassed, SubjectAfter: &changed.VerificationSubject,
-		RepositoryBaseline: baseline, SubjectBefore: changed.VerificationSubject, Checkpoint: changed,
+		CheckOutcome: AcceptanceCheckPassed, SubjectAfter: ptrVerificationSubject(TaskCheckpointSubject(changed)),
+		RepositoryBaseline: baseline, SubjectBefore: TaskCheckpointSubject(changed), Checkpoint: changed,
 	}
 	tests := []struct {
 		name   string
@@ -320,20 +322,20 @@ func TestAcceptanceDecisionRequiresTypedEvidenceAndDeclaredRepositoryChange(t *t
 		{name: "required change absent", mutate: func(run *AcceptanceRun) {
 			run.RepositoryChange = RepositoryChangeRequired
 			run.Checkpoint = unchanged
-			run.SubjectBefore = baseline
-			run.SubjectAfter = &baseline
+			run.SubjectBefore = TaskCheckpointSubject(unchanged)
+			run.SubjectAfter = ptrVerificationSubject(TaskCheckpointSubject(unchanged))
 		}, want: AcceptanceNotSatisfied},
 		{name: "optional change absent", mutate: func(run *AcceptanceRun) {
 			run.RepositoryChange = RepositoryChangeOptional
 			run.Checkpoint = unchanged
-			run.SubjectBefore = baseline
-			run.SubjectAfter = &baseline
+			run.SubjectBefore = TaskCheckpointSubject(unchanged)
+			run.SubjectAfter = ptrVerificationSubject(TaskCheckpointSubject(unchanged))
 		}, want: AcceptanceAccepted},
 		{name: "forbidden change absent", mutate: func(run *AcceptanceRun) {
 			run.RepositoryChange = RepositoryChangeForbidden
 			run.Checkpoint = unchanged
-			run.SubjectBefore = baseline
-			run.SubjectAfter = &baseline
+			run.SubjectBefore = TaskCheckpointSubject(unchanged)
+			run.SubjectAfter = ptrVerificationSubject(TaskCheckpointSubject(unchanged))
 		}, want: AcceptanceAccepted},
 		{name: "forbidden change present", mutate: func(run *AcceptanceRun) { run.RepositoryChange = RepositoryChangeForbidden }, want: AcceptanceNotSatisfied},
 		{name: "objective check failed", mutate: func(run *AcceptanceRun) {
@@ -347,7 +349,7 @@ func TestAcceptanceDecisionRequiresTypedEvidenceAndDeclaredRepositoryChange(t *t
 		}, want: AcceptanceUnresolved},
 		{name: "tree changed during check", mutate: func(run *AcceptanceRun) {
 			run.RepositoryChange = RepositoryChangeRequired
-			run.SubjectAfter = &baseline
+			run.SubjectAfter = ptrVerificationSubject(baseline)
 		}, want: AcceptanceUnresolved},
 		{name: "check started against another subject", mutate: func(run *AcceptanceRun) {
 			run.RepositoryChange = RepositoryChangeRequired
@@ -366,5 +368,24 @@ func TestAcceptanceDecisionRequiresTypedEvidenceAndDeclaredRepositoryChange(t *t
 				t.Fatalf("deriveAcceptanceOutcome = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestTerminalTaskSemanticsAreContractScoped(t *testing.T) {
+	workUnit := Task{ID: "OBJ-1", Status: StatusVerified, AcceptanceOutcome: AcceptanceNotEvaluated}
+	if !taskTerminalInContract(workUnit, 0) {
+		t.Fatal("legacy verified Work Unit ceased to be terminal")
+	}
+	if taskTerminalInContract(workUnit, DeterministicAcceptanceContractVersion) {
+		t.Fatal("v2 verified checkpoint was treated as Objective acceptance")
+	}
+	workUnit.Status = StatusAccepted
+	workUnit.AcceptanceOutcome = AcceptanceAccepted
+	if !taskTerminalInContract(workUnit, DeterministicAcceptanceContractVersion) {
+		t.Fatal("v2 accepted Work Unit is not terminal")
+	}
+	coordinatorTask := Task{ID: "STINT-PLAN-001", Source: "coordinator", Status: StatusVerified}
+	if !taskTerminalInContract(coordinatorTask, DeterministicAcceptanceContractVersion) {
+		t.Fatal("v2 contract changed terminal semantics for coordinator-owned rows")
 	}
 }
