@@ -354,7 +354,7 @@ func applyDeepOnBoxOverrides(state *deep.DeepState, f *deepOnBoxFlags) error {
 		previous := state.Exec.ActionPlanPath
 		if previous != f.actionPlan {
 			for _, task := range state.Tasks {
-				if task.Status == deep.StatusVerified {
+				if task.Status == deep.StatusVerified || task.CheckpointCommit != "" || task.CheckpointTreeSHA != "" {
 					return errors.New("cannot change the action-plan destination after a task checkpoint has been published; start a fresh session to preserve publication identity")
 				}
 			}

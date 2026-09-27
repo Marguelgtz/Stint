@@ -81,6 +81,27 @@ func TestDeepDashboardProjectionPreservesPhaseAndCheckpointEvidence(t *testing.T
 	}
 }
 
+func TestDeepDashboardProjectionPreservesObjectiveAcceptanceOutcome(t *testing.T) {
+	state := deep.DeepState{
+		MissionOutcome: deep.MissionOutcomeIncomplete,
+		Tasks: []deep.Task{{
+			ID: "OBJ-1", Objective: "ship API", Status: deep.StatusVerified,
+			AcceptanceOutcome: deep.AcceptanceUnresolved, AcceptanceCheckOutcome: deep.AcceptanceCheckTimedOut,
+			AcceptanceReason: "acceptance check timed out", VerificationResult: "repository verification passed",
+		}},
+	}
+	controller := &deepDashboardController{snapshot: deepDashboardSnapshot{State: state}}
+	controller.project()
+	if controller.model.MissionOutcome != string(deep.MissionOutcomeIncomplete) {
+		t.Fatalf("mission outcome projection = %q", controller.model.MissionOutcome)
+	}
+	task := controller.model.Tasks[0]
+	if task.AcceptanceOutcome != string(deep.AcceptanceUnresolved) || task.AcceptanceCheckOutcome != string(deep.AcceptanceCheckTimedOut) ||
+		task.AcceptanceReason != "acceptance check timed out" || task.VerificationResult != "repository verification passed" {
+		t.Fatalf("dashboard conflated or dropped verification and acceptance: %+v", task)
+	}
+}
+
 func TestDeepDashboardHasDedicatedPhaseView(t *testing.T) {
 	controller := &deepDashboardController{model: deepdash.Model{View: deepdash.Run}}
 	if quit, changed, land := controller.handleKey('5'); quit || !changed || land || controller.model.View != deepdash.PhaseDetails {

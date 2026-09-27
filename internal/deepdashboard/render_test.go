@@ -70,6 +70,31 @@ func TestTasksViewShowsVerificationTimeAndCheckpointSHA(t *testing.T) {
 	}
 }
 
+func TestTasksViewKeepsAcceptanceSeparateFromVerification(t *testing.T) {
+	m := testModel()
+	m.View = Tasks
+	m.MissionOutcome = "incomplete"
+	m.Tasks = []Task{{ID: "OBJ-1", Status: "verified", Attempts: 1, Objective: "implement API", CheckpointCommit: "checkpoint-sha", VerificationResult: "repository verification passed", AcceptanceOutcome: "unresolved", AcceptanceCheckOutcome: "timed_out", AcceptanceReason: "check exceeded its bound"}}
+	out := Render(m)
+	for _, want := range []string{"OBJ-1", "verification: passed", "acceptance unresolved · check timed_out", "acceptance reason: check exceeded its bound"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("tasks view missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunViewCountsAcceptedSeparatelyFromVerified(t *testing.T) {
+	m := testModel()
+	m.MissionOutcome = "succeeded"
+	m.Tasks = []Task{{ID: "OBJ-1", Status: "accepted"}, {ID: "LEGACY-1", Status: "verified"}, {ID: "OBJ-2", Status: "checkpointed"}}
+	out := Render(m)
+	for _, want := range []string{"Mission outcome succeeded", "1 accepted", "1 verified", "1 checkpointed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("run view missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestTasksViewShowsInheritedSessionReasoningExplicitly(t *testing.T) {
 	m := testModel()
 	m.View = Tasks
@@ -117,6 +142,19 @@ func TestPhaseViewShowsHistoricalVerificationAndLandingEvidence(t *testing.T) {
 	}
 	if strings.Contains(out, "full handoff content") {
 		t.Fatalf("phase view should report handoff presence without rendering its contents:\n%s", out)
+	}
+}
+
+func TestPhaseViewDistinguishesAcceptedTaskFromVerifierRun(t *testing.T) {
+	m := testModel()
+	m.View = PhaseDetails
+	m.MissionOutcome = "succeeded"
+	m.Tasks = []Task{{ID: "OBJ-1", Status: "accepted", VerificationResult: "not run", AcceptanceOutcome: "accepted", AcceptanceCheckOutcome: "passed", CheckpointCommit: "checkpoint-sha"}}
+	out := Render(m)
+	for _, want := range []string{"Mission outcome  succeeded", "OBJ-1 · accepted · verification not run", "acceptance accepted · check passed", "checkpoint SHA checkpoint-sha"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("phase view missing %q:\n%s", want, out)
+		}
 	}
 }
 
