@@ -37,7 +37,7 @@ func (s *DeepState) SaveDir(stateDir string) error {
 				if s.RunEventSchemaVersion != recovered.RunEventSchemaVersion || s.RunEventWatermark != recovered.RunEventWatermark ||
 					s.RunID != recovered.RunID || s.ExecutionEpochID != recovered.ExecutionEpochID ||
 					!sameLifecycleProjection(*s, recovered) || !sameVerificationProjection(*s, recovered) ||
-					!sameTaskCheckpointProjection(*s, recovered) {
+					!sameTaskCheckpointProjection(*s, recovered) || !sameAcceptanceProjection(*s, recovered) {
 					return fmt.Errorf("journal-backed lifecycle state must be changed through a RunEvent transition")
 				}
 				if recovered.RunEventWatermark > 0 {
@@ -53,6 +53,9 @@ func (s *DeepState) SaveDir(stateDir string) error {
 					}
 					if err := validateTaskCheckpointProjection(*s, events[:recovered.RunEventWatermark]); err != nil {
 						return fmt.Errorf("Deep Work task checkpoint contradicts canonical history: %w", err)
+					}
+					if err := validateAcceptanceProjection(dir, *s, events[:recovered.RunEventWatermark]); err != nil {
+						return fmt.Errorf("Deep Work acceptance projection contradicts canonical history: %w", err)
 					}
 				}
 			}

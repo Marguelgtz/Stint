@@ -56,6 +56,30 @@ const (
 	RepositoryChangeForbidden RepositoryChangeExpectation = "forbidden"
 )
 
+// AcceptanceOutcome is the deterministic decision for the current Work Unit
+// contract evaluation. It is separate from both StatusVerified and the
+// verifier's typed outcome.
+type AcceptanceOutcome string
+
+const (
+	AcceptanceNotEvaluated AcceptanceOutcome = "not_evaluated"
+	AcceptanceAccepted     AcceptanceOutcome = "accepted"
+	AcceptanceNotSatisfied AcceptanceOutcome = "not_satisfied"
+	AcceptanceUnresolved   AcceptanceOutcome = "unresolved"
+)
+
+type AcceptanceCheckOutcome string
+
+const (
+	AcceptanceCheckStarted      AcceptanceCheckOutcome = "started"
+	AcceptanceCheckPassed       AcceptanceCheckOutcome = "passed"
+	AcceptanceCheckFailed       AcceptanceCheckOutcome = "failed"
+	AcceptanceCheckTimedOut     AcceptanceCheckOutcome = "timed_out"
+	AcceptanceCheckExecutionErr AcceptanceCheckOutcome = "execution_error"
+	AcceptanceCheckCanceled     AcceptanceCheckOutcome = "canceled"
+	AcceptanceCheckUnknown      AcceptanceCheckOutcome = "unknown"
+)
+
 // Task is the current compatibility model for one bounded Deep Work work unit
 // (called an Objective in product discussions). A work unit may involve many
 // actions; it is not an atomic action. Current mission IDs come from the
@@ -78,7 +102,19 @@ type Task struct {
 	// acceptance contract version.
 	RepositoryChange RepositoryChangeExpectation `json:"repositoryChange,omitempty"`
 	AcceptanceCheck  string                      `json:"acceptanceCheck,omitempty"`
-	Reasoning        string                      `json:"reasoning,omitempty"`
+	// These fields are the current projection of append-only AcceptanceRun
+	// facts. The journal remains authoritative and may contain older checkpoint
+	// and acceptance generations for this same Work Unit.
+	AcceptanceOutcome           AcceptanceOutcome      `json:"acceptanceOutcome,omitempty"`
+	AcceptanceRunID             string                 `json:"acceptanceRunId,omitempty"`
+	AcceptanceCheckOutcome      AcceptanceCheckOutcome `json:"acceptanceCheckOutcome,omitempty"`
+	AcceptanceReason            string                 `json:"acceptanceReason,omitempty"`
+	AcceptanceSubject           *VerificationSubject   `json:"acceptanceSubject,omitempty"`
+	AcceptanceCheckpointEventID string                 `json:"acceptanceCheckpointEventId,omitempty"`
+	AcceptanceCheckpointCommit  string                 `json:"acceptanceCheckpointCommit,omitempty"`
+	AcceptanceCheckpointTreeSHA string                 `json:"acceptanceCheckpointTreeSha,omitempty"`
+	AcceptanceOutput            string                 `json:"acceptanceOutput,omitempty"`
+	Reasoning                   string                 `json:"reasoning,omitempty"`
 	// DependsOn names earlier tasks that must be verified before this task can
 	// run. This supports review tasks that inspect completed implementations.
 	DependsOn  []string `json:"dependsOn,omitempty"`
