@@ -1108,6 +1108,9 @@ func validateProjectionAtWatermark(dir string, state DeepState, event RunEvent) 
 }
 
 func verificationProjectionMatchesEvent(dir string, state DeepState, run VerificationRun, starting bool) bool {
+	if !verificationCommandFactsMatch(state, run) {
+		return false
+	}
 	if run.Purpose == VerificationPurposeTask {
 		task, ok := findTask(&state, run.TaskID)
 		if !ok || task.VerificationRunID != run.ID || task.Attempts != run.Attempt || task.VerificationSubject == nil || *task.VerificationSubject != run.Subject ||
@@ -1245,15 +1248,15 @@ func applyRunEvent(state *DeepState, event RunEvent) error {
 		if state.Phase != event.FromPhase || event.EpochID != state.ExecutionEpochID || event.VerificationRun == nil {
 			return errors.New("verification-start event does not follow the current run epoch")
 		}
-		if event.VerificationRun.StartedInEpochID != state.ExecutionEpochID || expectedVerificationCommandIdentity(*state, *event.VerificationRun) != event.VerificationRun.CommandSHA256 {
-			return errors.New("verification-start event has stale epoch or command identity")
+		if event.VerificationRun.StartedInEpochID != state.ExecutionEpochID || !verificationCommandFactsMatch(*state, *event.VerificationRun) {
+			return errors.New("verification-start event has stale epoch, command source, or command identity")
 		}
 		if err := applyVerificationStarted(state, *event.VerificationRun); err != nil {
 			return err
 		}
 	case RunEventVerificationResult:
-		if event.VerificationRun == nil || expectedVerificationCommandIdentity(*state, *event.VerificationRun) != event.VerificationRun.CommandSHA256 {
-			return errors.New("verification-result event has stale command identity")
+		if event.VerificationRun == nil || !verificationCommandFactsMatch(*state, *event.VerificationRun) {
+			return errors.New("verification-result event has stale command source or command identity")
 		}
 		if err := applyVerificationResult(state, *event.VerificationRun); err != nil {
 			return err

@@ -112,6 +112,181 @@ func TestVerificationRunRecordsExactSubjectAndTypedResult(t *testing.T) {
 	}
 }
 
+func TestVerificationCommandProvenanceMatchesDurableConfiguration(t *testing.T) {
+	tests := []struct {
+		name          string
+		taskCommand   string
+		purpose       VerificationPurpose
+		commandSource string
+		hashSource    string
+		wantErr       bool
+	}{
+		{name: "task specific source", taskCommand: "go test ./cmd/stint", purpose: VerificationPurposeTask, commandSource: "task", hashSource: "task"},
+		{name: "task specific mislabeled mission", taskCommand: "go test ./cmd/stint", purpose: VerificationPurposeTask, commandSource: "mission", hashSource: "task", wantErr: true},
+		{name: "mission fallback source", purpose: VerificationPurposeTask, commandSource: "mission", hashSource: "mission"},
+		{name: "mission fallback mislabeled task", purpose: VerificationPurposeTask, commandSource: "task", hashSource: "mission", wantErr: true},
+		{name: "mission final source", purpose: VerificationPurposeMissionEnd, commandSource: "mission", hashSource: "mission"},
+		{name: "mission final mislabeled task", purpose: VerificationPurposeMissionEnd, commandSource: "task", hashSource: "mission", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stateDir, state, now := journalFixture(t)
+			state.Verify = "go test ./..."
+			state.Tasks[0].Verify = tt.taskCommand
+			if err := BeginNewRun(stateDir, &state, now); err != nil {
+				t.Fatal(err)
+			}
+
+			var run VerificationRun
+			if tt.purpose == VerificationPurposeTask {
+				run = verificationRunFixture(t, stateDir, &state, now)
+				run.CommandSource = tt.commandSource
+				command := state.Verify
+				if tt.hashSource == "task" {
+					command = state.Tasks[0].Verify
+				}
+				run.CommandSHA256 = VerificationCommandIdentity(command)
+			} else {
+				if err := BeginLanding(stateDir, &state, "command provenance fixture", now.Add(time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+				id, err := NewVerificationRunID()
+				if err != nil {
+					t.Fatal(err)
+				}
+				run = VerificationRun{
+					ID: id, Purpose: VerificationPurposeMissionEnd, CommandSource: tt.commandSource,
+					CommandSHA256: VerificationCommandIdentity(state.Verify),
+					Runtime:       VerificationRuntime{Worker: "hermes", Location: "compute", Shell: "sh", Protocol: "remote-process-group-v1"},
+					StartedAt:     now.Add(2 * time.Minute), TimeoutSeconds: 180,
+					Subject: VerificationSubject{HeadCommit: "landing-head", TreeSHA: "landing-tree"},
+				}
+			}
+			_, err := BeginVerificationRun(stateDir, &state, run)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("BeginVerificationRun error=%v, wantErr=%t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestVerificationResultMustPreserveStartCommandProvenance(t *testing.T) {
+	stateDir, state, now := journalFixture(t)
+	if err := BeginNewRun(stateDir, &state, now); err != nil {
+		t.Fatal(err)
+	}
+	started, err := BeginVerificationRun(stateDir, &state, verificationRunFixture(t, stateDir, &state, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := completeVerificationFixture(started, now)
+	result.CommandSource = "task" // The start was mission fallback with the same hash.
+	event := RunEvent{
+		SchemaVersion: RunEventSchemaVersion, EventID: verificationEventID(result.ID, "result"), RunID: state.RunID, EpochID: state.ExecutionEpochID,
+		Sequence: state.RunEventWatermark + 1, OccurredAt: result.EndedAt, Actor: "deep-coordinator",
+		Type: RunEventVerificationResult, FromPhase: state.Phase, ToPhase: state.Phase,
+		VerificationRun: &result, TaskSummary: summarizeRunTasks(state.Tasks),
+	}
+	if err := withRunStateLock(stateDir, state.SessionID, func(dir string) error {
+		return appendRunEventLocked(dir, event)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRunEvents(stateDir, state.SessionID); err == nil || !strings.Contains(err.Error(), "verification result does not match a start event") {
+		t.Fatalf("replay accepted result provenance changed from its matching start: %v", err)
+	}
+}
+
+func TestVerificationTerminalOutcomeFactsAreCoherent(t *testing.T) {
+	makeResult := func(t *testing.T) VerificationRun {
+		t.Helper()
+		stateDir, state, now := journalFixture(t)
+		run := verificationRunFixture(t, stateDir, &state, now)
+		run.StartEventID = verificationEventID(run.ID, "started")
+		run.StartedInEpochID = "epoch-test"
+		return completeVerificationFixture(run, now)
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*VerificationRun)
+		wantErr bool
+	}{
+		{name: "passed", mutate: func(*VerificationRun) {}},
+		{name: "failed nonzero exit", mutate: func(run *VerificationRun) { run.Outcome = VerificationFailed; run.ExitCode = 2 }},
+		{name: "timed out without exit", mutate: func(run *VerificationRun) {
+			run.Outcome = VerificationTimedOut
+			run.HasExitCode = false
+			run.Error = "context deadline exceeded"
+		}},
+		{name: "timed out with remote timeout exit", mutate: func(run *VerificationRun) {
+			run.Outcome = VerificationTimedOut
+			run.ExitCode = 124
+			run.Error = "remote verifier exceeded its bounded execution window"
+		}},
+		{name: "timed out exit zero without error", mutate: func(run *VerificationRun) { run.Outcome = VerificationTimedOut; run.Error = "" }, wantErr: true},
+		{name: "canceled with error", mutate: func(run *VerificationRun) {
+			run.Outcome = VerificationCanceled
+			run.HasExitCode = false
+			run.Error = "context canceled"
+		}},
+		{name: "canceled without error", mutate: func(run *VerificationRun) {
+			run.Outcome = VerificationCanceled
+			run.HasExitCode = false
+			run.Error = ""
+		}, wantErr: true},
+		{name: "invalid command with error", mutate: func(run *VerificationRun) {
+			run.Outcome = VerificationInvalid
+			run.HasExitCode = false
+			run.Error = "Markdown-wrapped command is unsupported"
+		}},
+		{name: "invalid command without error", mutate: func(run *VerificationRun) { run.Outcome = VerificationInvalid; run.HasExitCode = false; run.Error = "" }, wantErr: true},
+		{name: "execution error with error", mutate: func(run *VerificationRun) {
+			run.Outcome = VerificationExecutionErr
+			run.HasExitCode = false
+			run.Error = "remote verification transport failed"
+		}},
+		{name: "execution error without error", mutate: func(run *VerificationRun) {
+			run.Outcome = VerificationExecutionErr
+			run.HasExitCode = false
+			run.Error = ""
+		}, wantErr: true},
+		{name: "failed without exit", mutate: func(run *VerificationRun) {
+			run.Outcome = VerificationFailed
+			run.HasExitCode = false
+			run.ExitCode = 0
+		}, wantErr: true},
+		{name: "passed with error", mutate: func(run *VerificationRun) { run.Error = "unexpected error" }, wantErr: true},
+		{name: "unresolved outcome", mutate: func(run *VerificationRun) { run.Outcome = VerificationUnknown }, wantErr: true},
+		{name: "started outcome", mutate: func(run *VerificationRun) { run.Outcome = VerificationStarted }, wantErr: true},
+		{name: "not run outcome", mutate: func(run *VerificationRun) { run.Outcome = VerificationNotRun }, wantErr: true},
+		{name: "unsupported outcome", mutate: func(run *VerificationRun) { run.Outcome = VerificationOutcome("maybe") }, wantErr: true},
+		{name: "incompatible quiescence", mutate: func(run *VerificationRun) { run.QuiescenceUnconfirmed = true }, wantErr: true},
+		{name: "quiescence with execution error", mutate: func(run *VerificationRun) {
+			run.Outcome = VerificationExecutionErr
+			run.HasExitCode = false
+			run.Error = "remote channel lost"
+			run.QuiescenceUnconfirmed = true
+			run.SubjectAfter = nil
+			run.SubjectAfterError = "quiescence is unconfirmed"
+		}},
+		{name: "oversized error", mutate: func(run *VerificationRun) {
+			run.Outcome = VerificationExecutionErr
+			run.HasExitCode = false
+			run.Error = strings.Repeat("e", maxRunEventTextBytes+1)
+		}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run := makeResult(t)
+			tt.mutate(&run)
+			err := validateVerificationRun(run, false)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateVerificationRun error=%v, wantErr=%t; run=%+v", err, tt.wantErr, run)
+			}
+		})
+	}
+}
+
 func TestVerificationResultEventReplaysAfterProjectionFailure(t *testing.T) {
 	stateDir, state, now := journalFixture(t)
 	if err := BeginNewRun(stateDir, &state, now); err != nil {

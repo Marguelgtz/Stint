@@ -110,8 +110,8 @@ func BeginVerificationRun(stateDir string, state *DeepState, run VerificationRun
 	} else {
 		return VerificationRun{}, fmt.Errorf("invalid verification purpose %q", run.Purpose)
 	}
-	if run.CommandSHA256 != expectedVerificationCommandIdentity(*state, run) {
-		return VerificationRun{}, errors.New("verification command identity does not match the durable task or mission command")
+	if !verificationCommandFactsMatch(*state, run) {
+		return VerificationRun{}, errors.New("verification command source or identity does not match the durable task or mission command")
 	}
 	if err := validateVerificationRun(run, true); err != nil {
 		return VerificationRun{}, err
@@ -139,8 +139,11 @@ func CompleteVerificationRun(stateDir string, state *DeepState, run Verification
 	if run.ID == "" || run.StartEventID != verificationEventID(run.ID, "started") || run.EndedAt.IsZero() {
 		return errors.New("verification result requires its start identity and end timestamp")
 	}
-	if run.Outcome == VerificationStarted || run.Outcome == VerificationUnknown || run.Outcome == VerificationNotRun {
+	if !run.Outcome.Recorded() {
 		return fmt.Errorf("invalid completed verification outcome %q", run.Outcome)
+	}
+	if !verificationCommandFactsMatch(*state, run) {
+		return errors.New("verification result command source or identity differs from the durable task or mission command")
 	}
 	run.EndedAt = run.EndedAt.UTC()
 	if err := validateVerificationRun(run, false); err != nil {
@@ -343,22 +346,38 @@ func verificationQuiescenceOwner(run VerificationRun) string {
 	return run.TaskID
 }
 
-func expectedVerificationCommandIdentity(state DeepState, run VerificationRun) string {
+func expectedVerificationCommandFacts(state DeepState, run VerificationRun) (source, commandSHA256 string, ok bool) {
 	var command string
 	switch run.Purpose {
 	case VerificationPurposeMissionEnd:
 		command = state.Verify
+		if command == "" {
+			return "", "", false
+		}
+		source = "mission"
 	case VerificationPurposeTask:
 		task, ok := findTask(&state, run.TaskID)
 		if !ok {
-			return ""
+			return "", "", false
 		}
-		command = task.Verify
-		if command == "" {
+		if task.Verify != "" {
+			command = task.Verify
+			source = "task"
+		} else if state.Verify != "" {
 			command = state.Verify
+			source = "mission"
+		} else {
+			return "", "", false
 		}
+	default:
+		return "", "", false
 	}
-	return VerificationCommandIdentity(command)
+	return source, VerificationCommandIdentity(command), true
+}
+
+func verificationCommandFactsMatch(state DeepState, run VerificationRun) bool {
+	source, commandSHA256, ok := expectedVerificationCommandFacts(state, run)
+	return ok && run.CommandSource == source && run.CommandSHA256 == commandSHA256
 }
 
 func applyVerificationStarted(state *DeepState, run VerificationRun) error {
@@ -558,8 +577,8 @@ func validateVerificationRun(run VerificationRun, starting bool) error {
 		}
 		return nil
 	}
-	if run.Outcome == VerificationStarted || run.Outcome == VerificationUnknown || run.Outcome == VerificationNotRun {
-		return fmt.Errorf("verification result has a non-terminal outcome %q", run.Outcome)
+	if !run.Outcome.Recorded() {
+		return fmt.Errorf("verification result has a non-terminal or unsupported outcome %q", run.Outcome)
 	}
 	if run.EndedAt.IsZero() || run.EndedAt.Before(run.StartedAt) || run.DurationMilliseconds < 0 ||
 		run.DurationMilliseconds > int64((7*24*time.Hour)/time.Millisecond) {
@@ -567,6 +586,9 @@ func validateVerificationRun(run VerificationRun, starting bool) error {
 	}
 	if len(run.Error) > maxRunEventTextBytes || len(run.SubjectAfterError) > maxRunEventTextBytes {
 		return errors.New("verification result text exceeds limits")
+	}
+	if !run.HasExitCode && run.ExitCode != 0 {
+		return errors.New("verification result has an exit code without an exit-code fact")
 	}
 	if run.SubjectAfter != nil && (run.SubjectAfter.HeadCommit == "" || run.SubjectAfter.TreeSHA == "" ||
 		len(run.SubjectAfter.HeadCommit) > 128 || len(run.SubjectAfter.TreeSHA) > 128) {
@@ -589,11 +611,33 @@ func validateVerificationRun(run VerificationRun, starting bool) error {
 			return errors.New("verification result has an invalid artifact reference")
 		}
 	}
-	if run.Outcome == VerificationPassed && (!run.HasExitCode || run.ExitCode != 0 || run.Error != "") {
-		return errors.New("passed verification outcome disagrees with exit facts")
-	}
-	if run.Outcome == VerificationFailed && (!run.HasExitCode || run.ExitCode == 0) {
-		return errors.New("failed verification outcome requires a nonzero exit code")
+	switch run.Outcome {
+	case VerificationPassed:
+		if !run.HasExitCode || run.ExitCode != 0 || run.Error != "" {
+			return errors.New("passed verification outcome disagrees with exit facts")
+		}
+	case VerificationFailed:
+		if !run.HasExitCode || run.ExitCode == 0 {
+			return errors.New("failed verification outcome requires a known nonzero exit code")
+		}
+	case VerificationTimedOut:
+		if strings.TrimSpace(run.Error) == "" || (run.HasExitCode && run.ExitCode == 0) {
+			return errors.New("timed-out verification requires a timeout error and cannot have exit code zero")
+		}
+	case VerificationCanceled:
+		if strings.TrimSpace(run.Error) == "" || run.HasExitCode {
+			return errors.New("canceled verification requires an error and cannot claim a verifier exit code")
+		}
+	case VerificationInvalid:
+		if strings.TrimSpace(run.Error) == "" || run.HasExitCode || run.QuiescenceUnconfirmed {
+			return errors.New("invalid verification command requires a validation error and cannot claim invocation facts")
+		}
+	case VerificationExecutionErr:
+		if strings.TrimSpace(run.Error) == "" || run.HasExitCode {
+			return errors.New("verification execution error requires an error and cannot claim a verifier exit code")
+		}
+	default:
+		return fmt.Errorf("unsupported verification result outcome %q", run.Outcome)
 	}
 	if run.QuiescenceUnconfirmed && run.Outcome != VerificationExecutionErr && run.Outcome != VerificationTimedOut && run.Outcome != VerificationCanceled {
 		return errors.New("unconfirmed verifier quiescence has an incompatible outcome")
