@@ -40,6 +40,7 @@ const (
 	RunEventVerificationStarted      RunEventType = "verification.started"
 	RunEventVerificationResult       RunEventType = "verification.result"
 	RunEventVerificationRecovery     RunEventType = "verification.recovery_required"
+	RunEventTaskCheckpointCreated    RunEventType = "task.checkpoint_created"
 )
 
 type RunEventBoundary string
@@ -91,6 +92,7 @@ type RunEvent struct {
 	CheckpointTree   string           `json:"checkpointTreeSha,omitempty"`
 	ExecutorRun      *ExecutorRun     `json:"executorRun,omitempty"`
 	VerificationRun  *VerificationRun `json:"verificationRun,omitempty"`
+	TaskCheckpoint   *TaskCheckpoint  `json:"taskCheckpoint,omitempty"`
 }
 
 // NewExecutionEpochID returns a random opaque identity for one execution
@@ -340,7 +342,7 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		}
 		if state.RunEventWatermark != current.RunEventWatermark || state.RunID != current.RunID ||
 			state.ExecutionEpochID != current.ExecutionEpochID || state.RunEventSchemaVersion != current.RunEventSchemaVersion ||
-			!sameLifecycleProjection(*state, current) || !sameVerificationProjection(*state, current) {
+			!sameLifecycleProjection(*state, current) || !sameVerificationProjection(*state, current) || !sameTaskCheckpointProjection(*state, current) {
 			return errors.New("stale Deep Work projection; reload before writing a run event")
 		}
 		events, _, err := readRunEventsLocked(dir, state.SessionID)
@@ -396,6 +398,7 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 			return err
 		}
 		projected := *state
+		projected.Tasks = append([]Task(nil), state.Tasks...)
 		projected.PreviousLandings = append([]LandingRecord(nil), state.PreviousLandings...)
 		if err := applyRunEvent(&projected, event); err != nil {
 			return fmt.Errorf("apply persisted run event %s: %w", event.EventID, err)
@@ -625,6 +628,13 @@ func validateRunEvent(event RunEvent) error {
 		if err := validateVerificationRecovery(*event.VerificationRun); err != nil {
 			return fmt.Errorf("invalid verification-recovery record: %w", err)
 		}
+	case RunEventTaskCheckpointCreated:
+		if event.FromPhase != PhaseExecuting || event.ToPhase != PhaseExecuting || event.TaskCheckpoint == nil {
+			return errors.New("task-checkpoint event has invalid phase or missing checkpoint record")
+		}
+		if err := validateTaskCheckpoint(*event.TaskCheckpoint); err != nil {
+			return fmt.Errorf("invalid task-checkpoint record: %w", err)
+		}
 	default:
 		return fmt.Errorf("unknown run event type %q", event.Type)
 	}
@@ -639,6 +649,9 @@ func validateRunEvent(event RunEvent) error {
 	}
 	if event.Type != RunEventVerificationStarted && event.Type != RunEventVerificationResult && event.Type != RunEventVerificationRecovery && event.VerificationRun != nil {
 		return errors.New("non-verification event contains a verification run record")
+	}
+	if event.Type != RunEventTaskCheckpointCreated && event.TaskCheckpoint != nil {
+		return errors.New("non-checkpoint event contains a task checkpoint record")
 	}
 	return nil
 }
@@ -720,6 +733,9 @@ func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string)
 		return err
 	}
 	if err := validateVerificationEventTransition(prior, event); err != nil {
+		return err
+	}
+	if err := validateTaskCheckpointEventTransition(prior, event); err != nil {
 		return err
 	}
 	if event.Type == RunEventLandingStarted && phase != PhaseExecuting {
@@ -1010,6 +1026,9 @@ func recoverProjectionLocked(stateDir, dir string, state DeepState, persist bool
 		if err := validateProjectionAtWatermark(dir, state, events[state.RunEventWatermark-1]); err != nil {
 			return DeepState{}, journalExists, err
 		}
+		if err := validateTaskCheckpointProjection(state, events[:state.RunEventWatermark]); err != nil {
+			return DeepState{}, journalExists, err
+		}
 	}
 	changed := false
 	for i := state.RunEventWatermark; i < uint64(len(events)); i++ {
@@ -1107,6 +1126,10 @@ func validateProjectionAtWatermark(dir string, state DeepState, event RunEvent) 
 	case RunEventVerificationRecovery:
 		if event.VerificationRun == nil || !verificationRecoveryProjectionMatches(state, *event.VerificationRun, event.Reason) {
 			return errors.New("deep.json verification recovery disagrees with its watermark event")
+		}
+	case RunEventTaskCheckpointCreated:
+		if event.TaskCheckpoint == nil || !taskCheckpointProjectionMatches(state, *event.TaskCheckpoint, event.OccurredAt) {
+			return errors.New("deep.json task checkpoint disagrees with its watermark event")
 		}
 	}
 	return nil
@@ -1285,6 +1308,13 @@ func applyRunEvent(state *DeepState, event RunEvent) error {
 		}
 		state.ExecutionQuiescenceUnconfirmed = true
 		state.ExecutionQuiescenceTaskID = verificationQuiescenceOwner(*event.VerificationRun)
+	case RunEventTaskCheckpointCreated:
+		if event.TaskCheckpoint == nil {
+			return errors.New("task-checkpoint event has no checkpoint record")
+		}
+		if err := applyTaskCheckpoint(state, *event.TaskCheckpoint, event.OccurredAt); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("cannot apply run event type %q", event.Type)
 	}
@@ -1324,6 +1354,20 @@ func sameVerificationProjection(a, b DeepState) bool {
 			left.VerificationOutcome != right.VerificationOutcome || left.VerificationResult != right.VerificationResult ||
 			left.VerificationOutput != right.VerificationOutput || !sameVerificationSubject(left.VerificationSubject, right.VerificationSubject) ||
 			!sameStringMap(left.VerificationBookkeeping, right.VerificationBookkeeping)) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameTaskCheckpointProjection(a, b DeepState) bool {
+	if len(a.Tasks) != len(b.Tasks) {
+		return false
+	}
+	for i := range a.Tasks {
+		left, right := a.Tasks[i], b.Tasks[i]
+		if left.ID != right.ID || left.CheckpointCommit != right.CheckpointCommit || left.CheckpointTreeSHA != right.CheckpointTreeSHA ||
+			!sameOptionalTime(left.VerifiedAt, right.VerifiedAt) {
 			return false
 		}
 	}

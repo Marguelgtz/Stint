@@ -49,8 +49,9 @@ func TestJournaledTaskPersistsExecutorStartBeforeLaunchAndResultBeforeVerificati
 		t.Fatal("executor start was not durable before invocation")
 	}
 	events, err := deep.ReadRunEvents(env.coord.stateDir, env.state.SessionID)
-	if err != nil || len(events) != 5 || events[1].Type != deep.RunEventExecutorStarted || events[2].Type != deep.RunEventExecutorResult ||
-		events[3].Type != deep.RunEventVerificationStarted || events[4].Type != deep.RunEventVerificationResult {
+	if err != nil || len(events) != 6 || events[1].Type != deep.RunEventExecutorStarted || events[2].Type != deep.RunEventExecutorResult ||
+		events[3].Type != deep.RunEventVerificationStarted || events[4].Type != deep.RunEventVerificationResult ||
+		events[5].Type != deep.RunEventTaskCheckpointCreated || events[5].TaskCheckpoint == nil {
 		t.Fatalf("executor journal = %+v err=%v", events, err)
 	}
 	started, completed := events[1].ExecutorRun, events[2].ExecutorRun
@@ -75,6 +76,12 @@ func TestJournaledTaskPersistsExecutorStartBeforeLaunchAndResultBeforeVerificati
 		verificationResult.CommandSHA256 != deep.VerificationCommandIdentity(env.state.Verify) {
 		t.Fatalf("task verification facts are not subject-bound: start=%+v result=%+v", verificationStart, verificationResult)
 	}
+	checkpoint := events[5].TaskCheckpoint
+	if checkpoint.TaskID != env.state.Tasks[0].ID || checkpoint.Attempt != 1 || checkpoint.ExecutorRunID != completed.ID ||
+		checkpoint.VerificationRunID != verificationResult.ID || checkpoint.VerificationSubject != verificationResult.Subject ||
+		checkpoint.TreeSHA != verificationResult.Subject.TreeSHA || checkpoint.Commit != env.state.Tasks[0].CheckpointCommit {
+		t.Fatalf("task checkpoint is not bound to its exact executor and verifier facts: %+v", checkpoint)
+	}
 	if env.state.Tasks[0].Status != deep.StatusVerified || env.state.Tasks[0].ExecutorRunID != completed.ID || !env.state.Tasks[0].ExecutorRunProcessed {
 		t.Fatalf("task result projection = %+v", env.state.Tasks[0])
 	}
@@ -89,7 +96,7 @@ func TestEmptyConfiguredProviderIsPersistedAsHermesDefault(t *testing.T) {
 		t.Fatalf("run task with Hermes default provider: %v", err)
 	}
 	events, err := deep.ReadRunEvents(env.coord.stateDir, env.state.SessionID)
-	if err != nil || len(events) != 5 || events[1].ExecutorRun == nil || events[2].ExecutorRun == nil {
+	if err != nil || len(events) != 6 || events[1].ExecutorRun == nil || events[2].ExecutorRun == nil {
 		t.Fatalf("executor provider history = %+v err=%v", events, err)
 	}
 	if events[1].ExecutorRun.Runtime.Provider != "custom" || events[2].ExecutorRun.Runtime != events[1].ExecutorRun.Runtime ||
@@ -191,12 +198,30 @@ func TestResumeReusesDurableExecutorResultInsteadOfRelaunching(t *testing.T) {
 	if env.state.Tasks[0].Status != deep.StatusVerified || env.state.Tasks[0].Attempts != 1 || env.state.Tasks[0].ExecutorRunID != id || !env.state.Tasks[0].ExecutorRunProcessed {
 		t.Fatalf("recovered task projection = %+v", env.state.Tasks[0])
 	}
+	resumedHead, err := env.coord.git.repoHead(env.wt)
+	if err != nil || strings.TrimSpace(resumedHead) != strings.TrimSpace(checkpointHead) {
+		t.Fatalf("resume duplicated task checkpoint commit: before=%s after=%s err=%v", checkpointHead, resumedHead, err)
+	}
 	events, err := deep.ReadRunEvents(env.coord.stateDir, env.state.SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(events) < 4 || events[1].Sequence != 2 || events[2].Sequence != 3 || events[3].Sequence != 4 || events[3].Boundary != deep.RunEventBoundaryResume {
 		t.Fatalf("resume did not preserve one run-wide event sequence: %+v", events)
+	}
+	var checkpointEvents int
+	for _, event := range events {
+		if event.Type != deep.RunEventTaskCheckpointCreated {
+			continue
+		}
+		checkpointEvents++
+		if event.TaskCheckpoint == nil || event.TaskCheckpoint.ExecutorRunID != id ||
+			event.TaskCheckpoint.Commit != strings.TrimSpace(checkpointHead) || event.TaskCheckpoint.TreeSHA != strings.TrimSpace(checkpointTree) {
+			t.Fatalf("recovered task checkpoint is not bound to the existing commit: %+v", event)
+		}
+	}
+	if checkpointEvents != 1 {
+		t.Fatalf("task checkpoint side effect was not reconciled into exactly one event: count=%d events=%+v", checkpointEvents, events)
 	}
 }
 

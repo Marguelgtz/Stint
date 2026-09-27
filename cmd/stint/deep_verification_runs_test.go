@@ -214,7 +214,7 @@ func TestExternalLandingDuringVerificationDefersTaskCheckpoint(t *testing.T) {
 	var sawVerificationResult, sawTaskCheckpoint bool
 	for _, event := range events {
 		sawVerificationResult = sawVerificationResult || event.Type == deep.RunEventVerificationResult
-		if event.Type == deep.RunEventLanded {
+		if event.Type == deep.RunEventTaskCheckpointCreated {
 			sawTaskCheckpoint = true
 		}
 	}

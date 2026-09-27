@@ -33,7 +33,8 @@ func (s *DeepState) SaveDir(stateDir string) error {
 				}
 				if s.RunEventSchemaVersion != recovered.RunEventSchemaVersion || s.RunEventWatermark != recovered.RunEventWatermark ||
 					s.RunID != recovered.RunID || s.ExecutionEpochID != recovered.ExecutionEpochID ||
-					!sameLifecycleProjection(*s, recovered) || !sameVerificationProjection(*s, recovered) {
+					!sameLifecycleProjection(*s, recovered) || !sameVerificationProjection(*s, recovered) ||
+					!sameTaskCheckpointProjection(*s, recovered) {
 					return fmt.Errorf("journal-backed lifecycle state must be changed through a RunEvent transition")
 				}
 				if recovered.RunEventWatermark > 0 {
@@ -46,6 +47,9 @@ func (s *DeepState) SaveDir(stateDir string) error {
 					}
 					if err := validateProjectionAtWatermark(dir, *s, events[recovered.RunEventWatermark-1]); err != nil {
 						return fmt.Errorf("Deep Work projection contradicts its watermark event: %w", err)
+					}
+					if err := validateTaskCheckpointProjection(*s, events[:recovered.RunEventWatermark]); err != nil {
+						return fmt.Errorf("Deep Work task checkpoint contradicts canonical history: %w", err)
 					}
 				}
 			}
