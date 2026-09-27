@@ -45,10 +45,20 @@ func (s Status) Terminal() bool {
 }
 
 func taskTerminalInContract(task Task, contractVersion int) bool {
-	if contractVersion == DeterministicAcceptanceContractVersion && isAcceptanceContractTask(task) && task.Status == StatusVerified {
-		return task.AcceptanceOutcome == AcceptanceAccepted
+	if contractVersion == DeterministicAcceptanceContractVersion && isAcceptanceContractTask(task) {
+		if task.Status == StatusVerified || task.Status == StatusAccepted {
+			return task.Status == StatusAccepted && task.AcceptanceOutcome == AcceptanceAccepted
+		}
 	}
 	return task.Status.Terminal()
+}
+
+// TerminalInContract applies the scheduling terminal rule selected by the
+// persisted mission contract. In a v2 mission, a verified Work Unit checkpoint
+// remains actionable until both the task state and acceptance outcome say
+// accepted.
+func (task Task) TerminalInContract(contractVersion int) bool {
+	return taskTerminalInContract(task, contractVersion)
 }
 
 // IsAcceptanceContractTask reports whether this is a mission-authored Work

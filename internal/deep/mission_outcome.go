@@ -1,6 +1,9 @@
 package deep
 
-import "strings"
+import (
+	"encoding/hex"
+	"strings"
+)
 
 // MissionOutcome is the outcome of deterministic mission-level completion
 // checks. It is independent of PhaseLanded, which only records that Stint
@@ -32,15 +35,20 @@ func DisplayMissionOutcome(outcome MissionOutcome, phase Phase) MissionOutcome {
 	return MissionOutcomeUnknown
 }
 
-// DetermineMissionOutcome applies the current legacy deterministic completion
-// contract. An explicit non-zero final mission verifier is a mission failure.
-// Other missing or inconclusive evidence cannot establish success. Tasks
-// count as complete only when their verified status is bound to a concrete
-// verifier command, exact subject, and matching checkpoint tree; legacy
-// verified states without that provenance remain unresolved. Objective C must
-// preserve this behavior for legacy missions and use explicit acceptance
-// outcomes for the new mission-contract version.
+// DetermineMissionOutcome applies the deterministic completion semantics
+// declared by the mission contract version. Legacy contracts preserve the
+// verified-is-terminal rule; version 2 requires bound Objective acceptance.
 func DetermineMissionOutcome(state DeepState) MissionOutcome {
+	if state.AcceptanceContractVersion == DeterministicAcceptanceContractVersion {
+		return determineAcceptedMissionOutcome(state)
+	}
+	if state.AcceptanceContractVersion != 0 {
+		return MissionOutcomeUnresolved
+	}
+	return determineLegacyMissionOutcome(state)
+}
+
+func determineLegacyMissionOutcome(state DeepState) MissionOutcome {
 	if strings.TrimSpace(state.Verify) != "" && state.LandingVerifyDone &&
 		state.LandingVerificationOutcome == VerificationFailed && finalVerificationMatchesCheckpoint(state) {
 		return MissionOutcomeFailed
@@ -49,6 +57,58 @@ func DetermineMissionOutcome(state DeepState) MissionOutcome {
 		return MissionOutcomeIncomplete
 	}
 	for _, task := range state.Tasks {
+		if task.Status != StatusVerified {
+			return MissionOutcomeIncomplete
+		}
+		if !taskHasBoundVerification(task) {
+			return MissionOutcomeUnresolved
+		}
+	}
+	if strings.TrimSpace(state.Verify) != "" {
+		if !state.LandingVerifyDone || state.LandingVerificationOutcome != VerificationPassed ||
+			!finalVerificationMatchesCheckpoint(state) {
+			return MissionOutcomeUnresolved
+		}
+	}
+	if state.LandingCommit == "" || state.LandingCheckpointTreeSHA == "" {
+		return MissionOutcomeUnresolved
+	}
+	return MissionOutcomeSucceeded
+}
+
+func determineAcceptedMissionOutcome(state DeepState) MissionOutcome {
+	if err := ValidateMissionAcceptanceContract(state.MissionDefinition()); err != nil {
+		return MissionOutcomeUnresolved
+	}
+	if strings.TrimSpace(state.Verify) != "" && state.LandingVerifyDone &&
+		state.LandingVerificationOutcome == VerificationFailed {
+		if finalVerificationMatchesCheckpoint(state) {
+			return MissionOutcomeFailed
+		}
+		return MissionOutcomeUnresolved
+	}
+	if len(state.Tasks) == 0 {
+		return MissionOutcomeIncomplete
+	}
+	for _, task := range state.Tasks {
+		if task.IsAcceptanceContractTask() {
+			switch task.AcceptanceOutcome {
+			case AcceptanceAccepted:
+				if !taskHasBoundAcceptance(task) {
+					return MissionOutcomeUnresolved
+				}
+			case AcceptanceUnresolved:
+				return MissionOutcomeUnresolved
+			case AcceptanceNotSatisfied, AcceptanceNotEvaluated, "":
+				return MissionOutcomeIncomplete
+			default:
+				return MissionOutcomeUnresolved
+			}
+			continue
+		}
+		// Coordinator-owned Work Units are outside the mission's acceptance
+		// contract, but their existing verified operational work must still be
+		// complete before a mission can succeed.
 		if task.Status != StatusVerified {
 			return MissionOutcomeIncomplete
 		}
@@ -81,4 +141,28 @@ func taskHasBoundVerification(task Task) bool {
 		return false
 	}
 	return task.VerificationSubject.TreeSHA == task.CheckpointTreeSHA
+}
+
+func taskHasBoundAcceptance(task Task) bool {
+	if task.Status != StatusAccepted || task.AcceptanceCheckOutcome != AcceptanceCheckPassed ||
+		len(task.AcceptanceRunID) != 32 || task.AcceptanceCheckpointEventID == "" ||
+		task.CheckpointCommit == "" || task.CheckpointTreeSHA == "" ||
+		task.AcceptanceCheckpointCommit != task.CheckpointCommit ||
+		task.AcceptanceCheckpointTreeSHA != task.CheckpointTreeSHA || task.AcceptanceSubject == nil ||
+		task.VerificationSubject == nil || task.VerificationSubject.TreeSHA != task.CheckpointTreeSHA {
+		return false
+	}
+	if _, err := hex.DecodeString(task.AcceptanceRunID); err != nil {
+		return false
+	}
+	checkpoint := TaskCheckpoint{
+		TaskID: task.ID, Attempt: task.Attempts, ExecutorRunID: task.ExecutorRunID,
+		VerificationRunID: task.VerificationRunID, VerificationSubject: *task.VerificationSubject,
+		Commit: task.CheckpointCommit, TreeSHA: task.CheckpointTreeSHA,
+	}
+	if task.AcceptanceCheckpointEventID != taskCheckpointRecordEventID(checkpoint) {
+		return false
+	}
+	want := VerificationSubject{HeadCommit: task.CheckpointCommit, TreeSHA: task.CheckpointTreeSHA}
+	return *task.AcceptanceSubject == want
 }
