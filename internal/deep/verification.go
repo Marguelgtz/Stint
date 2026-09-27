@@ -16,6 +16,8 @@ type VerificationOutcome string
 
 const (
 	VerificationNotRun       VerificationOutcome = "not_run"
+	VerificationStarted      VerificationOutcome = "started"
+	VerificationUnknown      VerificationOutcome = "unknown"
 	VerificationPassed       VerificationOutcome = "passed"
 	VerificationFailed       VerificationOutcome = "failed"
 	VerificationTimedOut     VerificationOutcome = "timed_out"

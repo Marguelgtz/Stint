@@ -37,6 +37,9 @@ const (
 	RunEventExecutorStarted          RunEventType = "executor.started"
 	RunEventExecutorResult           RunEventType = "executor.result"
 	RunEventExecutorRecoveryRequired RunEventType = "executor.recovery_required"
+	RunEventVerificationStarted      RunEventType = "verification.started"
+	RunEventVerificationResult       RunEventType = "verification.result"
+	RunEventVerificationRecovery     RunEventType = "verification.recovery_required"
 )
 
 type RunEventBoundary string
@@ -65,7 +68,7 @@ type RunTaskSummary struct {
 // history. Version 1 is an extensible envelope: additive event types may be
 // added without a version bump, while readers fail closed on unknown complete
 // events. B1 records run/epoch and landing transitions; B2 adds executor
-// invocation facts. Verification remains a separate record layer.
+// invocation facts; B2b adds typed verification invocation facts.
 type RunEvent struct {
 	SchemaVersion    int              `json:"schemaVersion"`
 	EventID          string           `json:"eventId"`
@@ -87,6 +90,7 @@ type RunEvent struct {
 	CheckpointCommit string           `json:"checkpointCommit,omitempty"`
 	CheckpointTree   string           `json:"checkpointTreeSha,omitempty"`
 	ExecutorRun      *ExecutorRun     `json:"executorRun,omitempty"`
+	VerificationRun  *VerificationRun `json:"verificationRun,omitempty"`
 }
 
 // NewExecutionEpochID returns a random opaque identity for one execution
@@ -336,7 +340,7 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		}
 		if state.RunEventWatermark != current.RunEventWatermark || state.RunID != current.RunID ||
 			state.ExecutionEpochID != current.ExecutionEpochID || state.RunEventSchemaVersion != current.RunEventSchemaVersion ||
-			!sameLifecycleProjection(*state, current) {
+			!sameLifecycleProjection(*state, current) || !sameVerificationProjection(*state, current) {
 			return errors.New("stale Deep Work projection; reload before writing a run event")
 		}
 		events, _, err := readRunEventsLocked(dir, state.SessionID)
@@ -373,6 +377,11 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		}
 		event.SchemaVersion = RunEventSchemaVersion
 		event.Sequence = uint64(len(events)) + 1
+		if event.Type == RunEventVerificationStarted || event.Type == RunEventVerificationResult {
+			if event.VerificationRun == nil || !verificationCommandFactsMatch(*state, *event.VerificationRun) {
+				return errors.New("verification event command source or identity does not match the durable configuration at append time")
+			}
+		}
 		if err := validateRunEvent(event); err != nil {
 			return fmt.Errorf("invalid run event: %w", err)
 		}
@@ -390,6 +399,9 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		projected.PreviousLandings = append([]LandingRecord(nil), state.PreviousLandings...)
 		if err := applyRunEvent(&projected, event); err != nil {
 			return fmt.Errorf("apply persisted run event %s: %w", event.EventID, err)
+		}
+		if err := hydrateVerificationProjection(&projected, event, dir); err != nil {
+			return fmt.Errorf("hydrate persisted verification event %s: %w", event.EventID, err)
 		}
 		if err := project(stateDir, &projected); err != nil {
 			return fmt.Errorf("run event %s is durable but deep.json projection update failed: %w", event.EventID, err)
@@ -589,6 +601,30 @@ func validateRunEvent(event RunEvent) error {
 		if err := validateExecutorRecovery(*event.ExecutorRun); err != nil {
 			return fmt.Errorf("invalid executor-recovery record: %w", err)
 		}
+	case RunEventVerificationStarted:
+		if event.FromPhase != event.ToPhase || event.VerificationRun == nil ||
+			(event.VerificationRun.Purpose == VerificationPurposeTask && event.FromPhase != PhaseExecuting) ||
+			(event.VerificationRun.Purpose == VerificationPurposeMissionEnd && event.FromPhase != PhaseLanding) {
+			return errors.New("verification-start event has invalid phase or missing run record")
+		}
+		if err := validateVerificationRun(*event.VerificationRun, true); err != nil {
+			return fmt.Errorf("invalid verification-start record: %w", err)
+		}
+	case RunEventVerificationResult:
+		if event.FromPhase != event.ToPhase || (event.FromPhase != PhaseExecuting && event.FromPhase != PhaseLanding) || event.VerificationRun == nil {
+			return errors.New("verification-result event has invalid phase or missing run record")
+		}
+		if err := validateVerificationRun(*event.VerificationRun, false); err != nil {
+			return fmt.Errorf("invalid verification-result record: %w", err)
+		}
+	case RunEventVerificationRecovery:
+		if event.FromPhase != event.ToPhase || (event.FromPhase != PhaseExecuting && event.FromPhase != PhaseLanding) ||
+			event.VerificationRun == nil || event.VerificationRun.Outcome != VerificationUnknown || event.Reason == "" {
+			return errors.New("verification-recovery event has invalid phase, outcome, or missing run record")
+		}
+		if err := validateVerificationRecovery(*event.VerificationRun); err != nil {
+			return fmt.Errorf("invalid verification-recovery record: %w", err)
+		}
 	default:
 		return fmt.Errorf("unknown run event type %q", event.Type)
 	}
@@ -600,6 +636,9 @@ func validateRunEvent(event RunEvent) error {
 	}
 	if event.Type != RunEventExecutorStarted && event.Type != RunEventExecutorResult && event.Type != RunEventExecutorRecoveryRequired && event.ExecutorRun != nil {
 		return errors.New("non-executor event contains an executor run record")
+	}
+	if event.Type != RunEventVerificationStarted && event.Type != RunEventVerificationResult && event.Type != RunEventVerificationRecovery && event.VerificationRun != nil {
+		return errors.New("non-verification event contains a verification run record")
 	}
 	return nil
 }
@@ -671,13 +710,16 @@ func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string)
 	if last.Type == RunEventLanded {
 		return errors.New("event follows terminal landing without a new epoch")
 	}
-	if event.EpochID != last.EpochID && event.Type != RunEventExecutorRecoveryRequired {
+	if event.EpochID != last.EpochID && event.Type != RunEventExecutorRecoveryRequired && event.Type != RunEventVerificationRecovery {
 		return errors.New("event epoch does not match the current run epoch")
 	}
 	if event.FromPhase != phase {
 		return fmt.Errorf("event %q expects phase %q after prior event phase %q", event.Type, event.FromPhase, phase)
 	}
 	if err := validateExecutorEventTransition(prior, event); err != nil {
+		return err
+	}
+	if err := validateVerificationEventTransition(prior, event); err != nil {
 		return err
 	}
 	if event.Type == RunEventLandingStarted && phase != PhaseExecuting {
@@ -693,6 +735,85 @@ func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string)
 		}
 	}
 	return nil
+}
+
+func validateVerificationEventTransition(prior []RunEvent, event RunEvent) error {
+	switch event.Type {
+	case RunEventVerificationStarted:
+		if event.EpochID != prior[len(prior)-1].EpochID {
+			return errors.New("verification start must belong to the active run epoch")
+		}
+		for _, old := range prior {
+			if old.VerificationRun == nil {
+				continue
+			}
+			if old.VerificationRun.ID == event.VerificationRun.ID {
+				return fmt.Errorf("verification run %q already has journal history", event.VerificationRun.ID)
+			}
+			if old.Type == RunEventVerificationStarted {
+				if _, closed := verificationRunClosed(prior, old.VerificationRun.ID); !closed {
+					return fmt.Errorf("verification run %q is still unmatched", old.VerificationRun.ID)
+				}
+			}
+		}
+	case RunEventVerificationResult:
+		start, ok := verificationStart(prior, event.VerificationRun.ID)
+		if !ok || event.EpochID != start.EpochID || !sameVerificationStart(*start.VerificationRun, *event.VerificationRun) {
+			return errors.New("verification result does not match a start event in the same epoch")
+		}
+		if _, closed := verificationRunClosed(prior, event.VerificationRun.ID); closed {
+			return errors.New("verification result follows an already closed invocation")
+		}
+	case RunEventVerificationRecovery:
+		start, ok := verificationStart(prior, event.VerificationRun.ID)
+		if !ok || !sameVerificationStart(*start.VerificationRun, *event.VerificationRun) {
+			return errors.New("verification recovery does not match a durable start event")
+		}
+		if _, closed := verificationRunClosed(prior, event.VerificationRun.ID); closed {
+			return errors.New("verification recovery follows an already closed invocation")
+		}
+	}
+	return nil
+}
+
+func verificationStart(events []RunEvent, id string) (*RunEvent, bool) {
+	for i := range events {
+		if events[i].Type == RunEventVerificationStarted && events[i].VerificationRun != nil && events[i].VerificationRun.ID == id {
+			return &events[i], true
+		}
+	}
+	return nil, false
+}
+
+func verificationRunClosed(events []RunEvent, id string) (RunEvent, bool) {
+	for _, event := range events {
+		if (event.Type == RunEventVerificationResult || event.Type == RunEventVerificationRecovery) &&
+			event.VerificationRun != nil && event.VerificationRun.ID == id {
+			return event, true
+		}
+	}
+	return RunEvent{}, false
+}
+
+func sameVerificationStart(start, result VerificationRun) bool {
+	return start.ID == result.ID && start.StartEventID == result.StartEventID && start.StartedInEpochID == result.StartedInEpochID &&
+		start.Purpose == result.Purpose && start.TaskID == result.TaskID && start.Attempt == result.Attempt &&
+		start.CommandSource == result.CommandSource && start.CommandSHA256 == result.CommandSHA256 &&
+		start.Runtime == result.Runtime && start.StartedAt.Equal(result.StartedAt) && start.TimeoutSeconds == result.TimeoutSeconds &&
+		start.RemainingDeadlineSeconds == result.RemainingDeadlineSeconds && start.Subject == result.Subject &&
+		sameStringMap(start.BookkeepingBefore, result.BookkeepingBefore)
+}
+
+func sameStringMap(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		if b[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func validateExecutorEventTransition(prior []RunEvent, event RunEvent) error {
@@ -886,7 +1007,7 @@ func recoverProjectionLocked(stateDir, dir string, state DeepState, persist bool
 		return DeepState{}, journalExists, fmt.Errorf("unsupported run event schema version %d", state.RunEventSchemaVersion)
 	}
 	if state.RunEventWatermark > 0 {
-		if err := validateProjectionAtWatermark(state, events[state.RunEventWatermark-1]); err != nil {
+		if err := validateProjectionAtWatermark(dir, state, events[state.RunEventWatermark-1]); err != nil {
 			return DeepState{}, journalExists, err
 		}
 	}
@@ -894,6 +1015,9 @@ func recoverProjectionLocked(stateDir, dir string, state DeepState, persist bool
 	for i := state.RunEventWatermark; i < uint64(len(events)); i++ {
 		if err := applyRunEvent(&state, events[i]); err != nil {
 			return DeepState{}, journalExists, fmt.Errorf("replay run event %d: %w", i+1, err)
+		}
+		if err := hydrateVerificationProjection(&state, events[i], dir); err != nil {
+			return DeepState{}, journalExists, fmt.Errorf("replay verification artifact for event %d: %w", i+1, err)
 		}
 		changed = true
 	}
@@ -911,7 +1035,7 @@ func recoverProjectionLocked(stateDir, dir string, state DeepState, persist bool
 	return state, journalExists, nil
 }
 
-func validateProjectionAtWatermark(state DeepState, event RunEvent) error {
+func validateProjectionAtWatermark(dir string, state DeepState, event RunEvent) error {
 	if state.RunEventSchemaVersion != RunEventSchemaVersion || state.RunID != event.RunID || state.ExecutionEpochID != event.EpochID {
 		return errors.New("deep.json run identity, epoch, or journal schema differs from its watermark event")
 	}
@@ -972,8 +1096,69 @@ func validateProjectionAtWatermark(state DeepState, event RunEvent) error {
 			!state.ExecutionQuiescenceUnconfirmed || state.ExecutionQuiescenceTaskID != task.ID {
 			return errors.New("deep.json recovery block disagrees with its executor-recovery watermark event")
 		}
+	case RunEventVerificationStarted:
+		if event.VerificationRun == nil || !verificationProjectionMatchesEvent(dir, state, *event.VerificationRun, true) {
+			return errors.New("deep.json verification start disagrees with its watermark event")
+		}
+	case RunEventVerificationResult:
+		if event.VerificationRun == nil || !verificationProjectionMatchesEvent(dir, state, *event.VerificationRun, false) {
+			return errors.New("deep.json verification result disagrees with its watermark event")
+		}
+	case RunEventVerificationRecovery:
+		if event.VerificationRun == nil || !verificationRecoveryProjectionMatches(state, *event.VerificationRun, event.Reason) {
+			return errors.New("deep.json verification recovery disagrees with its watermark event")
+		}
 	}
 	return nil
+}
+
+func verificationProjectionMatchesEvent(dir string, state DeepState, run VerificationRun, starting bool) bool {
+	if run.Purpose == VerificationPurposeTask {
+		task, ok := findTask(&state, run.TaskID)
+		if !ok || task.VerificationRunID != run.ID || task.Attempts != run.Attempt || task.VerificationSubject == nil || *task.VerificationSubject != run.Subject ||
+			!sameStringMap(task.VerificationBookkeeping, run.BookkeepingBefore) || task.VerificationCommand == "" ||
+			VerificationCommandIdentity(task.VerificationCommand) != run.CommandSHA256 {
+			return false
+		}
+		if starting {
+			return task.VerificationOutcome == VerificationStarted && task.VerificationResult == ""
+		}
+		output, err := verificationArtifactOutput(dir, run)
+		if err != nil {
+			return false
+		}
+		return task.VerificationOutcome == run.Outcome && task.VerificationResult == verificationRunSummary(run) &&
+			task.VerificationOutput == VerificationOutputExcerpt(output)
+	}
+	if run.Purpose != VerificationPurposeMissionEnd || state.LandingVerificationRunID != run.ID ||
+		state.LandingVerificationSubject == nil || *state.LandingVerificationSubject != run.Subject ||
+		!sameStringMap(state.LandingVerificationBookkeeping, run.BookkeepingBefore) {
+		return false
+	}
+	if starting {
+		return !state.LandingVerifyDone && state.LandingVerificationOutcome == VerificationStarted
+	}
+	output, err := verificationArtifactOutput(dir, run)
+	if err != nil {
+		return false
+	}
+	return state.LandingVerifyDone && state.LandingVerificationOutcome == run.Outcome && state.LandingVerify == landingVerificationSummary(run, output)
+}
+
+func verificationRecoveryProjectionMatches(state DeepState, run VerificationRun, reason string) bool {
+	if !state.ExecutionQuiescenceUnconfirmed || state.ExecutionQuiescenceTaskID != verificationQuiescenceOwner(run) {
+		return false
+	}
+	if run.Purpose == VerificationPurposeTask {
+		task, ok := findTask(&state, run.TaskID)
+		return ok && task.VerificationRunID == run.ID && task.Attempts == run.Attempt && task.Status == StatusNeedsHuman &&
+			task.Blocker == "verification invocation has no durable result; process quiescence and outcome are unknown, so checkpointing is stopped" &&
+			task.VerificationOutcome == VerificationUnknown &&
+			task.VerificationResult == "verification outcome unknown: "+reason
+	}
+	return run.Purpose == VerificationPurposeMissionEnd && reason != "" && state.LandingVerificationRunID == run.ID &&
+		!state.LandingVerifyDone && state.LandingVerificationOutcome == VerificationUnknown &&
+		state.LandingVerify == "verification outcome unknown: "+reason
 }
 
 func executorProjectedLastResult(run ExecutorRun) string {
@@ -1062,6 +1247,44 @@ func applyRunEvent(state *DeepState, event RunEvent) error {
 		task.LastResult = "executor outcome unknown | " + event.Reason
 		state.ExecutionQuiescenceUnconfirmed = true
 		state.ExecutionQuiescenceTaskID = task.ID
+	case RunEventVerificationStarted:
+		if state.Phase != event.FromPhase || event.EpochID != state.ExecutionEpochID || event.VerificationRun == nil {
+			return errors.New("verification-start event does not follow the current run epoch")
+		}
+		if event.VerificationRun.StartedInEpochID != state.ExecutionEpochID {
+			return errors.New("verification-start event has a stale epoch identity")
+		}
+		if err := applyVerificationStarted(state, *event.VerificationRun); err != nil {
+			return err
+		}
+	case RunEventVerificationResult:
+		if event.VerificationRun == nil {
+			return errors.New("verification-result event has no run record")
+		}
+		if err := applyVerificationResult(state, *event.VerificationRun); err != nil {
+			return err
+		}
+	case RunEventVerificationRecovery:
+		if event.VerificationRun == nil {
+			return errors.New("verification-recovery event has no run record")
+		}
+		if event.VerificationRun.Purpose == VerificationPurposeTask {
+			task, ok := findTask(state, event.VerificationRun.TaskID)
+			if !ok || task.VerificationRunID != event.VerificationRun.ID || task.Attempts != event.VerificationRun.Attempt {
+				return errors.New("verification-recovery event does not match the projected task attempt")
+			}
+			task.Status = StatusNeedsHuman
+			task.Blocker = "verification invocation has no durable result; process quiescence and outcome are unknown, so checkpointing is stopped"
+			task.VerificationOutcome = VerificationUnknown
+			task.VerificationResult = "verification outcome unknown: " + event.Reason
+			task.ExecutorRunProcessed = true
+		} else if event.VerificationRun.Purpose == VerificationPurposeMissionEnd {
+			state.LandingVerificationOutcome = VerificationUnknown
+			state.LandingVerifyDone = false
+			state.LandingVerify = "verification outcome unknown: " + event.Reason
+		}
+		state.ExecutionQuiescenceUnconfirmed = true
+		state.ExecutionQuiescenceTaskID = verificationQuiescenceOwner(*event.VerificationRun)
 	default:
 		return fmt.Errorf("cannot apply run event type %q", event.Type)
 	}
@@ -1083,11 +1306,36 @@ func sameLifecycleProjection(a, b DeepState) bool {
 	return true
 }
 
+func sameVerificationProjection(a, b DeepState) bool {
+	if a.LandingVerificationRunID != b.LandingVerificationRunID || len(a.Tasks) != len(b.Tasks) {
+		return false
+	}
+	if a.LandingVerificationRunID != "" && (a.LandingVerify != b.LandingVerify || a.LandingVerifyDone != b.LandingVerifyDone ||
+		a.LandingVerificationOutcome != b.LandingVerificationOutcome || !sameVerificationSubject(a.LandingVerificationSubject, b.LandingVerificationSubject) ||
+		!sameStringMap(a.LandingVerificationBookkeeping, b.LandingVerificationBookkeeping)) {
+		return false
+	}
+	for i := range a.Tasks {
+		left, right := a.Tasks[i], b.Tasks[i]
+		if left.ID != right.ID || left.VerificationRunID != right.VerificationRunID {
+			return false
+		}
+		if left.VerificationRunID != "" && (left.VerificationCommand != right.VerificationCommand ||
+			left.VerificationOutcome != right.VerificationOutcome || left.VerificationResult != right.VerificationResult ||
+			left.VerificationOutput != right.VerificationOutput || !sameVerificationSubject(left.VerificationSubject, right.VerificationSubject) ||
+			!sameStringMap(left.VerificationBookkeeping, right.VerificationBookkeeping)) {
+			return false
+		}
+	}
+	return true
+}
+
 func sameLandingRecord(a, b LandingRecord) bool {
 	return a.At.Equal(b.At) && a.Reason == b.Reason && a.Commit == b.Commit &&
 		a.CheckpointTreeSHA == b.CheckpointTreeSHA && a.Verification == b.Verification &&
 		a.MissionOutcome == b.MissionOutcome && a.VerificationOutcome == b.VerificationOutcome &&
 		sameVerificationSubject(a.VerificationSubject, b.VerificationSubject) &&
+		a.VerificationRunID == b.VerificationRunID &&
 		a.HandoffSHA256 == b.HandoffSHA256
 }
 

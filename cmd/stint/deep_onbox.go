@@ -393,6 +393,8 @@ func retargetOnBoxActionPlanTask(tasks []deep.Task, actionPlan string) []deep.Ta
 		tasks[i].LastResult = ""
 		tasks[i].ExecutionError = ""
 		tasks[i].VerificationCommand = ""
+		tasks[i].VerificationRunID = ""
+		tasks[i].VerificationOutcome = deep.VerificationNotRun
 		tasks[i].VerificationResult = ""
 		tasks[i].VerificationOutput = ""
 		tasks[i].ConfiguredTimeoutSec = 0

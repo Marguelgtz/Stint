@@ -22,6 +22,7 @@ func (s *DeepState) ReopenAfterLanding(now time.Time) bool {
 		MissionOutcome:      s.MissionOutcome,
 		VerificationOutcome: s.LandingVerificationOutcome,
 		VerificationSubject: s.LandingVerificationSubject,
+		VerificationRunID:   s.LandingVerificationRunID,
 	}
 	if s.LandedAt != nil {
 		record.At = s.LandedAt.UTC()
@@ -39,6 +40,7 @@ func (s *DeepState) ReopenAfterLanding(now time.Time) bool {
 	s.LandingVerify = ""
 	s.LandingVerifyDone = false
 	s.LandingVerificationOutcome = VerificationNotRun
+	s.LandingVerificationRunID = ""
 	s.LandingVerificationSubject = nil
 	s.LandingVerificationBookkeeping = nil
 	s.LandingHandoff = ""

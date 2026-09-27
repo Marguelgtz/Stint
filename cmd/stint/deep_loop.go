@@ -218,9 +218,16 @@ func (c *deepCoordinator) persistUnquiescedVerifier(taskID, command string, resu
 			continue
 		}
 		task := &c.state.Tasks[i]
+		if c.state.RunEventSchemaVersion == deep.RunEventSchemaVersion && task.VerificationRunID != "" {
+			// The verification.result event already projected this exact failure
+			// and hard block. Do not rewrite its canonical evidence from a second
+			// deep.json path.
+			return fmt.Errorf("task %s cannot be checkpointed because verifier process quiescence is unconfirmed", taskID)
+		}
 		task.Status = deep.StatusNeedsHuman
 		task.Blocker = "verifier process quiescence is unconfirmed; checkpointing and further work are stopped"
 		task.VerificationCommand = command
+		task.VerificationOutcome = result.Outcome
 		task.VerificationResult = result.Summary()
 		task.VerificationOutput = strings.TrimSpace(tailLine(result.Output, 3))
 		task.VerificationSubject = nil
@@ -340,7 +347,11 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		}
 		t = &c.state.Tasks[idx]
 		t.VerificationSubject = &subject.Subject
-		t.VerificationBookkeeping = subject.Bookkeeping
+		if journaled {
+			t.VerificationBookkeeping = landingVerificationBookkeeping(subject.Bookkeeping)
+		} else {
+			t.VerificationBookkeeping = subject.Bookkeeping
+		}
 		resultRecorded = true
 	} else {
 		effectiveTimeout, timeoutDecision = c.effectiveTaskTimeout(now, *t)
@@ -495,7 +506,24 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		return nil
 	}
 
-	verifyResult, verifyCmd := c.accept(ctx, t)
+	verifyResult, verifyCmd, verificationStarted, verifyErr := c.verifyTaskAttempt(ctx, t, subject, journaled)
+	if verifyErr != nil {
+		if errors.Is(verifyErr, errVerificationSubjectChanged) && !verificationStarted {
+			t = &c.state.Tasks[idx]
+			t.Status = deep.StatusNeedsHuman
+			t.Blocker = "repository changed between executor completion and task verification; the executor result cannot be verified against the current tree"
+			if resultRecorded {
+				t.ExecutorRunProcessed = true
+			}
+			if saveErr := c.save(); saveErr != nil {
+				return fmt.Errorf("persist task %s verification-subject conflict: %w", t.ID, saveErr)
+			}
+		}
+		return fmt.Errorf("task %s verification could not be durably completed: %w", t.ID, verifyErr)
+	}
+	if journaled {
+		t = &c.state.Tasks[idx]
+	}
 	if verifyCmd != "" {
 		c.incident(deep.IncidentVerifyRun, t.ID, verifyResult.IncidentDetail())
 	}
@@ -514,7 +542,11 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		t.LastResult += " | executor error: " + executionError
 	}
 	t.VerificationCommand = verifyCmd
+	t.VerificationOutcome = verifyResult.Outcome
 	t.VerificationOutput = strings.TrimSpace(tailLine(verifyResult.Output, 3))
+	if journaled && verifyCmd != "" {
+		t.VerificationOutput = deep.VerificationOutputExcerpt(verifyResult.Output)
+	}
 	t.VerificationResult = verifyResult.Summary()
 	markExecutorResultProcessed := func() {
 		if resultRecorded {
@@ -525,11 +557,57 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		markExecutorResultProcessed()
 		return c.persistUnquiescedVerifier(t.ID, verifyCmd, verifyResult)
 	}
+	continuing, err = c.afterInvocationState(t.ID)
+	if err != nil {
+		return fmt.Errorf("refresh durable state after task %s verification: %w", t.ID, err)
+	}
+	if !continuing {
+		t = &c.state.Tasks[idx]
+		// A stop that raced with verification leaves the exact result available
+		// for a later epoch, but this attempt does not checkpoint or accept it.
+		t.LastResult = resultSummary
+		t.ExecutionError = ""
+		if execErr != nil {
+			if resultRecorded {
+				t.ExecutionError = executorRun.Error
+			} else {
+				t.ExecutionError = execErr.Error()
+			}
+		}
+		t.VerificationCommand = verifyCmd
+		t.VerificationOutcome = verifyResult.Outcome
+		if journaled && verifyCmd != "" {
+			t.VerificationOutput = deep.VerificationOutputExcerpt(verifyResult.Output)
+		} else {
+			t.VerificationOutput = strings.TrimSpace(tailLine(verifyResult.Output, 3))
+		}
+		t.VerificationResult = verifyResult.Summary()
+		if err := c.save(); err != nil {
+			return fmt.Errorf("persist task %s verification before landing: %w", t.ID, err)
+		}
+		return nil
+	}
+	t = &c.state.Tasks[idx]
 
 	executionSucceeded := execErr == nil && res.completed && res.exitCode == 0
 
 	switch {
 	case executionSucceeded && verifyResult.Passed():
+		if journaled && verifyCmd != "" {
+			durableRun, found, loadErr := deep.LoadVerificationRun(c.stateDir, c.state.SessionID, t.VerificationRunID)
+			if loadErr != nil {
+				return fmt.Errorf("load canonical verifier evidence for task %s: %w", t.ID, loadErr)
+			}
+			if !found || durableRun.Outcome != deep.VerificationPassed || !verificationRunMatchesSnapshot(durableRun, subject) {
+				t.Status = deep.StatusNeedsHuman
+				t.Blocker = "verification passed, but its durable result does not prove a stable exact repository subject"
+				markExecutorResultProcessed()
+				if saveErr := c.save(); saveErr != nil {
+					return fmt.Errorf("persist unbound verification result for task %s: %w", t.ID, saveErr)
+				}
+				return fmt.Errorf("task %s verification result is not bound to a stable exact subject", t.ID)
+			}
+		}
 		if subjectErr != nil {
 			t.Status = deep.StatusNeedsHuman
 			t.Blocker = "verification passed, but the exact repository subject could not be captured: " + subjectErr.Error()
@@ -781,9 +859,15 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 			*c.state = fresh
 			return fmt.Errorf("Deep Work is blocked: executor %s for task %s has no durable result and process quiescence is unknown", unmatched.ID, unmatched.TaskID)
 		}
+		if unmatched, err := deep.RecoverUnmatchedVerificationRun(c.stateDir, &fresh, c.now()); err != nil {
+			return fmt.Errorf("recover unmatched verification invocation: %w", err)
+		} else if unmatched != nil {
+			*c.state = fresh
+			return fmt.Errorf("Deep Work is blocked: verification %s has no durable result and process quiescence is unknown", unmatched.ID)
+		}
 		if fresh.ExecutionQuiescenceUnconfirmed {
 			*c.state = fresh
-			return fmt.Errorf("Deep Work is blocked because executor writers may still be active (task %s)", fresh.ExecutionQuiescenceTaskID)
+			return fmt.Errorf("Deep Work is blocked because executor writers may still be active or verifier writers may still be active (task %s)", fresh.ExecutionQuiescenceTaskID)
 		}
 		if fresh.Phase != deep.PhaseExecuting {
 			if fresh.Phase == deep.PhaseLanding {

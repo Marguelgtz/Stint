@@ -49,7 +49,8 @@ func TestJournaledTaskPersistsExecutorStartBeforeLaunchAndResultBeforeVerificati
 		t.Fatal("executor start was not durable before invocation")
 	}
 	events, err := deep.ReadRunEvents(env.coord.stateDir, env.state.SessionID)
-	if err != nil || len(events) != 3 || events[1].Type != deep.RunEventExecutorStarted || events[2].Type != deep.RunEventExecutorResult {
+	if err != nil || len(events) != 5 || events[1].Type != deep.RunEventExecutorStarted || events[2].Type != deep.RunEventExecutorResult ||
+		events[3].Type != deep.RunEventVerificationStarted || events[4].Type != deep.RunEventVerificationResult {
 		t.Fatalf("executor journal = %+v err=%v", events, err)
 	}
 	started, completed := events[1].ExecutorRun, events[2].ExecutorRun
@@ -67,6 +68,13 @@ func TestJournaledTaskPersistsExecutorStartBeforeLaunchAndResultBeforeVerificati
 	if events[1].Sequence != 2 || events[2].Sequence != 3 || events[1].EpochID != events[2].EpochID {
 		t.Fatalf("executor events lost sequence or epoch identity: %+v", events[1:])
 	}
+	verificationStart, verificationResult := events[3].VerificationRun, events[4].VerificationRun
+	if verificationStart == nil || verificationResult == nil || verificationStart.ID != verificationResult.ID ||
+		verificationStart.Outcome != deep.VerificationStarted || verificationResult.Outcome != deep.VerificationPassed ||
+		verificationResult.SubjectAfter == nil || *verificationResult.SubjectAfter != verificationResult.Subject ||
+		verificationResult.CommandSHA256 != deep.VerificationCommandIdentity(env.state.Verify) {
+		t.Fatalf("task verification facts are not subject-bound: start=%+v result=%+v", verificationStart, verificationResult)
+	}
 	if env.state.Tasks[0].Status != deep.StatusVerified || env.state.Tasks[0].ExecutorRunID != completed.ID || !env.state.Tasks[0].ExecutorRunProcessed {
 		t.Fatalf("task result projection = %+v", env.state.Tasks[0])
 	}
@@ -81,7 +89,7 @@ func TestEmptyConfiguredProviderIsPersistedAsHermesDefault(t *testing.T) {
 		t.Fatalf("run task with Hermes default provider: %v", err)
 	}
 	events, err := deep.ReadRunEvents(env.coord.stateDir, env.state.SessionID)
-	if err != nil || len(events) != 3 || events[1].ExecutorRun == nil || events[2].ExecutorRun == nil {
+	if err != nil || len(events) != 5 || events[1].ExecutorRun == nil || events[2].ExecutorRun == nil {
 		t.Fatalf("executor provider history = %+v err=%v", events, err)
 	}
 	if events[1].ExecutorRun.Runtime.Provider != "custom" || events[2].ExecutorRun.Runtime != events[1].ExecutorRun.Runtime ||
@@ -294,7 +302,7 @@ func TestJournaledExecutorTimeoutIsRecordedAsTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 3 || events[2].Type != deep.RunEventExecutorResult || events[2].ExecutorRun == nil {
+	if len(events) != 5 || events[2].Type != deep.RunEventExecutorResult || events[2].ExecutorRun == nil {
 		t.Fatalf("timeout result event missing: %+v", events)
 	}
 	if events[2].ExecutorRun.Outcome != deep.ExecutorOutcomeTimedOut ||
