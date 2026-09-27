@@ -341,23 +341,6 @@ func TestRunEventRejectsStaleProjectionWithoutOverwritingNewerTaskEvidence(t *te
 				}
 			},
 		},
-		{
-			name: "verification and checkpoint evidence",
-			mutate: func(task *Task, at time.Time) {
-				task.Status = StatusVerified
-				task.VerifiedAt = &at
-				task.VerificationSubject = &VerificationSubject{HeadCommit: "verified-head", TreeSHA: "verified-tree"}
-				task.CheckpointCommit = "checkpoint-commit"
-				task.CheckpointTreeSHA = "checkpoint-tree"
-			},
-			check: func(t *testing.T, task Task) {
-				t.Helper()
-				if task.Status != StatusVerified || task.VerificationSubject == nil || task.VerificationSubject.TreeSHA != "verified-tree" ||
-					task.CheckpointCommit != "checkpoint-commit" || task.CheckpointTreeSHA != "checkpoint-tree" {
-					t.Fatalf("newer verification/checkpoint evidence was lost: %+v", task)
-				}
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -393,6 +376,32 @@ func TestRunEventRejectsStaleProjectionWithoutOverwritingNewerTaskEvidence(t *te
 			}
 			tt.check(t, loaded.Tasks[0])
 		})
+	}
+}
+
+func TestRunEventRejectsStaleProjectionWithoutOverwritingJournaledTaskCheckpoint(t *testing.T) {
+	stateDir, state, _, checkpoint, at := taskCheckpointFixture(t)
+	stale, err := LoadState(stateDir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := LoadState(stateDir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordTaskCheckpoint(stateDir, &fresh, checkpoint, at); err != nil {
+		t.Fatalf("record newer task checkpoint: %v", err)
+	}
+	if err := BeginLanding(stateDir, &stale, "stale caller landing", at.Add(time.Minute)); err == nil || !strings.Contains(err.Error(), "stale Deep Work projection revision") {
+		t.Fatalf("stale landing transition = %v, want revision rejection", err)
+	}
+	loaded, err := LoadState(stateDir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Phase != PhaseExecuting || loaded.RunEventWatermark != 6 || loaded.Tasks[0].Status != StatusVerified ||
+		loaded.Tasks[0].CheckpointCommit != checkpoint.Commit || loaded.Tasks[0].CheckpointTreeSHA != checkpoint.TreeSHA {
+		t.Fatalf("stale lifecycle write changed journaled task checkpoint: phase=%q watermark=%d task=%+v", loaded.Phase, loaded.RunEventWatermark, loaded.Tasks[0])
 	}
 }
 
