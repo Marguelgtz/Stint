@@ -130,7 +130,7 @@ func BeginExecutorRun(stateDir string, state *DeepState, run ExecutorRun) (Execu
 		OccurredAt: run.StartedAt, Actor: "deep-coordinator", Type: RunEventExecutorStarted,
 		FromPhase: state.Phase, ToPhase: state.Phase, ExecutorRun: &run,
 	}
-	applyExecutorStarted(task, run)
+	applyExecutorStarted(task, run, state.AcceptanceContractVersion == DeterministicAcceptanceContractVersion)
 	event.TaskSummary = summarizeRunTasks(prepared.Tasks)
 	if err := appendAndProjectRunEvent(stateDir, state, event, writeProjectionLocked); err != nil {
 		return ExecutorRun{}, err
@@ -356,7 +356,7 @@ func LoadExecutorRun(stateDir, sessionID, id string) (ExecutorRun, bool, error) 
 	return found, ok, nil
 }
 
-func applyExecutorStarted(task *Task, run ExecutorRun) {
+func applyExecutorStarted(task *Task, run ExecutorRun, acceptanceContract bool) {
 	task.Status = StatusActive
 	task.Attempts = run.Attempt
 	task.ExecutorRunID = run.ID
@@ -374,6 +374,18 @@ func applyExecutorStarted(task *Task, run ExecutorRun) {
 	task.CheckpointCommit = ""
 	task.CheckpointTreeSHA = ""
 	task.VerifiedAt = nil
+	task.AcceptanceOutcome = ""
+	if acceptanceContract {
+		task.AcceptanceOutcome = AcceptanceNotEvaluated
+	}
+	task.AcceptanceRunID = ""
+	task.AcceptanceCheckOutcome = ""
+	task.AcceptanceReason = ""
+	task.AcceptanceSubject = nil
+	task.AcceptanceCheckpointEventID = ""
+	task.AcceptanceCheckpointCommit = ""
+	task.AcceptanceCheckpointTreeSHA = ""
+	task.AcceptanceOutput = ""
 	task.ConfiguredTimeoutSec = run.ConfiguredTimeoutSeconds
 	task.EffectiveTimeoutSec = run.EffectiveTimeoutSeconds
 	task.TimeoutDecision = run.TimeoutDecision

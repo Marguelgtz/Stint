@@ -152,7 +152,7 @@ func BranchName(sessionID string) string {
 
 // NewState builds the initial state for a parsed mission.
 func NewState(sessionID string, mission Mission, repoPath, worktreePath string, deadline time.Time, landBefore time.Time, taskAttemptCap int, now time.Time) DeepState {
-	return DeepState{
+	state := DeepState{
 		SessionID:                 sessionID,
 		MissionName:               mission.Name,
 		Objective:                 mission.Objective,
@@ -173,4 +173,12 @@ func NewState(sessionID string, mission Mission, repoPath, worktreePath string, 
 		TaskAttemptCap:            taskAttemptCap,
 		StartedAt:                 now.UTC(),
 	}
+	if state.AcceptanceContractVersion == DeterministicAcceptanceContractVersion {
+		for i := range state.Tasks {
+			if isAcceptanceContractTask(state.Tasks[i]) {
+				state.Tasks[i].AcceptanceOutcome = AcceptanceNotEvaluated
+			}
+		}
+	}
+	return state
 }

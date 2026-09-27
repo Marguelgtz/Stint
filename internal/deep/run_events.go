@@ -42,6 +42,9 @@ const (
 	RunEventVerificationResult       RunEventType = "verification.result"
 	RunEventVerificationRecovery     RunEventType = "verification.recovery_required"
 	RunEventTaskCheckpointCreated    RunEventType = "task.checkpoint_created"
+	RunEventAcceptanceStarted        RunEventType = "acceptance.started"
+	RunEventAcceptanceResult         RunEventType = "acceptance.result"
+	RunEventAcceptanceRecovery       RunEventType = "acceptance.recovery_required"
 )
 
 type RunEventBoundary string
@@ -70,7 +73,8 @@ type RunTaskSummary struct {
 // history. Version 1 is an extensible envelope: additive event types may be
 // added without a version bump, while readers fail closed on unknown complete
 // events. B1 records run/epoch and landing transitions; B2 adds executor
-// invocation facts; B2b adds typed verification invocation facts.
+// invocation facts; B2b adds typed verification invocation facts; C2 adds
+// objective-specific acceptance-check and deterministic-decision facts.
 type RunEvent struct {
 	SchemaVersion    int              `json:"schemaVersion"`
 	EventID          string           `json:"eventId"`
@@ -94,6 +98,7 @@ type RunEvent struct {
 	ExecutorRun      *ExecutorRun     `json:"executorRun,omitempty"`
 	VerificationRun  *VerificationRun `json:"verificationRun,omitempty"`
 	TaskCheckpoint   *TaskCheckpoint  `json:"taskCheckpoint,omitempty"`
+	AcceptanceRun    *AcceptanceRun   `json:"acceptanceRun,omitempty"`
 }
 
 // NewExecutionEpochID returns a random opaque identity for one execution
@@ -343,7 +348,8 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		}
 		if state.RunEventWatermark != current.RunEventWatermark || state.RunID != current.RunID ||
 			state.ExecutionEpochID != current.ExecutionEpochID || state.RunEventSchemaVersion != current.RunEventSchemaVersion ||
-			!sameLifecycleProjection(*state, current) || !sameVerificationProjection(*state, current) || !sameTaskCheckpointProjection(*state, current) {
+			!sameLifecycleProjection(*state, current) || !sameVerificationProjection(*state, current) ||
+			!sameTaskCheckpointProjection(*state, current) || !sameAcceptanceProjection(*state, current) {
 			return errors.New("stale Deep Work projection; reload before writing a run event")
 		}
 		events, _, err := readRunEventsLocked(dir, state.SessionID)
@@ -385,6 +391,11 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 				return errors.New("verification event command source or identity does not match the durable configuration at append time")
 			}
 		}
+		if event.Type == RunEventAcceptanceStarted || event.Type == RunEventAcceptanceResult {
+			if event.AcceptanceRun == nil || !acceptanceCommandFactsMatch(*state, *event.AcceptanceRun) {
+				return errors.New("acceptance event command identity does not match the durable contract at append time")
+			}
+		}
 		if err := validateRunEvent(event); err != nil {
 			return fmt.Errorf("invalid run event: %w", err)
 		}
@@ -406,6 +417,9 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		}
 		if err := hydrateVerificationProjection(&projected, event, dir); err != nil {
 			return fmt.Errorf("hydrate persisted verification event %s: %w", event.EventID, err)
+		}
+		if err := hydrateAcceptanceProjection(&projected, event, dir); err != nil {
+			return fmt.Errorf("hydrate persisted acceptance event %s: %w", event.EventID, err)
 		}
 		if err := project(stateDir, &projected); err != nil {
 			return fmt.Errorf("run event %s is durable but deep.json projection update failed: %w", event.EventID, err)
@@ -649,6 +663,27 @@ func validateRunEvent(event RunEvent) error {
 		if err := validateTaskCheckpoint(*event.TaskCheckpoint); err != nil {
 			return fmt.Errorf("invalid task-checkpoint record: %w", err)
 		}
+	case RunEventAcceptanceStarted:
+		if event.FromPhase != PhaseExecuting || event.ToPhase != PhaseExecuting || event.AcceptanceRun == nil {
+			return errors.New("acceptance-start event has invalid phase or missing acceptance record")
+		}
+		if err := validateAcceptanceRun(*event.AcceptanceRun, true); err != nil {
+			return fmt.Errorf("invalid acceptance-start record: %w", err)
+		}
+	case RunEventAcceptanceResult:
+		if event.FromPhase != PhaseExecuting || event.ToPhase != PhaseExecuting || event.AcceptanceRun == nil {
+			return errors.New("acceptance-result event has invalid phase or missing acceptance record")
+		}
+		if err := validateAcceptanceRun(*event.AcceptanceRun, false); err != nil {
+			return fmt.Errorf("invalid acceptance-result record: %w", err)
+		}
+	case RunEventAcceptanceRecovery:
+		if event.FromPhase != PhaseExecuting || event.ToPhase != PhaseExecuting || event.AcceptanceRun == nil || event.Reason == "" {
+			return errors.New("acceptance-recovery event has invalid phase, reason, or missing acceptance record")
+		}
+		if err := validateAcceptanceRecovery(*event.AcceptanceRun, event.Reason); err != nil {
+			return fmt.Errorf("invalid acceptance-recovery record: %w", err)
+		}
 	default:
 		return fmt.Errorf("unknown run event type %q", event.Type)
 	}
@@ -667,6 +702,9 @@ func validateRunEvent(event RunEvent) error {
 	}
 	if event.Type != RunEventTaskCheckpointCreated && event.TaskCheckpoint != nil {
 		return errors.New("non-checkpoint event contains a task checkpoint record")
+	}
+	if event.Type != RunEventAcceptanceStarted && event.Type != RunEventAcceptanceResult && event.Type != RunEventAcceptanceRecovery && event.AcceptanceRun != nil {
+		return errors.New("non-acceptance event contains an acceptance run record")
 	}
 	return nil
 }
@@ -738,7 +776,8 @@ func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string)
 	if last.Type == RunEventLanded {
 		return errors.New("event follows terminal landing without a new epoch")
 	}
-	if event.EpochID != last.EpochID && event.Type != RunEventExecutorRecoveryRequired && event.Type != RunEventExecutorReconciled && event.Type != RunEventVerificationRecovery {
+	if event.EpochID != last.EpochID && event.Type != RunEventExecutorRecoveryRequired && event.Type != RunEventExecutorReconciled &&
+		event.Type != RunEventVerificationRecovery && event.Type != RunEventAcceptanceRecovery {
 		return errors.New("event epoch does not match the current run epoch")
 	}
 	if event.FromPhase != phase {
@@ -751,6 +790,9 @@ func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string)
 		return err
 	}
 	if err := validateTaskCheckpointEventTransition(prior, event); err != nil {
+		return err
+	}
+	if err := validateAcceptanceEventTransition(prior, event); err != nil {
 		return err
 	}
 	if event.Type == RunEventLandingStarted && phase != PhaseExecuting {
@@ -1020,6 +1062,9 @@ func recoverProjectionLocked(stateDir, dir string, state DeepState, persist bool
 	if state.RunEventSchemaVersion != 0 && !missionOutcomeProjectionValid(state) {
 		return DeepState{}, journalExists, errors.New("deep.json mission outcome disagrees with its current deterministic evidence")
 	}
+	if err := validateAcceptanceHistoryContract(state.MissionDefinition(), events); err != nil {
+		return DeepState{}, journalExists, err
+	}
 	if state.RunEventWatermark > uint64(len(events)) {
 		return DeepState{}, journalExists, fmt.Errorf("deep.json event watermark %d is ahead of durable journal sequence %d", state.RunEventWatermark, len(events))
 	}
@@ -1056,6 +1101,9 @@ func recoverProjectionLocked(stateDir, dir string, state DeepState, persist bool
 		if err := validateTaskCheckpointProjection(state, events[:state.RunEventWatermark]); err != nil {
 			return DeepState{}, journalExists, err
 		}
+		if err := validateAcceptanceProjection(dir, state, events[:state.RunEventWatermark]); err != nil {
+			return DeepState{}, journalExists, err
+		}
 	}
 	changed := false
 	for i := state.RunEventWatermark; i < uint64(len(events)); i++ {
@@ -1064,6 +1112,9 @@ func recoverProjectionLocked(stateDir, dir string, state DeepState, persist bool
 		}
 		if err := hydrateVerificationProjection(&state, events[i], dir); err != nil {
 			return DeepState{}, journalExists, fmt.Errorf("replay verification artifact for event %d: %w", i+1, err)
+		}
+		if err := hydrateAcceptanceProjection(&state, events[i], dir); err != nil {
+			return DeepState{}, journalExists, fmt.Errorf("replay acceptance artifact for event %d: %w", i+1, err)
 		}
 		changed = true
 	}
@@ -1161,6 +1212,18 @@ func validateProjectionAtWatermark(dir string, state DeepState, event RunEvent) 
 	case RunEventTaskCheckpointCreated:
 		if event.TaskCheckpoint == nil || !taskCheckpointProjectionMatches(state, *event.TaskCheckpoint, event.OccurredAt) {
 			return errors.New("deep.json task checkpoint disagrees with its watermark event")
+		}
+	case RunEventAcceptanceStarted:
+		if event.AcceptanceRun == nil || !acceptanceProjectionMatches(dir, state, *event.AcceptanceRun, true, false) {
+			return errors.New("deep.json acceptance start disagrees with its watermark event")
+		}
+	case RunEventAcceptanceResult:
+		if event.AcceptanceRun == nil || !acceptanceProjectionMatches(dir, state, *event.AcceptanceRun, false, false) {
+			return errors.New("deep.json acceptance result disagrees with its watermark event")
+		}
+	case RunEventAcceptanceRecovery:
+		if event.AcceptanceRun == nil || !acceptanceProjectionMatches(dir, state, *event.AcceptanceRun, false, true) {
+			return errors.New("deep.json acceptance recovery disagrees with its watermark event")
 		}
 	}
 	return nil
@@ -1299,7 +1362,7 @@ func applyRunEvent(state *DeepState, event RunEvent) error {
 		if !ok || event.ExecutorRun.Attempt != task.Attempts+1 || task.Status.Terminal() {
 			return errors.New("executor-start event does not follow the projected task attempt")
 		}
-		applyExecutorStarted(task, *event.ExecutorRun)
+		applyExecutorStarted(task, *event.ExecutorRun, state.AcceptanceContractVersion == DeterministicAcceptanceContractVersion)
 	case RunEventExecutorResult:
 		if event.EpochID != state.ExecutionEpochID || event.ExecutorRun == nil {
 			return errors.New("executor-result event does not belong to the current epoch")
@@ -1373,6 +1436,27 @@ func applyRunEvent(state *DeepState, event RunEvent) error {
 		if err := applyTaskCheckpoint(state, *event.TaskCheckpoint, event.OccurredAt); err != nil {
 			return err
 		}
+	case RunEventAcceptanceStarted:
+		if event.AcceptanceRun == nil {
+			return errors.New("acceptance-start event has no acceptance record")
+		}
+		if err := applyAcceptanceStarted(state, *event.AcceptanceRun); err != nil {
+			return err
+		}
+	case RunEventAcceptanceResult:
+		if event.AcceptanceRun == nil {
+			return errors.New("acceptance-result event has no acceptance record")
+		}
+		if err := applyAcceptanceResult(state, *event.AcceptanceRun); err != nil {
+			return err
+		}
+	case RunEventAcceptanceRecovery:
+		if event.AcceptanceRun == nil {
+			return errors.New("acceptance-recovery event has no acceptance record")
+		}
+		if err := applyAcceptanceRecovery(state, *event.AcceptanceRun, event.Reason); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("cannot apply run event type %q", event.Type)
 	}
@@ -1426,6 +1510,24 @@ func sameTaskCheckpointProjection(a, b DeepState) bool {
 		left, right := a.Tasks[i], b.Tasks[i]
 		if left.ID != right.ID || left.CheckpointCommit != right.CheckpointCommit || left.CheckpointTreeSHA != right.CheckpointTreeSHA ||
 			!sameOptionalTime(left.VerifiedAt, right.VerifiedAt) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameAcceptanceProjection(a, b DeepState) bool {
+	if len(a.Tasks) != len(b.Tasks) {
+		return false
+	}
+	for i := range a.Tasks {
+		left, right := a.Tasks[i], b.Tasks[i]
+		if left.ID != right.ID || left.AcceptanceOutcome != right.AcceptanceOutcome || left.AcceptanceRunID != right.AcceptanceRunID ||
+			left.AcceptanceCheckOutcome != right.AcceptanceCheckOutcome || left.AcceptanceReason != right.AcceptanceReason ||
+			!sameVerificationSubject(left.AcceptanceSubject, right.AcceptanceSubject) ||
+			left.AcceptanceCheckpointEventID != right.AcceptanceCheckpointEventID ||
+			left.AcceptanceCheckpointCommit != right.AcceptanceCheckpointCommit ||
+			left.AcceptanceCheckpointTreeSHA != right.AcceptanceCheckpointTreeSHA || left.AcceptanceOutput != right.AcceptanceOutput {
 			return false
 		}
 	}
