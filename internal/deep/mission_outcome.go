@@ -32,12 +32,14 @@ func DisplayMissionOutcome(outcome MissionOutcome, phase Phase) MissionOutcome {
 	return MissionOutcomeUnknown
 }
 
-// DetermineMissionOutcome applies the current deterministic completion
+// DetermineMissionOutcome applies the current legacy deterministic completion
 // contract. An explicit non-zero final mission verifier is a mission failure.
 // Other missing or inconclusive evidence cannot establish success. Tasks
 // count as complete only when their verified status is bound to a concrete
 // verifier command, exact subject, and matching checkpoint tree; legacy
-// verified states without that provenance remain unresolved.
+// verified states without that provenance remain unresolved. Objective C must
+// preserve this behavior for legacy missions and use explicit acceptance
+// outcomes for the new mission-contract version.
 func DetermineMissionOutcome(state DeepState) MissionOutcome {
 	if strings.TrimSpace(state.Verify) != "" && state.LandingVerifyDone &&
 		state.LandingVerificationOutcome == VerificationFailed && finalVerificationMatchesCheckpoint(state) {

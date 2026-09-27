@@ -128,6 +128,22 @@ Objective C must add that separate acceptance outcome while keeping executor
 runs, verifier runs, and checkpoints as evidence attached to the stable
 work-unit identity.
 
+The current `verified` value is also a legacy terminal coordinator state, not
+just a verifier result: `Status.Terminal` makes task selection skip it,
+`depends-on` requires it, and `DetermineMissionOutcome` counts it toward
+mission completion when the verification/checkpoint provenance is present.
+Objective C must preserve those rules for legacy missions, while the explicitly
+versioned contract uses acceptance outcome—not verifier status—to decide
+whether a Work Unit is complete, can satisfy a dependency, or contributes to
+mission success. A passing verifier and its checkpoint remain durable evidence
+even when new-contract acceptance is unresolved and more work is needed. The
+new contract must allow that Work Unit to remain unresolved and explicitly
+require or permit further execution without treating the verifier or checkpoint
+as acceptance. In journal-aware runs, keep the original `VerificationRun` and
+`TaskCheckpoint` facts in the append-only run history when later work advances
+the task projection; do not discard or reinterpret them as acceptance. Do not
+synthesize those events for legacy runs.
+
 The living action plan is optional today. If a new session omits
 `--action-plan`, Stint creates no plan file, adds no `STINT-PLAN-*` work unit,
 and includes no plan path in Hermes prompts. On resume, omitting the option

@@ -44,9 +44,10 @@ type ExecutorRuntime struct {
 // start event contains launch context; the result event repeats that context
 // with the observed result, so either event remains attributable on its own.
 type ExecutorRun struct {
-	ID                        string                `json:"id"`
-	StartEventID              string                `json:"startEventId"`
-	StartedInEpochID          string                `json:"startedInEpochId"`
+	ID               string `json:"id"`
+	StartEventID     string `json:"startEventId"`
+	StartedInEpochID string `json:"startedInEpochId"`
+	// TaskID is the stable Objective / Work Unit identity, not an atomic action ID.
 	TaskID                    string                `json:"taskId"`
 	Attempt                   int                   `json:"attempt"`
 	StartedAt                 time.Time             `json:"startedAt"`

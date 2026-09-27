@@ -38,10 +38,11 @@ type VerificationRuntime struct {
 // task acceptance. Start and result events carry the same immutable start
 // facts; a missing result remains explicitly unresolved after recovery.
 type VerificationRun struct {
-	ID                       string               `json:"id"`
-	StartEventID             string               `json:"startEventId"`
-	StartedInEpochID         string               `json:"startedInEpochId"`
-	Purpose                  VerificationPurpose  `json:"purpose"`
+	ID               string              `json:"id"`
+	StartEventID     string              `json:"startEventId"`
+	StartedInEpochID string              `json:"startedInEpochId"`
+	Purpose          VerificationPurpose `json:"purpose"`
+	// TaskID is the stable Objective / Work Unit identity, not an atomic action ID.
 	TaskID                   string               `json:"taskId,omitempty"`
 	Attempt                  int                  `json:"attempt,omitempty"`
 	CommandSource            string               `json:"commandSource"`

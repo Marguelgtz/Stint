@@ -22,14 +22,17 @@ type Status string
 const (
 	StatusQueued     Status = "queued"
 	StatusActive     Status = "active"
-	StatusVerified   Status = "verified" // legacy lifecycle label; not Objective C acceptance
+	StatusVerified   Status = "verified" // legacy terminal state; not Objective C acceptance
 	StatusIncomplete Status = "incomplete"
 	StatusBlocked    Status = "blocked"
 	StatusNeedsHuman Status = "needs_human"
 	StatusDropped    Status = "dropped"
 )
 
-// Terminal reports whether a status will not be selected for execution again.
+// Terminal reports the legacy coordinator scheduling rule: terminal statuses
+// are not selected for execution again. Objective C must preserve this behavior
+// for legacy missions; the new contract must model acceptance and execution
+// eligibility separately instead of inferring either from this predicate.
 // Blocked and needs_human tasks stay parked; they surface in the handoff.
 func (s Status) Terminal() bool {
 	switch s {
@@ -49,6 +52,8 @@ func (s Status) String() string { return string(s) }
 // runs it instead of the mission-level ## Verification command after each
 // attempt. Passing it does not by itself establish Objective C acceptance.
 type Task struct {
+	// ID is the stable Objective / Work Unit identity used by the current run
+	// records. A future action layer can add finer attribution without changing it.
 	ID        string `json:"id"`
 	Objective string `json:"objective"`
 	// Acceptance is narrative intent included in the executor prompt. It is not

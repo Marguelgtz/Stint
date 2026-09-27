@@ -12,6 +12,7 @@ import (
 // Git checkpoint that records the same product tree. It records operational
 // evidence only; it does not define Objective C acceptance.
 type TaskCheckpoint struct {
+	// TaskID is the stable Objective / Work Unit identity, not an atomic action ID.
 	TaskID              string              `json:"taskId"`
 	Attempt             int                 `json:"attempt"`
 	ExecutorRunID       string              `json:"executorRunId"`
