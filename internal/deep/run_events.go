@@ -377,6 +377,11 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		}
 		event.SchemaVersion = RunEventSchemaVersion
 		event.Sequence = uint64(len(events)) + 1
+		if event.Type == RunEventVerificationStarted || event.Type == RunEventVerificationResult {
+			if event.VerificationRun == nil || !verificationCommandFactsMatch(*state, *event.VerificationRun) {
+				return errors.New("verification event command source or identity does not match the durable configuration at append time")
+			}
+		}
 		if err := validateRunEvent(event); err != nil {
 			return fmt.Errorf("invalid run event: %w", err)
 		}
@@ -1108,13 +1113,11 @@ func validateProjectionAtWatermark(dir string, state DeepState, event RunEvent) 
 }
 
 func verificationProjectionMatchesEvent(dir string, state DeepState, run VerificationRun, starting bool) bool {
-	if !verificationCommandFactsMatch(state, run) {
-		return false
-	}
 	if run.Purpose == VerificationPurposeTask {
 		task, ok := findTask(&state, run.TaskID)
 		if !ok || task.VerificationRunID != run.ID || task.Attempts != run.Attempt || task.VerificationSubject == nil || *task.VerificationSubject != run.Subject ||
-			!sameStringMap(task.VerificationBookkeeping, run.BookkeepingBefore) {
+			!sameStringMap(task.VerificationBookkeeping, run.BookkeepingBefore) || task.VerificationCommand == "" ||
+			VerificationCommandIdentity(task.VerificationCommand) != run.CommandSHA256 {
 			return false
 		}
 		if starting {
@@ -1125,7 +1128,7 @@ func verificationProjectionMatchesEvent(dir string, state DeepState, run Verific
 			return false
 		}
 		return task.VerificationOutcome == run.Outcome && task.VerificationResult == verificationRunSummary(run) &&
-			task.VerificationOutput == VerificationOutputExcerpt(output) && task.VerificationCommand == verificationCommandForTask(&state, *task)
+			task.VerificationOutput == VerificationOutputExcerpt(output)
 	}
 	if run.Purpose != VerificationPurposeMissionEnd || state.LandingVerificationRunID != run.ID ||
 		state.LandingVerificationSubject == nil || *state.LandingVerificationSubject != run.Subject ||
@@ -1248,15 +1251,15 @@ func applyRunEvent(state *DeepState, event RunEvent) error {
 		if state.Phase != event.FromPhase || event.EpochID != state.ExecutionEpochID || event.VerificationRun == nil {
 			return errors.New("verification-start event does not follow the current run epoch")
 		}
-		if event.VerificationRun.StartedInEpochID != state.ExecutionEpochID || !verificationCommandFactsMatch(*state, *event.VerificationRun) {
-			return errors.New("verification-start event has stale epoch, command source, or command identity")
+		if event.VerificationRun.StartedInEpochID != state.ExecutionEpochID {
+			return errors.New("verification-start event has a stale epoch identity")
 		}
 		if err := applyVerificationStarted(state, *event.VerificationRun); err != nil {
 			return err
 		}
 	case RunEventVerificationResult:
-		if event.VerificationRun == nil || !verificationCommandFactsMatch(*state, *event.VerificationRun) {
-			return errors.New("verification-result event has stale command source or command identity")
+		if event.VerificationRun == nil {
+			return errors.New("verification-result event has no run record")
 		}
 		if err := applyVerificationResult(state, *event.VerificationRun); err != nil {
 			return err

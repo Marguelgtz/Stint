@@ -197,6 +197,33 @@ func TestVerificationResultMustPreserveStartCommandProvenance(t *testing.T) {
 	}
 }
 
+func TestVerificationReplayPreservesInvocationProvenanceAfterCommandConfigChanges(t *testing.T) {
+	stateDir, state, now := journalFixture(t)
+	if err := BeginNewRun(stateDir, &state, now); err != nil {
+		t.Fatal(err)
+	}
+	started, err := BeginVerificationRun(stateDir, &state, verificationRunFixture(t, stateDir, &state, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := completeVerificationFixture(started, now)
+	if err := CompleteVerificationRun(stateDir, &state, result); err != nil {
+		t.Fatal(err)
+	}
+	state.Verify = "go test ./internal/deep"
+	if err := state.SaveDir(stateDir); err != nil {
+		t.Fatalf("persist updated mission command config: %v", err)
+	}
+	loaded, err := LoadState(stateDir, state.SessionID)
+	if err != nil {
+		t.Fatalf("replay verification history after config change: %v", err)
+	}
+	if loaded.Tasks[0].VerificationRunID != result.ID || loaded.Tasks[0].VerificationOutcome != VerificationPassed ||
+		loaded.Tasks[0].VerificationCommand != "go test ./..." {
+		t.Fatalf("historical invocation provenance was reinterpreted from current config: %+v", loaded.Tasks[0])
+	}
+}
+
 func TestVerificationTerminalOutcomeFactsAreCoherent(t *testing.T) {
 	makeResult := func(t *testing.T) VerificationRun {
 		t.Helper()
