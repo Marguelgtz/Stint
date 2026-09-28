@@ -49,6 +49,8 @@ const (
 	RunEventReviewStarted            RunEventType = "review.started"
 	RunEventReviewResult             RunEventType = "review.result"
 	RunEventReviewRecovery           RunEventType = "review.recovery_required"
+	RunEventReviewRepairCreated      RunEventType = "review.repair_workunit_created"
+	RunEventReviewFindingResolved    RunEventType = "review.finding_resolved"
 )
 
 type RunEventBoundary string
@@ -81,32 +83,35 @@ type RunTaskSummary struct {
 // events. B1 records run/epoch and landing transitions; B2 adds executor
 // invocation facts; B2b adds typed verification invocation facts; C2 adds
 // objective-specific acceptance-check and deterministic-decision facts; D1
-// adds bounded semantic ReviewCycle facts.
+// adds bounded semantic ReviewCycle facts; D3 adds durable repair Work Unit
+// creation and finding-resolution facts.
 type RunEvent struct {
-	SchemaVersion    int              `json:"schemaVersion"`
-	EventID          string           `json:"eventId"`
-	RunID            string           `json:"runId"`
-	EpochID          string           `json:"epochId"`
-	Sequence         uint64           `json:"sequence"`
-	OccurredAt       time.Time        `json:"occurredAt"`
-	Actor            string           `json:"actor"`
-	Type             RunEventType     `json:"type"`
-	Boundary         RunEventBoundary `json:"boundary,omitempty"`
-	FromPhase        Phase            `json:"fromPhase,omitempty"`
-	ToPhase          Phase            `json:"toPhase,omitempty"`
-	Reason           string           `json:"reason,omitempty"`
-	Deadline         time.Time        `json:"deadline,omitempty"`
-	LandBefore       time.Time        `json:"landBefore,omitempty"`
-	ComputeProvider  string           `json:"computeProvider,omitempty"`
-	ComputeInstance  int64            `json:"computeInstanceId,omitempty"`
-	TaskSummary      *RunTaskSummary  `json:"taskSummary,omitempty"`
-	CheckpointCommit string           `json:"checkpointCommit,omitempty"`
-	CheckpointTree   string           `json:"checkpointTreeSha,omitempty"`
-	ExecutorRun      *ExecutorRun     `json:"executorRun,omitempty"`
-	VerificationRun  *VerificationRun `json:"verificationRun,omitempty"`
-	TaskCheckpoint   *TaskCheckpoint  `json:"taskCheckpoint,omitempty"`
-	AcceptanceRun    *AcceptanceRun   `json:"acceptanceRun,omitempty"`
-	ReviewCycle      *ReviewCycle     `json:"reviewCycle,omitempty"`
+	SchemaVersion     int                      `json:"schemaVersion"`
+	EventID           string                   `json:"eventId"`
+	RunID             string                   `json:"runId"`
+	EpochID           string                   `json:"epochId"`
+	Sequence          uint64                   `json:"sequence"`
+	OccurredAt        time.Time                `json:"occurredAt"`
+	Actor             string                   `json:"actor"`
+	Type              RunEventType             `json:"type"`
+	Boundary          RunEventBoundary         `json:"boundary,omitempty"`
+	FromPhase         Phase                    `json:"fromPhase,omitempty"`
+	ToPhase           Phase                    `json:"toPhase,omitempty"`
+	Reason            string                   `json:"reason,omitempty"`
+	Deadline          time.Time                `json:"deadline,omitempty"`
+	LandBefore        time.Time                `json:"landBefore,omitempty"`
+	ComputeProvider   string                   `json:"computeProvider,omitempty"`
+	ComputeInstance   int64                    `json:"computeInstanceId,omitempty"`
+	TaskSummary       *RunTaskSummary          `json:"taskSummary,omitempty"`
+	CheckpointCommit  string                   `json:"checkpointCommit,omitempty"`
+	CheckpointTree    string                   `json:"checkpointTreeSha,omitempty"`
+	ExecutorRun       *ExecutorRun             `json:"executorRun,omitempty"`
+	VerificationRun   *VerificationRun         `json:"verificationRun,omitempty"`
+	TaskCheckpoint    *TaskCheckpoint          `json:"taskCheckpoint,omitempty"`
+	AcceptanceRun     *AcceptanceRun           `json:"acceptanceRun,omitempty"`
+	ReviewCycle       *ReviewCycle             `json:"reviewCycle,omitempty"`
+	ReviewRepair      *ReviewRepairWorkUnit    `json:"reviewRepair,omitempty"`
+	ReviewDisposition *ReviewFindingResolution `json:"reviewDisposition,omitempty"`
 }
 
 // NewExecutionEpochID returns a random opaque identity for one execution
@@ -425,14 +430,18 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 			strings.TrimSpace(state.LandingReason) != "" && event.Reason != state.LandingReason {
 			return errors.New("resumed landing reason differs from the durable landing reason")
 		}
-		if err := appendRunEventLocked(dir, event); err != nil {
-			return err
-		}
+		// Apply against a private projection before appending. This validates the
+		// complete state transition without changing the journal-first durability
+		// order, and prevents an invalid generated-work event from poisoning the
+		// append-only history before projection fails.
 		projected := *state
-		projected.Tasks = append([]Task(nil), state.Tasks...)
+		projected.Tasks = cloneTasksForEventProjection(state.Tasks)
 		projected.PreviousLandings = append([]LandingRecord(nil), state.PreviousLandings...)
 		if err := applyRunEvent(&projected, event); err != nil {
-			return fmt.Errorf("apply persisted run event %s: %w", event.EventID, err)
+			return fmt.Errorf("validate run event %s before append: %w", event.EventID, err)
+		}
+		if err := appendRunEventLocked(dir, event); err != nil {
+			return err
 		}
 		if err := hydrateVerificationProjection(&projected, event, dir); err != nil {
 			return fmt.Errorf("hydrate persisted verification event %s: %w", event.EventID, err)
@@ -727,6 +736,20 @@ func validateRunEvent(event RunEvent) error {
 		if err := validateReviewCycle(*event.ReviewCycle, false); err != nil {
 			return fmt.Errorf("invalid review-cycle recovery record: %w", err)
 		}
+	case RunEventReviewRepairCreated:
+		if event.FromPhase != PhaseExecuting || event.ToPhase != PhaseExecuting || event.ReviewRepair == nil {
+			return errors.New("review repair creation has invalid phase or missing Work Unit record")
+		}
+		if err := validateReviewRepairRecord(*event.ReviewRepair); err != nil {
+			return err
+		}
+	case RunEventReviewFindingResolved:
+		if event.FromPhase != PhaseExecuting || event.ToPhase != PhaseExecuting || event.ReviewDisposition == nil {
+			return errors.New("finding resolution has invalid phase or missing disposition record")
+		}
+		if err := validateReviewFindingResolution(*event.ReviewDisposition); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unknown run event type %q", event.Type)
 	}
@@ -751,6 +774,12 @@ func validateRunEvent(event RunEvent) error {
 	}
 	if event.Type != RunEventReviewStarted && event.Type != RunEventReviewResult && event.Type != RunEventReviewRecovery && event.ReviewCycle != nil {
 		return errors.New("non-review event contains a review-cycle record")
+	}
+	if event.Type != RunEventReviewRepairCreated && event.ReviewRepair != nil {
+		return errors.New("non-repair-creation event contains a review repair record")
+	}
+	if event.Type != RunEventReviewFindingResolved && event.ReviewDisposition != nil {
+		return errors.New("non-resolution event contains a review finding disposition")
 	}
 	return nil
 }
@@ -842,6 +871,9 @@ func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string)
 		return err
 	}
 	if err := validateReviewEventTransition(prior, event); err != nil {
+		return err
+	}
+	if err := validateReviewRepairEventTransition(prior, event); err != nil {
 		return err
 	}
 	if event.Type == RunEventLandingStarted && phase != PhaseExecuting {
@@ -1111,9 +1143,6 @@ func recoverProjectionLocked(stateDir, dir string, state DeepState, persist bool
 	if state.RunEventSchemaVersion != 0 && !missionOutcomeProjectionValid(state) {
 		return DeepState{}, journalExists, errors.New("deep.json mission outcome disagrees with its current deterministic evidence")
 	}
-	if err := validateAcceptanceHistoryContract(state.MissionDefinition(), events); err != nil {
-		return DeepState{}, journalExists, err
-	}
 	if state.RunEventWatermark > uint64(len(events)) {
 		return DeepState{}, journalExists, fmt.Errorf("deep.json event watermark %d is ahead of durable journal sequence %d", state.RunEventWatermark, len(events))
 	}
@@ -1175,6 +1204,9 @@ func recoverProjectionLocked(stateDir, dir string, state DeepState, persist bool
 	}
 	if state.RunID != state.SessionID || state.ExecutionEpochID != events[len(events)-1].EpochID {
 		return DeepState{}, journalExists, errors.New("deep.json run or epoch identity differs from journal history")
+	}
+	if err := validateAcceptanceHistoryContract(state.MissionDefinition(), events); err != nil {
+		return DeepState{}, journalExists, err
 	}
 	if changed && persist {
 		if err := writeProjectionLocked(stateDir, &state); err != nil {
@@ -1542,6 +1574,20 @@ func applyRunEvent(state *DeepState, event RunEvent) error {
 		if err := applyReviewRecovery(state, *event.ReviewCycle, event.Reason); err != nil {
 			return err
 		}
+	case RunEventReviewRepairCreated:
+		if event.ReviewRepair == nil {
+			return errors.New("review repair creation has no Work Unit record")
+		}
+		if err := applyReviewRepairCreated(state, *event.ReviewRepair); err != nil {
+			return err
+		}
+	case RunEventReviewFindingResolved:
+		if event.ReviewDisposition == nil {
+			return errors.New("finding resolution has no disposition record")
+		}
+		if err := applyReviewFindingResolved(state, *event.ReviewDisposition); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("cannot apply run event type %q", event.Type)
 	}
@@ -1625,7 +1671,9 @@ func sameReviewProjection(a, b DeepState) bool {
 	}
 	for i := range a.Tasks {
 		left, right := a.Tasks[i], b.Tasks[i]
-		if left.ID != right.ID || left.ReviewCycleID != right.ReviewCycleID || left.ReviewOutcome != right.ReviewOutcome ||
+		if left.ID != right.ID || left.Source != right.Source || !reflect.DeepEqual(left.RepairContext, right.RepairContext) ||
+			(left.Source == "review_repair" && !sameRepairContract(left, right)) ||
+			left.ReviewCycleID != right.ReviewCycleID || left.ReviewOutcome != right.ReviewOutcome ||
 			left.ReviewReason != right.ReviewReason || left.ReviewCheckpointEventID != right.ReviewCheckpointEventID ||
 			left.ReviewCheckpointCommit != right.ReviewCheckpointCommit || left.ReviewCheckpointTreeSHA != right.ReviewCheckpointTreeSHA ||
 			!reflect.DeepEqual(left.ReviewFindings, right.ReviewFindings) {

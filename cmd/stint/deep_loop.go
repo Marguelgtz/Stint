@@ -986,7 +986,7 @@ func (c *deepCoordinator) failedPrerequisite(task deep.Task) string {
 				satisfied = status == deep.StatusAccepted && required.AcceptanceOutcome == deep.AcceptanceAccepted
 				if c.state.SemanticReviewContractVersion == deep.SemanticReviewContractVersion {
 					requires = "accepted and clear-reviewed"
-					satisfied = satisfied && required.HasClearReviewForCurrentAcceptance()
+					satisfied = satisfied && deep.TaskHasSatisfiedReviewGate(required.ID, c.state.Tasks)
 				}
 			}
 		}
@@ -1014,6 +1014,13 @@ func (c *deepCoordinator) selectTask() (int, bool) {
 		task := c.state.Tasks[i]
 		pendingReview := pendingSemanticReview(task, *c.state)
 		if task.TerminalInContract(c.state.AcceptanceContractVersion) && !pendingReview {
+			continue
+		}
+		if c.state.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion &&
+			c.state.SemanticReviewContractVersion == deep.SemanticReviewContractVersion && task.IsAcceptanceContractTask() &&
+			c.failedPrerequisite(task) != "" {
+			// Keep a dependent queued while a prerequisite has repair findings.
+			// Dynamic repair Work Units may resolve it later in this same epoch.
 			continue
 		}
 		if c.state.TaskAttemptCap > 0 && task.Attempts >= c.state.TaskAttemptCap &&
@@ -1128,6 +1135,9 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 			c.logf("state phase is %s; stopping loop", fresh.Phase)
 			c.incident(deep.IncidentExternalStop, "", "phase "+string(fresh.Phase))
 			return nil
+		}
+		if err := deep.ReconcileReviewRepairs(c.stateDir, c.state, c.now().UTC()); err != nil {
+			return fmt.Errorf("reconcile semantic review repair Work Units: %w", err)
 		}
 
 		now := c.now()

@@ -98,6 +98,23 @@ func TestTasksViewSurfacesCheckpointBoundSemanticReviewFindings(t *testing.T) {
 	}
 }
 
+func TestTasksViewSurfacesRepairDispositionAndWorkUnit(t *testing.T) {
+	m := testModel()
+	m.View = Tasks
+	m.Width = 160
+	m.Tasks = []Task{{
+		ID: "OBJ-1", Status: "accepted", AcceptanceOutcome: "accepted", ReviewOutcome: "findings",
+		ReviewFindings: []ReviewFinding{{ID: "F-1", Severity: "high", Summary: "Requested tool is not exposed.",
+			Disposition: "repair_created", RepairTaskID: "STINT-REPAIR-abc123"}},
+	}}
+	out := Render(m)
+	for _, want := range []string{"finding F-1 high (repair_created): Requested tool is not exposed.", "via STINT-REPAIR-abc123"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("tasks view missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRunViewCountsAcceptedSeparatelyFromVerified(t *testing.T) {
 	m := testModel()
 	m.MissionOutcome = "succeeded"

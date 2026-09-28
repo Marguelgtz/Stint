@@ -400,6 +400,7 @@ func (c *deepDashboardController) project() {
 		for _, finding := range task.ReviewFindings {
 			projectedTask.ReviewFindings = append(projectedTask.ReviewFindings, deepdash.ReviewFinding{
 				ID: finding.ID, Severity: string(finding.Severity), Summary: finding.Summary, Evidence: finding.Evidence,
+				Disposition: string(finding.Disposition), RepairTaskID: finding.RepairTaskID,
 			})
 		}
 		m.Tasks = append(m.Tasks, projectedTask)

@@ -132,12 +132,20 @@ This requires Acceptance Contract version 2. After deterministic acceptance,
 Stint starts a separate fresh Hermes invocation with no tools and supplies the
 mission criteria, deterministic evidence, and a bounded Git diff from the
 Objective's first-executor baseline to its accepted checkpoint. A `clear`
-result for that same checkpoint is required for semantic-contract mission
-success and for satisfying its dependents. Structured findings and unresolved
+result for that same checkpoint satisfies the semantic review gate. A findings
+result satisfies it only after every finding has a resolved repair chain.
+This gate is required for semantic-contract mission success and for satisfying
+dependents. Structured findings and unresolved
 results remain separate from deterministic acceptance and are shown in the
-handoff and dashboard; they do not create repair work automatically. Malformed
-review output, reviewer failure, stale evidence, or an uncertain repository
-subject cannot produce a clear result.
+handoff and dashboard. A findings result creates one durable repair Work Unit
+per open finding. Each repair inherits the parent's deterministic acceptance
+check, requires a Git-visible change, and receives its own checkpoint and
+fresh-context review with the source finding included as evidence. The finding
+becomes resolved only after the repair Work Unit is accepted and its own review
+gate is satisfied. Repairs may themselves produce findings, creating a chain
+of journaled Work Units; unresolved work never promotes mission success.
+Malformed review output, reviewer failure, stale evidence, or an uncertain
+repository subject cannot produce a clear result.
 
 Production on-box missions must persist an explicit GitHub policy. The launcher
 configuration (mode, repository, base, allowed authors, and approval) must match
@@ -158,10 +166,12 @@ Each item under `## Tasks` is currently a bounded work unit. In product terms,
 an item such as `MCP-001` is an Objective / Work Unit: it may involve many
 implementation actions, and its ID stays the same when the route changes. The
 Go type remains `deep.Task` for compatibility. The mission-declared task list
-is static; Stint may add or retarget the one optional plan-bootstrap row
-described below, but it does not turn action-plan edits or review findings
-into new coordinator work items. The coordinator invokes Hermes once per work-unit
-attempt. A retry is another attempt at that same work unit, not a child action.
+is static; Stint may add the optional plan-bootstrap row described below and
+may append journal-backed `STINT-REPAIR-*` Work Units for semantic findings.
+Those generated tasks do not change the authored mission acceptance identity.
+Action-plan edits remain coordinator bookkeeping and do not create work units.
+The coordinator invokes Hermes once per work-unit attempt. A retry is another
+attempt at that same work unit, not a child action.
 For legacy missions, `depends-on` requires the earlier work unit to have
 `verified` status. For version 2 missions, a mission-authored Objective / Work
 Unit must be `accepted`. The optional `STINT-PLAN-*` bootstrap row is not an
@@ -183,11 +193,14 @@ The append-only journal can also record a bounded semantic `ReviewCycle` for
 an exact task checkpoint. Each cycle carries its mission-contract and review
 context identities, reviewer/runtime identity, typed outcome, structured
 findings with explicit initial dispositions, and the checkpoint event/tree it
-examined. A review start without a durable result recovers as `unknown`; it
-cannot become a clean review by inference. Review records preserve evidence
-independently and do not change legacy or version 2 acceptance semantics.
-Fresh-context reviewer execution, review-gated acceptance, repair routing, and
-mission-level review are introduced by later Objective D slices.
+examined. `review.repair_workunit_created` and `review.finding_resolved`
+events preserve graph expansion and disposition changes without rewriting the
+original ReviewCycle. Projection replay recreates generated Work Units once. A
+review start without a durable result recovers as `unknown`; it cannot become a
+clean review by inference. Review records preserve evidence independently and
+do not change legacy acceptance semantics. Fresh-context reviewer execution,
+review-gated acceptance, and task-level repair routing are provided by
+Objective D. Mission-level semantic review remains deferred.
 
 The current `verified` value is also a legacy terminal coordinator state, not
 just a verifier result: `Status.Terminal` makes task selection skip it,

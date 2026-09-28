@@ -153,7 +153,11 @@ type Task struct {
 	ReviewCheckpointCommit  string          `json:"reviewCheckpointCommit,omitempty"`
 	ReviewCheckpointTreeSHA string          `json:"reviewCheckpointTreeSha,omitempty"`
 	ReviewFindings          []ReviewFinding `json:"reviewFindings,omitempty"`
-	Reasoning               string          `json:"reasoning,omitempty"`
+	// RepairContext attributes a coordinator-generated repair Work Unit to the
+	// exact finding and checkpoint that created it. The journaled creation
+	// event is canonical; this field is its deep.json projection.
+	RepairContext *ReviewRepairContext `json:"repairContext,omitempty"`
+	Reasoning     string               `json:"reasoning,omitempty"`
 	// DependsOn names earlier tasks that must be verified before this task can
 	// run. This supports review tasks that inspect completed implementations.
 	DependsOn  []string `json:"dependsOn,omitempty"`

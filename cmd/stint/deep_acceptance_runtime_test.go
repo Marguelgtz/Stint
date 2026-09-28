@@ -38,8 +38,6 @@ func newSemanticReviewEnv(t *testing.T, taskVerify, missionVerify string, expect
 }
 
 func newV2AcceptanceEnvWithReview(t *testing.T, taskVerify, missionVerify string, expectation deep.RepositoryChangeExpectation, acceptanceCheck string, semanticReview bool) *testEnv {
-	t.Helper()
-	env := newTestEnv(t, nil, 3)
 	mission := deep.Mission{
 		Name: "deterministic acceptance fixture", Objective: "prove a bounded outcome",
 		Verify: missionVerify, AcceptanceContractVersion: deep.DeterministicAcceptanceContractVersion,
@@ -49,12 +47,18 @@ func newV2AcceptanceEnvWithReview(t *testing.T, taskVerify, missionVerify string
 	if semanticReview {
 		mission.SemanticReviewContractVersion = deep.SemanticReviewContractVersion
 	}
+	return newV2AcceptanceEnvForMission(t, mission)
+}
+
+func newV2AcceptanceEnvForMission(t *testing.T, mission deep.Mission) *testEnv {
+	t.Helper()
+	env := newTestEnv(t, nil, 3)
 	identity, err := deep.AcceptanceContractIdentity(mission)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mission.AcceptanceContractSHA256 = identity
-	if semanticReview {
+	if mission.SemanticReviewContractVersion != 0 {
 		mission.SemanticReviewContractSHA256, err = deep.SemanticReviewContractIdentity(mission)
 		if err != nil {
 			t.Fatal(err)

@@ -100,7 +100,7 @@ func determineAcceptedMissionOutcome(state DeepState) MissionOutcome {
 				if !taskHasBoundAcceptance(task) {
 					return MissionOutcomeUnresolved
 				}
-				if state.SemanticReviewContractVersion == SemanticReviewContractVersion && !taskHasBoundClearReview(task) {
+				if state.SemanticReviewContractVersion == SemanticReviewContractVersion && !TaskHasSatisfiedReviewGate(task.ID, state.Tasks) {
 					return MissionOutcomeUnresolved
 				}
 			case AcceptanceUnresolved:

@@ -63,10 +63,12 @@ func ValidateAcceptanceContract(version int, tasks []Task) error {
 }
 
 // AcceptanceContractIdentity returns a stable digest of the declared
-// deterministic acceptance contract. It includes the mission and Work Unit
+// deterministic acceptance contract. It includes mission-authored Work Unit
 // objectives, success and constraint declarations, dependencies, configured
 // generic verifiers, repository-change expectations, and one-way identities
-// of acceptance commands. Raw command text is not copied into event records.
+// of acceptance commands. Journal-generated repair Work Units are validated
+// against their parent but do not mutate the authored mission identity. Raw
+// command text is not copied into event records.
 func AcceptanceContractIdentity(mission Mission) (string, error) {
 	if mission.AcceptanceContractVersion == 0 {
 		return "", nil
@@ -85,7 +87,7 @@ func AcceptanceContractIdentity(mission Mission) (string, error) {
 		identity.MissionVerificationSHA256 = VerificationCommandIdentity(mission.Verify)
 	}
 	for _, task := range mission.Tasks {
-		if !isAcceptanceContractTask(task) {
+		if !isMissionAuthoredAcceptanceTask(task) {
 			continue
 		}
 		taskVerificationSHA256 := ""
@@ -123,5 +125,13 @@ func ValidateMissionAcceptanceContract(mission Mission) error {
 }
 
 func isAcceptanceContractTask(task Task) bool {
-	return task.Source != "coordinator" && !isReservedTaskID(task.ID)
+	return isMissionAuthoredAcceptanceTask(task) || isReviewRepairTask(task)
+}
+
+func isMissionAuthoredAcceptanceTask(task Task) bool {
+	return task.Source != "coordinator" && task.Source != "review_repair" && !isReservedTaskID(task.ID)
+}
+
+func isReviewRepairTask(task Task) bool {
+	return task.Source == "review_repair" && task.RepairContext != nil
 }

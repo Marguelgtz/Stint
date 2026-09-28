@@ -34,7 +34,7 @@ type Task struct {
 }
 
 type ReviewFinding struct {
-	ID, Severity, Summary, Evidence string
+	ID, Severity, Summary, Evidence, Disposition, RepairTaskID string
 }
 
 type Event struct {
@@ -271,7 +271,15 @@ func tasksView(m Model, p palette) string {
 				lines = append(lines, "             "+p.muted(compact("review reason: "+task.ReviewReason, max(12, m.Width-14))))
 			}
 			for _, finding := range task.ReviewFindings {
-				lines = append(lines, "             "+p.warn(compact("finding "+finding.ID+" "+finding.Severity+": "+finding.Summary, max(12, m.Width-14))))
+				detail := "finding " + finding.ID + " " + finding.Severity
+				if finding.Disposition != "" {
+					detail += " (" + finding.Disposition + ")"
+				}
+				detail += ": " + finding.Summary
+				if finding.RepairTaskID != "" {
+					detail += " via " + finding.RepairTaskID
+				}
+				lines = append(lines, "             "+p.warn(compact(detail, max(12, m.Width-14))))
 				if finding.Evidence != "" {
 					lines = append(lines, "             "+p.muted(compact("evidence: "+finding.Evidence, max(12, m.Width-14))))
 				}
@@ -397,7 +405,15 @@ func phaseView(m Model, p palette) string {
 					lines = append(lines, "  review reason "+compact(task.ReviewReason, max(12, m.Width-22)))
 				}
 				for _, finding := range task.ReviewFindings {
-					lines = append(lines, "  finding "+finding.ID+" "+finding.Severity+": "+compact(finding.Summary, max(12, m.Width-28)))
+					detail := "finding " + finding.ID + " " + finding.Severity
+					if finding.Disposition != "" {
+						detail += " (" + finding.Disposition + ")"
+					}
+					detail += ": " + finding.Summary
+					if finding.RepairTaskID != "" {
+						detail += " via " + finding.RepairTaskID
+					}
+					lines = append(lines, "  "+compact(detail, max(12, m.Width-28)))
 				}
 			}
 			if task.CheckpointCommit != "" {

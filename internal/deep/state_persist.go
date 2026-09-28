@@ -20,6 +20,9 @@ func (s *DeepState) SaveDir(stateDir string) error {
 	if err := ValidateMissionSemanticReviewContract(s.MissionDefinition()); err != nil {
 		return fmt.Errorf("invalid persisted semantic review contract: %w", err)
 	}
+	if err := validateReviewRepairJournalBoundary(*s); err != nil {
+		return err
+	}
 	return withRunStateLock(stateDir, s.SessionID, func(dir string) error {
 		current, err := readStateFileIfPresent(dir, s.SessionID)
 		if err != nil {
@@ -102,6 +105,9 @@ func LoadState(stateDir, sessionID string) (DeepState, error) {
 	}
 	if err := ValidateMissionSemanticReviewContract(state.MissionDefinition()); err != nil {
 		return DeepState{}, fmt.Errorf("invalid persisted semantic review contract: %w", err)
+	}
+	if err := validateReviewRepairJournalBoundary(state); err != nil {
+		return DeepState{}, err
 	}
 	return state, nil
 }
