@@ -10,8 +10,12 @@ import (
 
 const (
 	SemanticReviewContractVersion = 1
-	SemanticReviewToolsetName     = "stint_review_no_tools_v1"
-	SemanticReviewResultProtocol  = "framed-stint-review-result-v1"
+	// SemanticReviewMissionContractVersion adds a checkpoint-bound review of
+	// the whole mission result. Version 1 remains the task-Objective review
+	// contract for existing missions.
+	SemanticReviewMissionContractVersion = 2
+	SemanticReviewToolsetName            = "stint_review_no_tools_v1"
+	SemanticReviewResultProtocol         = "framed-stint-review-result-v1"
 )
 
 type semanticReviewContractIdentity struct {
@@ -29,17 +33,24 @@ func ValidateSemanticReviewContract(reviewVersion, acceptanceVersion int, tasks 
 	switch reviewVersion {
 	case 0:
 		return nil
-	case SemanticReviewContractVersion:
+	case SemanticReviewContractVersion, SemanticReviewMissionContractVersion:
 	default:
 		return fmt.Errorf("unsupported semantic review contract version %d", reviewVersion)
 	}
 	if acceptanceVersion != DeterministicAcceptanceContractVersion {
-		return errors.New("semantic review contract version 1 requires deterministic acceptance contract version 2")
+		return errors.New("semantic review contract requires deterministic acceptance contract version 2")
 	}
 	if err := ValidateAcceptanceContract(acceptanceVersion, tasks); err != nil {
 		return err
 	}
 	return nil
+}
+
+// HasSemanticReviewContract reports whether the mission explicitly opted in
+// to checkpoint-bound Objective review. Both supported contract versions keep
+// that behavior; version 2 additionally requires a final mission review.
+func HasSemanticReviewContract(version int) bool {
+	return version == SemanticReviewContractVersion || version == SemanticReviewMissionContractVersion
 }
 
 func SemanticReviewContractIdentity(mission Mission) (string, error) {
@@ -49,9 +60,13 @@ func SemanticReviewContractIdentity(mission Mission) (string, error) {
 	if err := ValidateSemanticReviewContract(mission.SemanticReviewContractVersion, mission.AcceptanceContractVersion, mission.Tasks); err != nil {
 		return "", err
 	}
+	scope := "each-mission-objective-checkpoint"
+	if mission.SemanticReviewContractVersion == SemanticReviewMissionContractVersion {
+		scope = "each-mission-objective-checkpoint-and-final-mission-checkpoint"
+	}
 	identity := semanticReviewContractIdentity{
-		Version: SemanticReviewContractVersion, AcceptanceContractSHA256: mission.AcceptanceContractSHA256,
-		Scope:          "each-mission-objective-checkpoint",
+		Version: mission.SemanticReviewContractVersion, AcceptanceContractSHA256: mission.AcceptanceContractSHA256,
+		Scope:          scope,
 		ToolPolicy:     "hermes-safe-ignore-user-config-ignore-rules-toolset-" + SemanticReviewToolsetName,
 		ResultProtocol: SemanticReviewResultProtocol,
 	}

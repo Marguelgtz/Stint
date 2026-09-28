@@ -8,7 +8,7 @@ import (
 // ReconcileReviewRepairs resumes journal-backed graph expansion and finding
 // resolution. Repeated calls are idempotent and never rewrite review history.
 func ReconcileReviewRepairs(stateDir string, state *DeepState, at time.Time) error {
-	if state == nil || state.SemanticReviewContractVersion != SemanticReviewContractVersion ||
+	if state == nil || !HasSemanticReviewContract(state.SemanticReviewContractVersion) ||
 		state.AcceptanceContractVersion != DeterministicAcceptanceContractVersion {
 		return nil
 	}

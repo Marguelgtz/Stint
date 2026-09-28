@@ -25,6 +25,28 @@ func TestSemanticReviewContractIsExplicitAndVersioned(t *testing.T) {
 	}
 }
 
+func TestSemanticReviewContractV2AddsMissionReviewWithoutChangingV1Identity(t *testing.T) {
+	base := "# contract\n\n## Objective\ncomplete it\n\n## Acceptance Contract\nversion: 2\n\n## Semantic Review Contract\nversion: 1\n\n## Tasks\n- [ ] OBJ-1: produce a result\n  - repository-change: optional\n  - acceptance-check: test -e result.txt\n"
+	v1, err := ParseMission(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2, err := ParseMission(strings.Replace(base, "version: 1", "version: 2", 1))
+	if err != nil {
+		t.Fatalf("parse mission-review contract version 2: %v", err)
+	}
+	if v1.SemanticReviewContractVersion != SemanticReviewContractVersion ||
+		v2.SemanticReviewContractVersion != SemanticReviewMissionContractVersion ||
+		v1.SemanticReviewContractSHA256 == v2.SemanticReviewContractSHA256 {
+		t.Fatalf("semantic review versions/identities did not preserve the explicit boundary: v1=%d/%s v2=%d/%s",
+			v1.SemanticReviewContractVersion, v1.SemanticReviewContractSHA256,
+			v2.SemanticReviewContractVersion, v2.SemanticReviewContractSHA256)
+	}
+	if !HasSemanticReviewContract(v1.SemanticReviewContractVersion) || !HasSemanticReviewContract(v2.SemanticReviewContractVersion) {
+		t.Fatal("version 2 lost the version 1 Objective review gate")
+	}
+}
+
 func TestSemanticReviewContractIdentityDoesNotDependOnTaskProjection(t *testing.T) {
 	mission, err := ParseMission("# identity\n\n## Objective\nship it\n\n## Acceptance Contract\nversion: 2\n\n## Semantic Review Contract\nversion: 1\n\n## Tasks\n- [ ] OBJ-1: implement it\n  - repository-change: optional\n  - acceptance-check: test -e output.txt\n")
 	if err != nil {

@@ -77,11 +77,20 @@ type DeepState struct {
 	LandingVerificationOutcome VerificationOutcome `json:"landingVerificationOutcome,omitempty"`
 	// LandingVerificationRunID links journal-backed final verification to its
 	// canonical VerificationRun record. Empty for legacy sessions.
-	LandingVerificationRunID string        `json:"landingVerificationRunId,omitempty"`
-	TaskAttemptCap           int           `json:"taskAttemptCap"`
-	Exec                     *ExecSettings `json:"exec,omitempty"`
-	StartedAt                time.Time     `json:"startedAt"`
-	UpdatedAt                time.Time     `json:"updatedAt,omitempty"`
+	LandingVerificationRunID string `json:"landingVerificationRunId,omitempty"`
+	// MissionReview* are the compatibility projection of the latest
+	// checkpoint-bound whole-mission semantic review. The journal is canonical.
+	MissionReviewCycleID           string               `json:"missionReviewCycleId,omitempty"`
+	MissionReviewOutcome           ReviewOutcome        `json:"missionReviewOutcome,omitempty"`
+	MissionReviewReason            string               `json:"missionReviewReason,omitempty"`
+	MissionReviewCheckpointCommit  string               `json:"missionReviewCheckpointCommit,omitempty"`
+	MissionReviewCheckpointTreeSHA string               `json:"missionReviewCheckpointTreeSha,omitempty"`
+	MissionReviewSubject           *VerificationSubject `json:"missionReviewSubject,omitempty"`
+	MissionReviewFindings          []ReviewFinding      `json:"missionReviewFindings,omitempty"`
+	TaskAttemptCap                 int                  `json:"taskAttemptCap"`
+	Exec                           *ExecSettings        `json:"exec,omitempty"`
+	StartedAt                      time.Time            `json:"startedAt"`
+	UpdatedAt                      time.Time            `json:"updatedAt,omitempty"`
 }
 
 // MissionDefinition reconstructs the immutable mission contract stored in a
