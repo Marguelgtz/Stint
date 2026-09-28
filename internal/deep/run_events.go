@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"time"
@@ -45,6 +46,9 @@ const (
 	RunEventAcceptanceStarted        RunEventType = "acceptance.started"
 	RunEventAcceptanceResult         RunEventType = "acceptance.result"
 	RunEventAcceptanceRecovery       RunEventType = "acceptance.recovery_required"
+	RunEventReviewStarted            RunEventType = "review.started"
+	RunEventReviewResult             RunEventType = "review.result"
+	RunEventReviewRecovery           RunEventType = "review.recovery_required"
 )
 
 type RunEventBoundary string
@@ -76,7 +80,8 @@ type RunTaskSummary struct {
 // added without a version bump, while readers fail closed on unknown complete
 // events. B1 records run/epoch and landing transitions; B2 adds executor
 // invocation facts; B2b adds typed verification invocation facts; C2 adds
-// objective-specific acceptance-check and deterministic-decision facts.
+// objective-specific acceptance-check and deterministic-decision facts; D1
+// adds bounded semantic ReviewCycle facts.
 type RunEvent struct {
 	SchemaVersion    int              `json:"schemaVersion"`
 	EventID          string           `json:"eventId"`
@@ -101,6 +106,7 @@ type RunEvent struct {
 	VerificationRun  *VerificationRun `json:"verificationRun,omitempty"`
 	TaskCheckpoint   *TaskCheckpoint  `json:"taskCheckpoint,omitempty"`
 	AcceptanceRun    *AcceptanceRun   `json:"acceptanceRun,omitempty"`
+	ReviewCycle      *ReviewCycle     `json:"reviewCycle,omitempty"`
 }
 
 // NewExecutionEpochID returns a random opaque identity for one execution
@@ -355,7 +361,8 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		if state.RunEventWatermark != current.RunEventWatermark || state.RunID != current.RunID ||
 			state.ExecutionEpochID != current.ExecutionEpochID || state.RunEventSchemaVersion != current.RunEventSchemaVersion ||
 			!sameLifecycleProjection(*state, current) || !sameVerificationProjection(*state, current) ||
-			!sameTaskCheckpointProjection(*state, current) || !sameAcceptanceProjection(*state, current) {
+			!sameTaskCheckpointProjection(*state, current) || !sameAcceptanceProjection(*state, current) ||
+			!sameReviewProjection(*state, current) {
 			return errors.New("stale Deep Work projection; reload before writing a run event")
 		}
 		events, _, err := readRunEventsLocked(dir, state.SessionID)
@@ -400,6 +407,11 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		if event.Type == RunEventAcceptanceStarted || event.Type == RunEventAcceptanceResult {
 			if event.AcceptanceRun == nil || !acceptanceCommandFactsMatch(*state, *event.AcceptanceRun) {
 				return errors.New("acceptance event command identity does not match the durable contract at append time")
+			}
+		}
+		if event.Type == RunEventReviewStarted || event.Type == RunEventReviewResult || event.Type == RunEventReviewRecovery {
+			if event.ReviewCycle == nil || !reviewPolicyFactsMatch(*state, *event.ReviewCycle) {
+				return errors.New("review-cycle policy identity does not match the durable mission contract at append time")
 			}
 		}
 		if err := validateRunEvent(event); err != nil {
@@ -690,6 +702,30 @@ func validateRunEvent(event RunEvent) error {
 		if err := validateAcceptanceRecovery(*event.AcceptanceRun, event.Reason); err != nil {
 			return fmt.Errorf("invalid acceptance-recovery record: %w", err)
 		}
+	case RunEventReviewStarted:
+		if event.FromPhase != PhaseExecuting || event.ToPhase != PhaseExecuting || event.ReviewCycle == nil {
+			return errors.New("review-start event has invalid phase or missing review-cycle record")
+		}
+		if err := validateReviewCycle(*event.ReviewCycle, true); err != nil {
+			return fmt.Errorf("invalid review-cycle start record: %w", err)
+		}
+	case RunEventReviewResult:
+		if event.FromPhase != PhaseExecuting || event.ToPhase != PhaseExecuting || event.ReviewCycle == nil {
+			return errors.New("review-result event has invalid phase or missing review-cycle record")
+		}
+		if err := validateReviewCycle(*event.ReviewCycle, false); err != nil {
+			return fmt.Errorf("invalid review-cycle result record: %w", err)
+		}
+	case RunEventReviewRecovery:
+		if event.FromPhase != PhaseExecuting || event.ToPhase != PhaseExecuting || event.ReviewCycle == nil || event.Reason == "" {
+			return errors.New("review-recovery event has invalid phase, reason, or missing review-cycle record")
+		}
+		if event.ReviewCycle.Outcome != ReviewOutcomeUnknown || event.ReviewCycle.Reason != event.Reason {
+			return errors.New("review-recovery event must record an unknown outcome and matching reason")
+		}
+		if err := validateReviewCycle(*event.ReviewCycle, false); err != nil {
+			return fmt.Errorf("invalid review-cycle recovery record: %w", err)
+		}
 	default:
 		return fmt.Errorf("unknown run event type %q", event.Type)
 	}
@@ -711,6 +747,9 @@ func validateRunEvent(event RunEvent) error {
 	}
 	if event.Type != RunEventAcceptanceStarted && event.Type != RunEventAcceptanceResult && event.Type != RunEventAcceptanceRecovery && event.AcceptanceRun != nil {
 		return errors.New("non-acceptance event contains an acceptance run record")
+	}
+	if event.Type != RunEventReviewStarted && event.Type != RunEventReviewResult && event.Type != RunEventReviewRecovery && event.ReviewCycle != nil {
+		return errors.New("non-review event contains a review-cycle record")
 	}
 	return nil
 }
@@ -783,7 +822,7 @@ func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string)
 		return errors.New("event follows terminal landing without a new epoch")
 	}
 	if event.EpochID != last.EpochID && event.Type != RunEventExecutorRecoveryRequired && event.Type != RunEventExecutorReconciled &&
-		event.Type != RunEventVerificationRecovery && event.Type != RunEventAcceptanceRecovery {
+		event.Type != RunEventVerificationRecovery && event.Type != RunEventAcceptanceRecovery && event.Type != RunEventReviewRecovery {
 		return errors.New("event epoch does not match the current run epoch")
 	}
 	if event.FromPhase != phase {
@@ -799,6 +838,9 @@ func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string)
 		return err
 	}
 	if err := validateAcceptanceEventTransition(prior, event); err != nil {
+		return err
+	}
+	if err := validateReviewEventTransition(prior, event); err != nil {
 		return err
 	}
 	if event.Type == RunEventLandingStarted && phase != PhaseExecuting {
@@ -1110,6 +1152,9 @@ func recoverProjectionLocked(stateDir, dir string, state DeepState, persist bool
 		if err := validateAcceptanceProjection(dir, state, events[:state.RunEventWatermark]); err != nil {
 			return DeepState{}, journalExists, err
 		}
+		if err := validateReviewProjection(state, events[:state.RunEventWatermark]); err != nil {
+			return DeepState{}, journalExists, err
+		}
 	}
 	changed := false
 	for i := state.RunEventWatermark; i < uint64(len(events)); i++ {
@@ -1230,6 +1275,14 @@ func validateProjectionAtWatermark(dir string, state DeepState, event RunEvent) 
 	case RunEventAcceptanceRecovery:
 		if event.AcceptanceRun == nil || !acceptanceProjectionMatches(dir, state, *event.AcceptanceRun, false, true) {
 			return errors.New("deep.json acceptance recovery disagrees with its watermark event")
+		}
+	case RunEventReviewStarted, RunEventReviewResult, RunEventReviewRecovery:
+		if event.ReviewCycle == nil || !reviewPolicyFactsMatch(state, *event.ReviewCycle) {
+			return errors.New("review-cycle watermark event has no review record")
+		}
+		task, ok := findTask(&state, event.ReviewCycle.TaskID)
+		if !ok || !reviewProjectionMatches(*task, *event.ReviewCycle) {
+			return errors.New("deep.json review projection disagrees with its watermark event")
 		}
 	}
 	return nil
@@ -1463,6 +1516,27 @@ func applyRunEvent(state *DeepState, event RunEvent) error {
 		if err := applyAcceptanceRecovery(state, *event.AcceptanceRun, event.Reason); err != nil {
 			return err
 		}
+	case RunEventReviewStarted:
+		if event.ReviewCycle == nil || !reviewPolicyFactsMatch(*state, *event.ReviewCycle) {
+			return errors.New("review-start event has no review-cycle record")
+		}
+		if err := applyReviewStarted(state, *event.ReviewCycle); err != nil {
+			return err
+		}
+	case RunEventReviewResult:
+		if event.ReviewCycle == nil || !reviewPolicyFactsMatch(*state, *event.ReviewCycle) {
+			return errors.New("review-result event has no review-cycle record")
+		}
+		if err := applyReviewResult(state, *event.ReviewCycle); err != nil {
+			return err
+		}
+	case RunEventReviewRecovery:
+		if event.ReviewCycle == nil || !reviewPolicyFactsMatch(*state, *event.ReviewCycle) {
+			return errors.New("review-recovery event has no review-cycle record")
+		}
+		if err := applyReviewRecovery(state, *event.ReviewCycle, event.Reason); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("cannot apply run event type %q", event.Type)
 	}
@@ -1534,6 +1608,22 @@ func sameAcceptanceProjection(a, b DeepState) bool {
 			left.AcceptanceCheckpointEventID != right.AcceptanceCheckpointEventID ||
 			left.AcceptanceCheckpointCommit != right.AcceptanceCheckpointCommit ||
 			left.AcceptanceCheckpointTreeSHA != right.AcceptanceCheckpointTreeSHA || left.AcceptanceOutput != right.AcceptanceOutput {
+			return false
+		}
+	}
+	return true
+}
+
+func sameReviewProjection(a, b DeepState) bool {
+	if len(a.Tasks) != len(b.Tasks) {
+		return false
+	}
+	for i := range a.Tasks {
+		left, right := a.Tasks[i], b.Tasks[i]
+		if left.ID != right.ID || left.ReviewCycleID != right.ReviewCycleID || left.ReviewOutcome != right.ReviewOutcome ||
+			left.ReviewReason != right.ReviewReason || left.ReviewCheckpointEventID != right.ReviewCheckpointEventID ||
+			left.ReviewCheckpointCommit != right.ReviewCheckpointCommit || left.ReviewCheckpointTreeSHA != right.ReviewCheckpointTreeSHA ||
+			!reflect.DeepEqual(left.ReviewFindings, right.ReviewFindings) {
 			return false
 		}
 	}

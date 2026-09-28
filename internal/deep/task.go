@@ -137,7 +137,18 @@ type Task struct {
 	AcceptanceCheckpointCommit  string                 `json:"acceptanceCheckpointCommit,omitempty"`
 	AcceptanceCheckpointTreeSHA string                 `json:"acceptanceCheckpointTreeSha,omitempty"`
 	AcceptanceOutput            string                 `json:"acceptanceOutput,omitempty"`
-	Reasoning                   string                 `json:"reasoning,omitempty"`
+	// ReviewCycle fields are the compatibility projection of the latest
+	// append-only semantic ReviewCycle for this stable Objective / Work Unit.
+	// Review findings remain evidence; they do not change v2 acceptance or
+	// legacy verified semantics until a versioned review policy consumes them.
+	ReviewCycleID           string          `json:"reviewCycleId,omitempty"`
+	ReviewOutcome           ReviewOutcome   `json:"reviewOutcome,omitempty"`
+	ReviewReason            string          `json:"reviewReason,omitempty"`
+	ReviewCheckpointEventID string          `json:"reviewCheckpointEventId,omitempty"`
+	ReviewCheckpointCommit  string          `json:"reviewCheckpointCommit,omitempty"`
+	ReviewCheckpointTreeSHA string          `json:"reviewCheckpointTreeSha,omitempty"`
+	ReviewFindings          []ReviewFinding `json:"reviewFindings,omitempty"`
+	Reasoning               string          `json:"reasoning,omitempty"`
 	// DependsOn names earlier tasks that must be verified before this task can
 	// run. This supports review tasks that inspect completed implementations.
 	DependsOn  []string `json:"dependsOn,omitempty"`
