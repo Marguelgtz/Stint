@@ -83,6 +83,21 @@ func TestTasksViewKeepsAcceptanceSeparateFromVerification(t *testing.T) {
 	}
 }
 
+func TestTasksViewSurfacesCheckpointBoundSemanticReviewFindings(t *testing.T) {
+	m := testModel()
+	m.View = Tasks
+	m.Tasks = []Task{{
+		ID: "OBJ-1", Status: "accepted", AcceptanceOutcome: "accepted", ReviewOutcome: "findings",
+		ReviewFindings: []ReviewFinding{{ID: "F-1", Severity: "high", Summary: "Requested tool is not exposed.", Evidence: "Diff adds only an internal helper."}},
+	}}
+	out := Render(m)
+	for _, want := range []string{"acceptance accepted", "semantic review findings", "finding F-1 high: Requested tool is not exposed.", "evidence: Diff adds only an internal helper."} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("tasks view missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRunViewCountsAcceptedSeparatelyFromVerified(t *testing.T) {
 	m := testModel()
 	m.MissionOutcome = "succeeded"

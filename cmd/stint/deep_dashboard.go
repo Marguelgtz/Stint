@@ -386,16 +386,23 @@ func (c *deepDashboardController) project() {
 		if task.VerifiedAt != nil {
 			verifiedAt = task.VerifiedAt.Local().Format(time.RFC3339)
 		}
-		m.Tasks = append(m.Tasks, deepdash.Task{
+		projectedTask := deepdash.Task{
 			ID: task.ID, Objective: task.Objective, Status: string(task.Status), Attempts: task.Attempts, Reasoning: task.Reasoning,
 			Blocker: task.Blocker, LastResult: task.LastResult, Verify: task.Verify,
 			CheckpointCommit: task.CheckpointCommit, VerifiedAt: verifiedAt,
 			ExecutionError: task.ExecutionError, VerificationCommand: task.VerificationCommand,
 			VerificationResult: task.VerificationResult, TimeoutDecision: task.TimeoutDecision,
 			AcceptanceOutcome: string(task.AcceptanceOutcome), AcceptanceCheckOutcome: string(task.AcceptanceCheckOutcome), AcceptanceReason: task.AcceptanceReason,
+			ReviewOutcome: string(task.ReviewOutcome), ReviewReason: task.ReviewReason,
 			ConfiguredTimeoutSec: task.ConfiguredTimeoutSec, EffectiveTimeoutSec: task.EffectiveTimeoutSec,
 			DependsOn: append([]string(nil), task.DependsOn...),
-		})
+		}
+		for _, finding := range task.ReviewFindings {
+			projectedTask.ReviewFindings = append(projectedTask.ReviewFindings, deepdash.ReviewFinding{
+				ID: finding.ID, Severity: string(finding.Severity), Summary: finding.Summary, Evidence: finding.Evidence,
+			})
+		}
+		m.Tasks = append(m.Tasks, projectedTask)
 	}
 	m.Compute = projectDeepDashboardCompute(c.compute, c.computeLive)
 	m.Worker = c.worker

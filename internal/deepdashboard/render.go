@@ -25,10 +25,16 @@ type Task struct {
 	Verify, CheckpointCommit, VerifiedAt                        string
 	ExecutionError, VerificationCommand, VerificationResult     string
 	AcceptanceOutcome, AcceptanceCheckOutcome, AcceptanceReason string
+	ReviewOutcome, ReviewReason                                 string
+	ReviewFindings                                              []ReviewFinding
 	TimeoutDecision                                             string
 	ConfiguredTimeoutSec, EffectiveTimeoutSec                   int
 	DependsOn                                                   []string
 	Attempts                                                    int
+}
+
+type ReviewFinding struct {
+	ID, Severity, Summary, Evidence string
 }
 
 type Event struct {
@@ -259,6 +265,18 @@ func tasksView(m Model, p palette) string {
 				lines = append(lines, "             "+p.muted(compact("acceptance reason: "+task.AcceptanceReason, max(12, m.Width-14))))
 			}
 		}
+		if task.ReviewOutcome != "" {
+			lines = append(lines, "             "+p.accent(compact("semantic review "+task.ReviewOutcome, max(12, m.Width-14))))
+			if task.ReviewReason != "" {
+				lines = append(lines, "             "+p.muted(compact("review reason: "+task.ReviewReason, max(12, m.Width-14))))
+			}
+			for _, finding := range task.ReviewFindings {
+				lines = append(lines, "             "+p.warn(compact("finding "+finding.ID+" "+finding.Severity+": "+finding.Summary, max(12, m.Width-14))))
+				if finding.Evidence != "" {
+					lines = append(lines, "             "+p.muted(compact("evidence: "+finding.Evidence, max(12, m.Width-14))))
+				}
+			}
+		}
 		if task.Verify != "" {
 			lines = append(lines, "             verify "+compact(task.Verify, max(12, m.Width-25)))
 		}
@@ -371,6 +389,15 @@ func phaseView(m Model, p palette) string {
 				lines = append(lines, acceptance)
 				if task.AcceptanceReason != "" {
 					lines = append(lines, "  acceptance reason "+compact(task.AcceptanceReason, max(12, m.Width-22)))
+				}
+			}
+			if task.ReviewOutcome != "" {
+				lines = append(lines, "  semantic review "+task.ReviewOutcome)
+				if task.ReviewReason != "" {
+					lines = append(lines, "  review reason "+compact(task.ReviewReason, max(12, m.Width-22)))
+				}
+				for _, finding := range task.ReviewFindings {
+					lines = append(lines, "  finding "+finding.ID+" "+finding.Severity+": "+compact(finding.Summary, max(12, m.Width-28)))
 				}
 			}
 			if task.CheckpointCommit != "" {
