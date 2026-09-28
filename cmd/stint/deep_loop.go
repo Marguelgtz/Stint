@@ -913,7 +913,7 @@ func (c *deepCoordinator) effectiveTaskTimeout(now time.Time, task deep.Task) (t
 		}
 	}
 	reviewReserve := time.Duration(0)
-	if c.state.SemanticReviewContractVersion == deep.SemanticReviewContractVersion && task.IsAcceptanceContractTask() {
+	if deep.HasSemanticReviewContract(c.state.SemanticReviewContractVersion) && task.IsAcceptanceContractTask() {
 		reviewReserve = c.effectiveReviewLimit()
 	}
 	remaining := c.state.LandBefore.Sub(now)
@@ -984,7 +984,7 @@ func (c *deepCoordinator) failedPrerequisite(task deep.Task) string {
 			if c.state.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion && required.IsAcceptanceContractTask() {
 				requires = "accepted"
 				satisfied = status == deep.StatusAccepted && required.AcceptanceOutcome == deep.AcceptanceAccepted
-				if c.state.SemanticReviewContractVersion == deep.SemanticReviewContractVersion {
+				if deep.HasSemanticReviewContract(c.state.SemanticReviewContractVersion) {
 					requires = "accepted and clear-reviewed"
 					satisfied = satisfied && deep.TaskHasSatisfiedReviewGate(required.ID, c.state.Tasks)
 				}
@@ -1017,7 +1017,7 @@ func (c *deepCoordinator) selectTask() (int, bool) {
 			continue
 		}
 		if c.state.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion &&
-			c.state.SemanticReviewContractVersion == deep.SemanticReviewContractVersion && task.IsAcceptanceContractTask() &&
+			deep.HasSemanticReviewContract(c.state.SemanticReviewContractVersion) && task.IsAcceptanceContractTask() &&
 			c.failedPrerequisite(task) != "" {
 			// Keep a dependent queued while a prerequisite has repair findings.
 			// Dynamic repair Work Units may resolve it later in this same epoch.
@@ -1033,7 +1033,7 @@ func (c *deepCoordinator) selectTask() (int, bool) {
 }
 
 func pendingSemanticReview(task deep.Task, state deep.DeepState) bool {
-	if state.SemanticReviewContractVersion != deep.SemanticReviewContractVersion ||
+	if !deep.HasSemanticReviewContract(state.SemanticReviewContractVersion) ||
 		state.AcceptanceContractVersion != deep.DeterministicAcceptanceContractVersion || !task.IsAcceptanceContractTask() ||
 		task.Status != deep.StatusAccepted || task.AcceptanceOutcome != deep.AcceptanceAccepted ||
 		task.AcceptanceCheckOutcome != deep.AcceptanceCheckPassed || task.AcceptanceCheckpointEventID == "" {
@@ -1121,6 +1121,12 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 			} else if unmatched != nil {
 				*c.state = fresh
 				return fmt.Errorf("Deep Work is blocked: semantic review %s for task %s has no durable result and reviewer process quiescence is unknown", unmatched.ID, unmatched.TaskID)
+			}
+			if unmatched, err := deep.RecoverUnmatchedMissionReviewCycle(c.stateDir, &fresh, c.now()); err != nil {
+				return fmt.Errorf("recover unmatched mission semantic review: %w", err)
+			} else if unmatched != nil {
+				*c.state = fresh
+				return fmt.Errorf("Deep Work is blocked: mission semantic review %s has no durable result and reviewer process quiescence is unknown", unmatched.ID)
 			}
 		}
 		if fresh.ExecutionQuiescenceUnconfirmed {

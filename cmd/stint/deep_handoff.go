@@ -60,7 +60,7 @@ func buildHandoff(s deep.DeepState, reason string, now time.Time, finalVerify st
 	switch {
 	case s.Verify == "":
 		if s.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion {
-			if s.SemanticReviewContractVersion == deep.SemanticReviewContractVersion {
+			if deep.HasSemanticReviewContract(s.SemanticReviewContractVersion) {
 				b.WriteString("The mission defines no mission-level verification command. Deterministic acceptance checks and the separate checkpoint-bound semantic review gate are reported for each Objective; configured task `verify:` commands remain correctness evidence.\n")
 			} else {
 				b.WriteString("The mission defines no mission-level verification command. Work Unit acceptance outcomes below come from their declared deterministic acceptance checks; configured task `verify:` commands remain separate correctness evidence.\n")
@@ -109,7 +109,7 @@ func buildHandoff(s deep.DeepState, reason string, now time.Time, finalVerify st
 	}
 	if !remaining {
 		if s.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion {
-			if s.SemanticReviewContractVersion == deep.SemanticReviewContractVersion {
+			if deep.HasSemanticReviewContract(s.SemanticReviewContractVersion) {
 				b.WriteString("All mission Objectives passed deterministic acceptance and their checkpoint-bound semantic review. Review the branch and merge or discard.\n")
 			} else {
 				b.WriteString("All mission Objectives reached deterministic acceptance. Review the branch and merge or discard.\n")
@@ -156,8 +156,38 @@ func updateHandoffLandingResult(handoff string, outcome deep.MissionOutcome, rea
 	return strings.Join(lines, "\n")
 }
 
+func updateHandoffMissionReview(handoff string, state deep.DeepState) string {
+	const section = "\n## Mission semantic review\n"
+	if index := strings.Index(handoff, section); index >= 0 {
+		handoff = handoff[:index]
+	}
+	if state.SemanticReviewContractVersion != deep.SemanticReviewMissionContractVersion {
+		return strings.TrimRight(handoff, "\n") + "\n"
+	}
+	outcome := string(state.MissionReviewOutcome)
+	if outcome == "" || state.MissionReviewOutcome == deep.ReviewOutcomeStarted {
+		outcome = "not run"
+	}
+	var b strings.Builder
+	b.WriteString(section)
+	fmt.Fprintf(&b, "\n- outcome: **%s**\n", outcome)
+	if state.MissionReviewCheckpointCommit != "" {
+		fmt.Fprintf(&b, "- reviewed checkpoint: `%s` (tree `%s`)\n", state.MissionReviewCheckpointCommit, state.MissionReviewCheckpointTreeSHA)
+	}
+	if state.MissionReviewReason != "" {
+		fmt.Fprintf(&b, "- reason: %s\n", state.MissionReviewReason)
+	}
+	for _, finding := range state.MissionReviewFindings {
+		fmt.Fprintf(&b, "- finding %s (%s, %s): %s — %s\n", finding.ID, finding.Severity, finding.Disposition, finding.Summary, finding.Evidence)
+		for _, location := range finding.Locations {
+			fmt.Fprintf(&b, "  - location: `%s`\n", location)
+		}
+	}
+	return strings.TrimRight(handoff, "\n") + "\n" + b.String()
+}
+
 func taskHandoffStatus(s deep.DeepState, t deep.Task) string {
-	if s.SemanticReviewContractVersion == deep.SemanticReviewContractVersion && t.IsAcceptanceContractTask() &&
+	if deep.HasSemanticReviewContract(s.SemanticReviewContractVersion) && t.IsAcceptanceContractTask() &&
 		t.Status == deep.StatusAccepted && t.AcceptanceOutcome == deep.AcceptanceAccepted && !deep.TaskHasSatisfiedReviewGate(t.ID, s.Tasks) {
 		if t.ReviewCycleID == "" {
 			return "accepted (semantic review pending)"
@@ -187,7 +217,7 @@ func taskCompleteForHandoff(s deep.DeepState, task deep.Task) bool {
 			return true
 		}
 		return task.Status == deep.StatusAccepted && task.AcceptanceOutcome == deep.AcceptanceAccepted &&
-			(s.SemanticReviewContractVersion != deep.SemanticReviewContractVersion || deep.TaskHasSatisfiedReviewGate(task.ID, s.Tasks))
+			(!deep.HasSemanticReviewContract(s.SemanticReviewContractVersion) || deep.TaskHasSatisfiedReviewGate(task.ID, s.Tasks))
 	}
 	return task.Status == deep.StatusVerified
 }
@@ -223,7 +253,7 @@ func taskHandoffEvidence(s deep.DeepState, t deep.Task) string {
 		if t.AcceptanceReason != "" {
 			evidence += "; reason: " + t.AcceptanceReason
 		}
-		if s.SemanticReviewContractVersion == deep.SemanticReviewContractVersion {
+		if deep.HasSemanticReviewContract(s.SemanticReviewContractVersion) {
 			if t.ReviewCycleID == "" {
 				evidence += "; semantic review pending"
 			} else {

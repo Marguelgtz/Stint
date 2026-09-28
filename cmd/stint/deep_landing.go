@@ -477,6 +477,22 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	if head == "" {
 		return fmt.Errorf("landing checkpoint SHA is empty")
 	}
+	if deep.MissionReviewRequiredAtLanding(*c.state, head, checkpointTree) {
+		if err := c.runMissionSemanticReview(ctx, head, checkpointTree, c.state.LandingVerificationRunID); err != nil {
+			return err
+		}
+		if c.state.ExecutionQuiescenceUnconfirmed {
+			return errors.New("landing stopped because mission-review process quiescence is unconfirmed")
+		}
+		afterReview, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+		if err != nil {
+			return fmt.Errorf("confirm checkpoint subject after mission review: %w", err)
+		}
+		if afterReview.Subject.HeadCommit != head || afterReview.Subject.TreeSHA != checkpointTree {
+			return fmt.Errorf("repository changed after mission review; reviewed checkpoint %s/%s is no longer current (%s/%s)",
+				head, checkpointTree, afterReview.Subject.HeadCommit, afterReview.Subject.TreeSHA)
+		}
+	}
 
 	outcomeState := *c.state
 	outcomeState.LandingCommit = head
@@ -530,6 +546,7 @@ func (c *deepCoordinator) refreshLandedSummary() error {
 		return nil
 	}
 	updated := updateHandoffLandingResult(c.state.LandingHandoff, c.state.MissionOutcome, c.state.LandingReason)
+	updated = updateHandoffMissionReview(updated, *c.state)
 	if updated != c.state.LandingHandoff {
 		previous := c.state.LandingHandoff
 		c.state.LandingHandoff = updated

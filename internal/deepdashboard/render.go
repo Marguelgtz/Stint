@@ -64,38 +64,43 @@ type Modal struct {
 }
 
 type Model struct {
-	Width, Height     int
-	NoColor           bool
-	View              View
-	SessionID         string
-	Mission           string
-	Phase             string
-	BaseCommit        string
-	Branch            string
-	Verify            string
-	MissionOutcome    string
-	ComputeBinding    string
-	LandingReason     string
-	LandingCommit     string
-	LandingVerify     string
-	LandingHandoff    string
-	LandingVerifyDone bool
-	LandedAt          *time.Time
-	Latest            bool
-	CanLand           bool
-	WorkerName        string
-	Coordinator       string
-	StartedAt         time.Time
-	Deadline          time.Time
-	LandBefore        time.Time
-	Now               time.Time
-	Tasks             []Task
-	ActiveSince       *time.Time
-	Events            []Event
-	Compute           Compute
-	Worker            Worker
-	Error, Notice     string
-	Modal             *Modal
+	Width, Height         int
+	NoColor               bool
+	View                  View
+	SessionID             string
+	Mission               string
+	Phase                 string
+	BaseCommit            string
+	Branch                string
+	Verify                string
+	MissionOutcome        string
+	MissionReviewOutcome  string
+	MissionReviewReason   string
+	MissionReviewCommit   string
+	MissionReviewTree     string
+	MissionReviewFindings []ReviewFinding
+	ComputeBinding        string
+	LandingReason         string
+	LandingCommit         string
+	LandingVerify         string
+	LandingHandoff        string
+	LandingVerifyDone     bool
+	LandedAt              *time.Time
+	Latest                bool
+	CanLand               bool
+	WorkerName            string
+	Coordinator           string
+	StartedAt             time.Time
+	Deadline              time.Time
+	LandBefore            time.Time
+	Now                   time.Time
+	Tasks                 []Task
+	ActiveSince           *time.Time
+	Events                []Event
+	Compute               Compute
+	Worker                Worker
+	Error, Notice         string
+	Modal                 *Modal
 }
 
 type palette struct{ noColor bool }
@@ -187,6 +192,9 @@ func runView(m Model, p palette) string {
 	fmt.Fprintf(&b, "%s  %s\n", p.bold(or(m.Mission, "unnamed mission")), p.muted("session "+m.SessionID))
 	if m.MissionOutcome != "" && m.MissionOutcome != "pending" {
 		fmt.Fprintf(&b, "Mission outcome %s\n", missionOutcomeLabel(m.MissionOutcome, p))
+	}
+	if m.MissionReviewOutcome != "" {
+		fmt.Fprintf(&b, "Mission review  %s\n", m.MissionReviewOutcome)
 	}
 	fmt.Fprintf(&b, "Worker     %s\n", worker)
 	fmt.Fprintf(&b, "Coordinator %s\n", or(m.Coordinator, "unknown"))
@@ -370,6 +378,19 @@ func phaseView(m Model, p palette) string {
 	}
 	lines = append(lines, "\n"+p.bold("MISSION AND TASK EVIDENCE"))
 	lines = append(lines, "Mission outcome  "+missionOutcomeLabel(or(m.MissionOutcome, "unknown"), p))
+	if m.MissionReviewOutcome != "" || m.MissionReviewCommit != "" {
+		lines = append(lines, "Mission review   "+or(m.MissionReviewOutcome, "not run"))
+		if m.MissionReviewCommit != "" {
+			lines = append(lines, "Review checkpoint "+m.MissionReviewCommit+" / "+m.MissionReviewTree)
+		}
+		if m.MissionReviewReason != "" {
+			lines = append(lines, "Review reason    "+compact(m.MissionReviewReason, max(12, m.Width-22)))
+		}
+		for _, finding := range m.MissionReviewFindings {
+			detail := "mission finding " + finding.ID + " " + finding.Severity + ": " + finding.Summary
+			lines = append(lines, "  "+compact(detail, max(12, m.Width-22)))
+		}
+	}
 	if len(m.Tasks) == 0 {
 		lines = append(lines, p.muted("No tasks recorded."))
 	} else {

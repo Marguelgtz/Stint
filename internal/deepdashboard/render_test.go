@@ -28,6 +28,22 @@ func TestRunViewIncludesTruthfulProgress(t *testing.T) {
 	}
 }
 
+func TestPhaseViewSurfacesCheckpointBoundMissionReviewFindings(t *testing.T) {
+	m := testModel()
+	m.View = PhaseDetails
+	m.MissionOutcome = "unresolved"
+	m.MissionReviewOutcome = "findings"
+	m.MissionReviewCommit = "0123456789abcdef"
+	m.MissionReviewTree = "abcdef0123456789"
+	m.MissionReviewFindings = []ReviewFinding{{ID: "M-1", Severity: "high", Summary: "The public behavior is incomplete."}}
+	out := Render(m)
+	for _, want := range []string{"Mission review   findings", "Review checkpoint 0123456789abcdef / abcdef0123456789", "mission finding M-1 high", "public behavior is incomplete"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("phase view omitted mission-review evidence %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestWorkerViewShowsTruncation(t *testing.T) {
 	m := testModel()
 	m.View = WorkerView

@@ -358,6 +358,17 @@ func (c *deepDashboardController) project() {
 	m.Branch = s.Branch
 	m.Verify = s.Verify
 	m.MissionOutcome = string(deep.DisplayMissionOutcome(s.MissionOutcome, s.Phase))
+	m.MissionReviewOutcome = string(s.MissionReviewOutcome)
+	m.MissionReviewReason = s.MissionReviewReason
+	m.MissionReviewCommit = s.MissionReviewCheckpointCommit
+	m.MissionReviewTree = s.MissionReviewCheckpointTreeSHA
+	m.MissionReviewFindings = nil
+	for _, finding := range s.MissionReviewFindings {
+		m.MissionReviewFindings = append(m.MissionReviewFindings, deepdash.ReviewFinding{
+			ID: finding.ID, Severity: string(finding.Severity), Summary: finding.Summary,
+			Evidence: finding.Evidence, Disposition: string(finding.Disposition), RepairTaskID: finding.RepairTaskID,
+		})
+	}
 	m.LandingReason = s.LandingReason
 	m.LandingCommit = s.LandingCommit
 	m.LandingVerify = s.LandingVerify
