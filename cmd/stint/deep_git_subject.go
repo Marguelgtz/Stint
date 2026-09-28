@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Marguelgtz/Stint/internal/deep"
 )
@@ -132,6 +136,48 @@ func (g *gitRunner) verificationSubject(dir string, bookkeepingPaths []string) (
 		snapshot.Bookkeeping = nil
 	}
 	return snapshot, nil
+}
+
+type boundedDiffCapture struct {
+	buf      bytes.Buffer
+	maxBytes int
+	tooLarge bool
+}
+
+func (w *boundedDiffCapture) Write(data []byte) (int, error) {
+	remaining := w.maxBytes + 1 - w.buf.Len()
+	if remaining > 0 {
+		if len(data) > remaining {
+			_, _ = w.buf.Write(data[:remaining])
+			w.tooLarge = true
+		} else {
+			_, _ = w.buf.Write(data)
+		}
+	} else if len(data) > 0 {
+		w.tooLarge = true
+	}
+	return len(data), nil
+}
+
+func (g *gitRunner) reviewDiff(ctx context.Context, dir, fromTree, toTree string, maxBytes int) (string, bool, error) {
+	if maxBytes < 1 {
+		return "", false, errors.New("semantic review diff bound must be positive")
+	}
+	cmd := exec.CommandContext(ctx, "git", "--no-pager", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--binary", "--unified=3", fromTree, toTree, "--")
+	cmd.Dir = dir
+	var out, errOut boundedDiffCapture
+	out.maxBytes, errOut.maxBytes = maxBytes, 4096
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	if err := cmd.Run(); err != nil {
+		return "", false, fmt.Errorf("capture semantic review diff: %s", strings.TrimSpace(errOut.buf.String()))
+	}
+	if out.tooLarge || out.buf.Len() > maxBytes {
+		return "", true, nil
+	}
+	if !utf8.Valid(out.buf.Bytes()) {
+		return "", false, errors.New("semantic review diff is not valid UTF-8")
+	}
+	return out.buf.String(), false, nil
 }
 
 func (g *gitRunner) pathGitVisible(dir, path string) (bool, error) {

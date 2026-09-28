@@ -28,6 +28,9 @@ import (
 //	## Acceptance Contract
 //	version: 2
 //
+//	## Semantic Review Contract
+//	version: 1
+//
 //	## Tasks
 //	- [ ] <ID>: <objective>
 //	  - acceptance: <narrative objective intent included in the executor prompt>
@@ -49,9 +52,13 @@ type Mission struct {
 	// deterministic acceptance contract was explicitly opted into.
 	AcceptanceContractVersion int
 	AcceptanceContractSHA256  string
-	GitHub                    GitHubPolicy
-	GitHubConfigured          bool
-	Tasks                     []Task
+	// SemanticReviewContractVersion is zero unless a mission explicitly opts
+	// into the fresh-context, checkpoint-bound reviewer gate.
+	SemanticReviewContractVersion int
+	SemanticReviewContractSHA256  string
+	GitHub                        GitHubPolicy
+	GitHubConfigured              bool
+	Tasks                         []Task
 }
 
 // ParseMission parses mission Markdown content into a Mission.
@@ -63,6 +70,8 @@ func ParseMission(content string) (Mission, error) {
 	var verifyFenceBody []string
 	acceptanceContractDeclared := false
 	acceptanceContractFields := make(map[string]bool)
+	semanticReviewContractDeclared := false
+	semanticReviewContractFields := make(map[string]bool)
 	taskAcceptanceFields := make(map[string]map[string]int)
 	var githubMode, githubRepository, githubBase, githubAuthors, githubApproval string
 	githubFields := make(map[string]bool)
@@ -92,6 +101,9 @@ func ParseMission(content string) (Mission, error) {
 			section = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(trimmed, "## ")))
 			if section == "acceptance contract" {
 				acceptanceContractDeclared = true
+			}
+			if section == "semantic review contract" {
+				semanticReviewContractDeclared = true
 			}
 			if section == "github" {
 				m.GitHubConfigured = true
@@ -149,6 +161,22 @@ func ParseMission(content string) (Mission, error) {
 				return m, fmt.Errorf("unsupported mission acceptance contract version %q", value)
 			}
 			m.AcceptanceContractVersion = DeterministicAcceptanceContractVersion
+		case "semantic review contract":
+			key, value, ok := policyField(trimmed)
+			if !ok {
+				return m, errors.New("semantic review contract requires a version field")
+			}
+			if key != "version" {
+				return m, fmt.Errorf("unknown semantic review contract field %q", key)
+			}
+			if semanticReviewContractFields[key] {
+				return m, errors.New("semantic review contract version is declared more than once")
+			}
+			semanticReviewContractFields[key] = true
+			if value != "1" {
+				return m, fmt.Errorf("unsupported semantic review contract version %q", value)
+			}
+			m.SemanticReviewContractVersion = SemanticReviewContractVersion
 		case "github":
 			key, value, ok := policyField(trimmed)
 			if !ok {
@@ -248,6 +276,9 @@ func ParseMission(content string) (Mission, error) {
 	if acceptanceContractDeclared && m.AcceptanceContractVersion == 0 {
 		return m, errors.New("acceptance contract section requires an explicit supported version")
 	}
+	if semanticReviewContractDeclared && m.SemanticReviewContractVersion == 0 {
+		return m, errors.New("semantic review contract section requires an explicit supported version")
+	}
 	if m.AcceptanceContractVersion == 0 {
 		// These names were previously unknown task annotations. Keep a legacy
 		// mission on its original behavior, including when it contains
@@ -304,8 +335,17 @@ func ParseMission(content string) (Mission, error) {
 	if err := ValidateAcceptanceContract(m.AcceptanceContractVersion, m.Tasks); err != nil {
 		return m, err
 	}
+	if err := ValidateSemanticReviewContract(m.SemanticReviewContractVersion, m.AcceptanceContractVersion, m.Tasks); err != nil {
+		return m, err
+	}
 	if m.AcceptanceContractVersion != 0 {
 		m.AcceptanceContractSHA256, err = AcceptanceContractIdentity(m)
+		if err != nil {
+			return m, err
+		}
+	}
+	if m.SemanticReviewContractVersion != 0 {
+		m.SemanticReviewContractSHA256, err = SemanticReviewContractIdentity(m)
 		if err != nil {
 			return m, err
 		}

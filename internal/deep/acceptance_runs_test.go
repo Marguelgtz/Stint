@@ -35,6 +35,10 @@ func TestV2AcceptanceProjectionCannotInventAnOutcomeWithoutJournalEvidence(t *te
 }
 
 func acceptanceRunFixture(t *testing.T) (string, DeepState, AcceptanceRun, time.Time) {
+	return acceptanceRunFixtureWithSemanticReview(t, false)
+}
+
+func acceptanceRunFixtureWithSemanticReview(t *testing.T, semanticReview bool) (string, DeepState, AcceptanceRun, time.Time) {
 	t.Helper()
 	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	mission := Mission{
@@ -43,10 +47,19 @@ func acceptanceRunFixture(t *testing.T) (string, DeepState, AcceptanceRun, time.
 		Tasks: []Task{{ID: "T-1", Objective: "produce output", RepositoryChange: RepositoryChangeRequired,
 			AcceptanceCheck: "test -e output.txt", Status: StatusQueued}},
 	}
+	if semanticReview {
+		mission.SemanticReviewContractVersion = SemanticReviewContractVersion
+	}
 	var err error
 	mission.AcceptanceContractSHA256, err = AcceptanceContractIdentity(mission)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if semanticReview {
+		mission.SemanticReviewContractSHA256, err = SemanticReviewContractIdentity(mission)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	state := NewState("run-acceptance-journal", mission, "/repo", "/repo/.stint-deep/acceptance", now.Add(time.Hour), now.Add(50*time.Minute), 2, now)
 	state.ComputeBinding = &ComputeBinding{Provider: "vast", InstanceID: 99, BoundAt: now}

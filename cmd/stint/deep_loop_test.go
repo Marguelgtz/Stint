@@ -50,7 +50,7 @@ func (f *fakeExecutor) run(_ context.Context, in execInput) (execResult, error) 
 		r = completedResult()
 	}
 	// Simulate worker output so checkpoint commits have a real diff.
-	if in.workdir != "" {
+	if in.workdir != "" && !in.semanticReviewer {
 		_ = os.WriteFile(filepath.Join(in.workdir, fmt.Sprintf("work-%d.txt", f.calls)),
 			[]byte(fmt.Sprintf("attempt %d", f.calls)), 0o644)
 		verifyMarker := filepath.Join(in.workdir, ".stint-verified")

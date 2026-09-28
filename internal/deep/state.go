@@ -40,6 +40,8 @@ type DeepState struct {
 	Verify                         string               `json:"verify,omitempty"`
 	AcceptanceContractVersion      int                  `json:"acceptanceContractVersion,omitempty"`
 	AcceptanceContractSHA256       string               `json:"acceptanceContractSha256,omitempty"`
+	SemanticReviewContractVersion  int                  `json:"semanticReviewContractVersion,omitempty"`
+	SemanticReviewContractSHA256   string               `json:"semanticReviewContractSha256,omitempty"`
 	GitHub                         GitHubPolicy         `json:"github"`
 	RepoPath                       string               `json:"repoPath"`
 	WorktreePath                   string               `json:"worktreePath"`
@@ -89,9 +91,11 @@ func (state DeepState) MissionDefinition() Mission {
 	return Mission{
 		Name: state.MissionName, Objective: state.Objective,
 		Success: state.Success, Constraints: state.Constraints, Verify: state.Verify,
-		AcceptanceContractVersion: state.AcceptanceContractVersion,
-		AcceptanceContractSHA256:  state.AcceptanceContractSHA256,
-		GitHub:                    state.GitHub, Tasks: state.Tasks,
+		AcceptanceContractVersion:     state.AcceptanceContractVersion,
+		AcceptanceContractSHA256:      state.AcceptanceContractSHA256,
+		SemanticReviewContractVersion: state.SemanticReviewContractVersion,
+		SemanticReviewContractSHA256:  state.SemanticReviewContractSHA256,
+		GitHub:                        state.GitHub, Tasks: state.Tasks,
 	}
 }
 
@@ -153,25 +157,27 @@ func BranchName(sessionID string) string {
 // NewState builds the initial state for a parsed mission.
 func NewState(sessionID string, mission Mission, repoPath, worktreePath string, deadline time.Time, landBefore time.Time, taskAttemptCap int, now time.Time) DeepState {
 	state := DeepState{
-		SessionID:                 sessionID,
-		MissionName:               mission.Name,
-		Objective:                 mission.Objective,
-		Success:                   mission.Success,
-		Constraints:               mission.Constraints,
-		Verify:                    mission.Verify,
-		AcceptanceContractVersion: mission.AcceptanceContractVersion,
-		AcceptanceContractSHA256:  mission.AcceptanceContractSHA256,
-		GitHub:                    mission.GitHub,
-		RepoPath:                  repoPath,
-		WorktreePath:              worktreePath,
-		Branch:                    BranchName(sessionID),
-		Tasks:                     mission.Tasks,
-		Phase:                     PhaseExecuting,
-		MissionOutcome:            MissionOutcomePending,
-		Deadline:                  deadline.UTC(),
-		LandBefore:                landBefore.UTC(),
-		TaskAttemptCap:            taskAttemptCap,
-		StartedAt:                 now.UTC(),
+		SessionID:                     sessionID,
+		MissionName:                   mission.Name,
+		Objective:                     mission.Objective,
+		Success:                       mission.Success,
+		Constraints:                   mission.Constraints,
+		Verify:                        mission.Verify,
+		AcceptanceContractVersion:     mission.AcceptanceContractVersion,
+		AcceptanceContractSHA256:      mission.AcceptanceContractSHA256,
+		SemanticReviewContractVersion: mission.SemanticReviewContractVersion,
+		SemanticReviewContractSHA256:  mission.SemanticReviewContractSHA256,
+		GitHub:                        mission.GitHub,
+		RepoPath:                      repoPath,
+		WorktreePath:                  worktreePath,
+		Branch:                        BranchName(sessionID),
+		Tasks:                         mission.Tasks,
+		Phase:                         PhaseExecuting,
+		MissionOutcome:                MissionOutcomePending,
+		Deadline:                      deadline.UTC(),
+		LandBefore:                    landBefore.UTC(),
+		TaskAttemptCap:                taskAttemptCap,
+		StartedAt:                     now.UTC(),
 	}
 	if state.AcceptanceContractVersion == DeterministicAcceptanceContractVersion {
 		for i := range state.Tasks {

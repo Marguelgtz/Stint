@@ -60,7 +60,11 @@ func buildHandoff(s deep.DeepState, reason string, now time.Time, finalVerify st
 	switch {
 	case s.Verify == "":
 		if s.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion {
-			b.WriteString("The mission defines no mission-level verification command. Work Unit acceptance outcomes below come from their declared deterministic acceptance checks; configured task `verify:` commands remain separate correctness evidence.\n")
+			if s.SemanticReviewContractVersion == deep.SemanticReviewContractVersion {
+				b.WriteString("The mission defines no mission-level verification command. Deterministic acceptance checks and the separate checkpoint-bound semantic review gate are reported for each Objective; configured task `verify:` commands remain correctness evidence.\n")
+			} else {
+				b.WriteString("The mission defines no mission-level verification command. Work Unit acceptance outcomes below come from their declared deterministic acceptance checks; configured task `verify:` commands remain separate correctness evidence.\n")
+			}
 		} else if anyTaskHasVerify(s) {
 			b.WriteString("The mission defines no mission-level verification command, so no final mission check ran; " +
 				"tasks with their own `verify:` command were checked by it, and the rest reflect worker reports (unverified by the coordinator).\n")
@@ -105,7 +109,11 @@ func buildHandoff(s deep.DeepState, reason string, now time.Time, finalVerify st
 	}
 	if !remaining {
 		if s.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion {
-			b.WriteString("All mission Objectives reached deterministic acceptance. Review the branch and merge or discard.\n")
+			if s.SemanticReviewContractVersion == deep.SemanticReviewContractVersion {
+				b.WriteString("All mission Objectives passed deterministic acceptance and their checkpoint-bound semantic review. Review the branch and merge or discard.\n")
+			} else {
+				b.WriteString("All mission Objectives reached deterministic acceptance. Review the branch and merge or discard.\n")
+			}
 		} else {
 			b.WriteString("All tasks reached a terminal state. Review the branch and merge or discard.\n")
 		}
@@ -149,6 +157,13 @@ func updateHandoffLandingResult(handoff string, outcome deep.MissionOutcome, rea
 }
 
 func taskHandoffStatus(s deep.DeepState, t deep.Task) string {
+	if s.SemanticReviewContractVersion == deep.SemanticReviewContractVersion && t.IsAcceptanceContractTask() &&
+		t.Status == deep.StatusAccepted && t.AcceptanceOutcome == deep.AcceptanceAccepted && !t.HasClearReviewForCurrentAcceptance() {
+		if t.ReviewCycleID == "" {
+			return "accepted (semantic review pending)"
+		}
+		return "accepted (semantic review " + string(t.ReviewOutcome) + ")"
+	}
 	if s.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion && t.IsAcceptanceContractTask() &&
 		(t.Status == deep.StatusVerified || t.Status == deep.StatusCheckpointed) {
 		outcome := t.AcceptanceOutcome
@@ -171,7 +186,8 @@ func taskCompleteForHandoff(s deep.DeepState, task deep.Task) bool {
 		if !task.IsAcceptanceContractTask() {
 			return true
 		}
-		return task.Status == deep.StatusAccepted && task.AcceptanceOutcome == deep.AcceptanceAccepted
+		return task.Status == deep.StatusAccepted && task.AcceptanceOutcome == deep.AcceptanceAccepted &&
+			(s.SemanticReviewContractVersion != deep.SemanticReviewContractVersion || task.HasClearReviewForCurrentAcceptance())
 	}
 	return task.Status == deep.StatusVerified
 }
@@ -206,6 +222,23 @@ func taskHandoffEvidence(s deep.DeepState, t deep.Task) string {
 		}
 		if t.AcceptanceReason != "" {
 			evidence += "; reason: " + t.AcceptanceReason
+		}
+		if s.SemanticReviewContractVersion == deep.SemanticReviewContractVersion {
+			if t.ReviewCycleID == "" {
+				evidence += "; semantic review pending"
+			} else {
+				evidence += "; semantic review " + string(t.ReviewOutcome)
+				if t.ReviewReason != "" {
+					evidence += ": " + t.ReviewReason
+				}
+				if len(t.ReviewFindings) > 0 {
+					findings := make([]string, 0, len(t.ReviewFindings))
+					for _, finding := range t.ReviewFindings {
+						findings = append(findings, finding.ID+" "+string(finding.Severity)+": "+finding.Summary)
+					}
+					evidence += "; findings: " + strings.Join(findings, " | ")
+				}
+			}
 		}
 		return truncate(evidence, 500)
 	}
