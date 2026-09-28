@@ -158,7 +158,7 @@ func updateHandoffLandingResult(handoff string, outcome deep.MissionOutcome, rea
 
 func taskHandoffStatus(s deep.DeepState, t deep.Task) string {
 	if s.SemanticReviewContractVersion == deep.SemanticReviewContractVersion && t.IsAcceptanceContractTask() &&
-		t.Status == deep.StatusAccepted && t.AcceptanceOutcome == deep.AcceptanceAccepted && !t.HasClearReviewForCurrentAcceptance() {
+		t.Status == deep.StatusAccepted && t.AcceptanceOutcome == deep.AcceptanceAccepted && !deep.TaskHasSatisfiedReviewGate(t.ID, s.Tasks) {
 		if t.ReviewCycleID == "" {
 			return "accepted (semantic review pending)"
 		}
@@ -187,7 +187,7 @@ func taskCompleteForHandoff(s deep.DeepState, task deep.Task) bool {
 			return true
 		}
 		return task.Status == deep.StatusAccepted && task.AcceptanceOutcome == deep.AcceptanceAccepted &&
-			(s.SemanticReviewContractVersion != deep.SemanticReviewContractVersion || task.HasClearReviewForCurrentAcceptance())
+			(s.SemanticReviewContractVersion != deep.SemanticReviewContractVersion || deep.TaskHasSatisfiedReviewGate(task.ID, s.Tasks))
 	}
 	return task.Status == deep.StatusVerified
 }
@@ -234,7 +234,11 @@ func taskHandoffEvidence(s deep.DeepState, t deep.Task) string {
 				if len(t.ReviewFindings) > 0 {
 					findings := make([]string, 0, len(t.ReviewFindings))
 					for _, finding := range t.ReviewFindings {
-						findings = append(findings, finding.ID+" "+string(finding.Severity)+": "+finding.Summary)
+						detail := finding.ID + " " + string(finding.Severity) + ": " + finding.Summary + " (" + string(finding.Disposition) + ")"
+						if finding.RepairTaskID != "" {
+							detail += " via " + finding.RepairTaskID
+						}
+						findings = append(findings, detail)
 					}
 					evidence += "; findings: " + strings.Join(findings, " | ")
 				}
