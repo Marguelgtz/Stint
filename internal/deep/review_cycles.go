@@ -53,12 +53,13 @@ const (
 // ReviewFinding is a bounded semantic claim against one immutable checkpoint.
 // Evidence is a concise factual rationale, not hidden model reasoning.
 type ReviewFinding struct {
-	ID          string                   `json:"id"`
-	Severity    ReviewFindingSeverity    `json:"severity"`
-	Summary     string                   `json:"summary"`
-	Evidence    string                   `json:"evidence"`
-	Locations   []string                 `json:"locations,omitempty"`
-	Disposition ReviewFindingDisposition `json:"disposition"`
+	ID           string                   `json:"id"`
+	Severity     ReviewFindingSeverity    `json:"severity"`
+	Summary      string                   `json:"summary"`
+	Evidence     string                   `json:"evidence"`
+	Locations    []string                 `json:"locations,omitempty"`
+	Disposition  ReviewFindingDisposition `json:"disposition"`
+	RepairTaskID string                   `json:"repairTaskId,omitempty"`
 }
 
 // ReviewCycle is the canonical record of one fresh-context semantic review
@@ -182,7 +183,8 @@ func validateReviewCycle(cycle ReviewCycle, starting bool) error {
 			return fmt.Errorf("review finding %q has invalid severity", finding.ID)
 		}
 		if finding.Summary == "" || finding.Evidence == "" || len(finding.Summary) > 256 || len(finding.Evidence) > maxRunEventTextBytes ||
-			strings.ContainsAny(finding.Summary+finding.Evidence, "\x00\r\n") || finding.Disposition != ReviewFindingOpen || len(finding.Locations) > 4 {
+			strings.ContainsAny(finding.Summary+finding.Evidence, "\x00\r\n") || finding.Disposition != ReviewFindingOpen ||
+			finding.RepairTaskID != "" || len(finding.Locations) > 4 {
 			return fmt.Errorf("review finding %q exceeds its bounded evidence or initial disposition contract", finding.ID)
 		}
 		for _, location := range finding.Locations {
@@ -505,6 +507,41 @@ func validateReviewProjection(state DeepState, events []RunEvent) error {
 			latest[event.ReviewCycle.TaskID] = *event.ReviewCycle
 		}
 	}
+	for _, event := range events {
+		cycleID, findingID := "", ""
+		repairTaskID := ""
+		disposition := ReviewFindingDisposition("")
+		switch event.Type {
+		case RunEventReviewRepairCreated:
+			if event.ReviewRepair != nil {
+				cycleID, findingID = event.ReviewRepair.ReviewCycleID, event.ReviewRepair.FindingID
+				repairTaskID, disposition = event.ReviewRepair.TaskID, ReviewFindingRepairCreated
+			}
+		case RunEventReviewFindingResolved:
+			if event.ReviewDisposition != nil {
+				cycleID, findingID = event.ReviewDisposition.ReviewCycleID, event.ReviewDisposition.FindingID
+				repairTaskID, disposition = event.ReviewDisposition.RepairTaskID, ReviewFindingResolved
+			}
+		}
+		if cycleID == "" {
+			continue
+		}
+		source, found := reviewCycleByID(events, cycleID)
+		if !found {
+			return fmt.Errorf("review disposition refers to missing cycle %s", cycleID)
+		}
+		current, found := latest[source.TaskID]
+		if !found || current.ID != cycleID {
+			continue // A later ReviewCycle supersedes this finding projection.
+		}
+		for i := range current.Findings {
+			if current.Findings[i].ID == findingID {
+				current.Findings[i].Disposition = disposition
+				current.Findings[i].RepairTaskID = repairTaskID
+			}
+		}
+		latest[source.TaskID] = current
+	}
 	for _, task := range state.Tasks {
 		cycle, ok := latest[task.ID]
 		if !ok {
@@ -518,7 +555,7 @@ func validateReviewProjection(state DeepState, events []RunEvent) error {
 			return fmt.Errorf("task %s review projection disagrees with canonical review history", task.ID)
 		}
 	}
-	return nil
+	return validateReviewRepairProjection(state, events)
 }
 
 func reviewProjectionMatches(task Task, cycle ReviewCycle) bool {

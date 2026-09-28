@@ -85,8 +85,9 @@ type DeepState struct {
 }
 
 // MissionDefinition reconstructs the immutable mission contract stored in a
-// session projection. It deliberately excludes runtime-only coordinator rows
-// from the acceptance identity through their reserved/source markers.
+// session projection. Acceptance identity excludes runtime-only coordinator
+// rows and journal-generated repair Work Units; the latter are validated
+// against their canonical creation events and parent Objective contract.
 func (state DeepState) MissionDefinition() Mission {
 	return Mission{
 		Name: state.MissionName, Objective: state.Objective,
