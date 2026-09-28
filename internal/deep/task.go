@@ -65,6 +65,11 @@ func (task Task) TerminalInContract(contractVersion int) bool {
 // Unit governed by the versioned Objective acceptance contract.
 func (task Task) IsAcceptanceContractTask() bool { return isAcceptanceContractTask(task) }
 
+// HasClearReviewForCurrentAcceptance reports whether the latest durable review
+// projection is a clear result for the exact checkpoint backing deterministic
+// acceptance. Callers still rely on journal validation for canonical provenance.
+func (task Task) HasClearReviewForCurrentAcceptance() bool { return taskHasBoundClearReview(task) }
+
 func (s Status) String() string { return string(s) }
 
 // RepositoryChangeExpectation declares whether a new-contract Work Unit is

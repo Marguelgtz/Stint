@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +57,9 @@ func (stubGit) cleanTracked(dir string) (bool, string)       { return true, "" }
 func (stubGit) logOneline(dir string, n int) (string, error) { return "", nil }
 func (stubGit) statusShort(dir string) (string, error)       { return "", nil }
 func (stubGit) diffStat(dir, base string) (string, error)    { return "", nil }
+func (stubGit) reviewDiff(context.Context, string, string, string, int) (string, bool, error) {
+	return "fixture review diff", false, nil
+}
 func (stubGit) verificationSubject(string, []string) (verificationSnapshot, error) {
 	return verificationSnapshot{
 		Subject:     deep.VerificationSubject{HeadCommit: "base123", TreeSHA: "tree123"},
@@ -133,6 +138,71 @@ func TestRemoteVerificationSubjectAndCheckpointMatchProductTree(t *testing.T) {
 	}
 }
 
+func TestRemoteReviewDiffUsesBoundedVersionedFrame(t *testing.T) {
+	const diff = "diff --git a/file.go b/file.go\n+review evidence\n"
+	encoded := base64.StdEncoding.EncodeToString([]byte(diff))
+	fake := func(_ context.Context, command string) (string, error) {
+		if !strings.Contains(command, "--no-ext-diff --no-textconv --no-renames") || !strings.Contains(command, "wc -c") {
+			t.Fatalf("remote review diff did not disable external diff or bound the frame: %s", command)
+		}
+		return "__STINT_REVIEW_DIFF_V1__" + strconv.Itoa(len(diff)) + "\n" + encoded + "\n__STINT_REVIEW_DIFF_END_V1__\n", nil
+	}
+	ctx := context.Background()
+	got, oversized, err := (&remoteGit{remote: fake}).reviewDiff(ctx, "/worktree", "base-tree", "checkpoint-tree", 1024)
+	if err != nil || oversized || got != diff {
+		t.Fatalf("remote review diff = %q oversized=%t err=%v", got, oversized, err)
+	}
+
+	tooLarge := (&remoteGit{remote: func(context.Context, string) (string, error) {
+		return "__STINT_REVIEW_DIFF_TOO_LARGE_V1__\n", nil
+	}})
+	got, oversized, err = tooLarge.reviewDiff(ctx, "/worktree", "base-tree", "checkpoint-tree", 1)
+	if err != nil || !oversized || got != "" {
+		t.Fatalf("oversized remote review diff = %q oversized=%t err=%v", got, oversized, err)
+	}
+}
+
+func TestRemoteReviewDiffHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	observedCancellation := false
+	git := &remoteGit{remote: func(remoteContext context.Context, _ string) (string, error) {
+		observedCancellation = errors.Is(remoteContext.Err(), context.Canceled)
+		return "", remoteContext.Err()
+	}}
+	if _, _, err := git.reviewDiff(ctx, "/worktree", "base-tree", "checkpoint-tree", 1024); !errors.Is(err, context.Canceled) || !observedCancellation {
+		t.Fatalf("remote review diff cancellation = %v, remote observed cancellation=%t", err, observedCancellation)
+	}
+}
+
+func TestLocalReviewDiffIsBoundedAndUsesGitObjects(t *testing.T) {
+	repo := newTestRepo(t)
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	baseTree := run("rev-parse", "HEAD^{tree}")
+	if err := os.WriteFile(filepath.Join(repo, "review.go"), []byte("package review\n// exact checkpoint evidence\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "review.go")
+	run("commit", "-m", "review diff fixture")
+	checkpointTree := run("rev-parse", "HEAD^{tree}")
+	diff, oversized, err := newGitRunner().reviewDiff(context.Background(), repo, baseTree, checkpointTree, 4096)
+	if err != nil || oversized || !strings.Contains(diff, "exact checkpoint evidence") {
+		t.Fatalf("local review diff = %q oversized=%t err=%v", diff, oversized, err)
+	}
+	if diff, oversized, err = newGitRunner().reviewDiff(context.Background(), repo, baseTree, checkpointTree, 8); err != nil || !oversized || diff != "" {
+		t.Fatalf("oversized local review diff = %q oversized=%t err=%v", diff, oversized, err)
+	}
+}
+
 func TestHermesExecutorSuccess(t *testing.T) {
 	fr := &fakeRemote{}
 	e := newHermesExecutor(fr.run)
@@ -173,6 +243,34 @@ func TestHermesExecutorSuccess(t *testing.T) {
 	}
 	if strings.Contains(line, " -Q") {
 		t.Errorf("remote Hermes invocation uses -Q quiet mode, which can disrupt tool calls:\n%s", line)
+	}
+}
+
+func TestSemanticReviewerHermesInvocationIsFreshAndHasNoTools(t *testing.T) {
+	var command string
+	executor := newHermesExecutor(func(_ context.Context, remoteCommand string) (string, error) {
+		command = remoteCommand
+		return hermesExitMarker + "0\n", nil
+	})
+	result, err := executor.run(context.Background(), execInput{
+		workdir: "/tmp", prompt: "review packet", timeout: time.Minute,
+		provider: "fixture-provider", model: "fixture-model", semanticReviewer: true,
+	})
+	if err != nil || !result.completed {
+		t.Fatalf("semantic review executor result = %+v, err=%v", result, err)
+	}
+	for _, flag := range []string{"--oneshot", "--safe-mode", "--ignore-user-config", "--ignore-rules", "--toolsets", semanticReviewNoToolsToolset} {
+		if !strings.Contains(command, flag) {
+			t.Fatalf("semantic reviewer command missing isolation flag %q: %s", flag, command)
+		}
+	}
+	if strings.Contains(command, "--resume") || strings.Contains(command, "--continue") || strings.Contains(command, "--worktree") {
+		t.Fatalf("semantic reviewer reused a session or received a worktree: %s", command)
+	}
+	args := addSemanticReviewIsolationArgs([]string{"chat", "--oneshot"}, execInput{semanticReviewer: true})
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--safe-mode") || !strings.Contains(joined, semanticReviewNoToolsToolset) {
+		t.Fatalf("local Hermes reviewer arguments are not isolated: %v", args)
 	}
 }
 

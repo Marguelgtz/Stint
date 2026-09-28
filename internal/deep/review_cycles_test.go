@@ -4,14 +4,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
 
 func reviewCycleFixture(t *testing.T) (string, DeepState, ReviewCycle, time.Time) {
 	t.Helper()
-	stateDir, state, acceptance, now := acceptanceRunFixture(t)
+	stateDir, state, acceptance, now := acceptanceRunFixtureWithSemanticReview(t, true)
 	acceptance = successfulAcceptanceRun(acceptance, now, TaskCheckpointSubject(acceptance.Checkpoint))
 	if err := CompleteAcceptanceRun(stateDir, &state, acceptance); err != nil {
 		t.Fatalf("complete deterministic acceptance: %v", err)
@@ -23,12 +25,36 @@ func reviewCycleFixture(t *testing.T) (string, DeepState, ReviewCycle, time.Time
 	}
 	cycle := ReviewCycle{
 		ID: id, TaskID: acceptance.TaskID, Attempt: acceptance.Attempt,
-		PolicySHA256: acceptance.ContractSHA256, ContextSHA256: hex.EncodeToString(hash[:]),
+		PolicySHA256: state.SemanticReviewContractSHA256, ContextSHA256: hex.EncodeToString(hash[:]),
 		CheckpointEventID: acceptance.CheckpointEventID, Checkpoint: acceptance.Checkpoint,
 		Reviewer: "hermes-readonly-v1", Provider: "fixture", Model: "review-model",
 		StartedAt: now.Add(40 * time.Second),
 	}
 	return stateDir, state, cycle, now
+}
+
+func TestJournalBackedReviewProjectionCannotBeMutatedThroughSaveDir(t *testing.T) {
+	stateDir, state, cycle, now := reviewCycleFixture(t)
+	started, err := BeginReviewCycle(stateDir, &state, cycle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started.EndedAt = now.Add(55 * time.Second)
+	started.DurationMilliseconds = started.EndedAt.Sub(started.StartedAt).Milliseconds()
+	started.Outcome = ReviewOutcomeClear
+	if err := CompleteReviewCycle(stateDir, &state, started); err != nil {
+		t.Fatal(err)
+	}
+
+	forged := state
+	forged.Tasks = append([]Task(nil), state.Tasks...)
+	forged.Tasks[0].ReviewOutcome = ReviewOutcomeFindings
+	forged.Tasks[0].ReviewFindings = []ReviewFinding{{
+		ID: "forged", Severity: ReviewSeverityHigh, Summary: "forged summary", Evidence: "forged evidence", Disposition: ReviewFindingOpen,
+	}}
+	if err := forged.SaveDir(stateDir); err == nil || !strings.Contains(err.Error(), "must be changed through a RunEvent") {
+		t.Fatalf("direct journal-backed review projection mutation = %v, want rejection", err)
+	}
 }
 
 func TestReviewCycleJournalStoresBoundedStructuredFindingWithoutChangingAcceptance(t *testing.T) {
@@ -67,6 +93,66 @@ func TestReviewCycleJournalStoresBoundedStructuredFindingWithoutChangingAcceptan
 	}
 	if state.RunEventWatermark == 0 || state.Tasks[0].ReviewCheckpointTreeSHA != cycle.Checkpoint.TreeSHA {
 		t.Fatalf("review projection lost checkpoint provenance: %+v", state.Tasks[0])
+	}
+}
+
+func TestSemanticReviewStartRequiresPriorAcceptedDecisionForCurrentCheckpoint(t *testing.T) {
+	stateDir, state, acceptance, now := acceptanceRunFixtureWithSemanticReview(t, true)
+	acceptance = successfulAcceptanceRun(acceptance, now, TaskCheckpointSubject(acceptance.Checkpoint))
+	if err := CompleteAcceptanceRun(stateDir, &state, acceptance); err != nil {
+		t.Fatal(err)
+	}
+	events, err := ReadRunEvents(stateDir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := NewReviewCycleID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.Sum256([]byte("review packet"))
+	cycle := ReviewCycle{
+		SchemaVersion: reviewCycleSchemaGated, ID: id, StartEventID: reviewCycleEventID(id, "started"),
+		TaskID: acceptance.TaskID, Attempt: acceptance.Attempt, PolicySHA256: state.SemanticReviewContractSHA256,
+		ContextSHA256: hex.EncodeToString(hash[:]), CheckpointEventID: acceptance.CheckpointEventID,
+		Checkpoint: acceptance.Checkpoint, Reviewer: "hermes-safe-no-tools-v1", Provider: "fixture", Model: "review-model",
+		StartedInEpochID: state.ExecutionEpochID, StartedAt: now.Add(time.Minute), Outcome: ReviewOutcomeStarted,
+	}
+	start := RunEvent{Type: RunEventReviewStarted, ReviewCycle: &cycle}
+	if err := validateReviewEventTransition(events, start); err != nil {
+		t.Fatalf("review start after canonical accepted decision: %v", err)
+	}
+	withoutAcceptance := make([]RunEvent, 0, len(events)-1)
+	for _, event := range events {
+		if event.Type != RunEventAcceptanceResult {
+			withoutAcceptance = append(withoutAcceptance, event)
+		}
+	}
+	if err := validateReviewEventTransition(withoutAcceptance, start); err == nil || !strings.Contains(err.Error(), "accepted decision") {
+		t.Fatalf("review start without canonical accepted decision = %v, want rejection", err)
+	}
+}
+
+func TestReviewCycleRecordRejectsJournalOversize(t *testing.T) {
+	stateDir, state, cycle, now := reviewCycleFixture(t)
+	started, err := BeginReviewCycle(stateDir, &state, cycle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle = started
+	cycle.Outcome = ReviewOutcomeFindings
+	cycle.EndedAt = now.Add(time.Minute)
+	cycle.DurationMilliseconds = cycle.EndedAt.Sub(cycle.StartedAt).Milliseconds()
+	for i := 0; i < maxReviewFindings; i++ {
+		cycle.Findings = append(cycle.Findings, ReviewFinding{
+			ID: fmt.Sprintf("F-%d", i+1), Severity: ReviewSeverityHigh,
+			Summary: strings.Repeat("\"", 256), Evidence: strings.Repeat("\\", maxRunEventTextBytes),
+			Locations:   []string{strings.Repeat("\"", 128), strings.Repeat("\"", 128), strings.Repeat("\"", 128), strings.Repeat("\"", 128)},
+			Disposition: ReviewFindingOpen,
+		})
+	}
+	if err := ValidateReviewCycleResult(cycle); err == nil || !strings.Contains(err.Error(), "bounded journal size") {
+		t.Fatalf("oversized review cycle = %v, want bounded journal rejection", err)
 	}
 }
 
@@ -164,6 +250,38 @@ func TestLegacyMissionCannotAcquireSemanticReviewFacts(t *testing.T) {
 		if event.Type == RunEventReviewStarted {
 			t.Fatal("legacy review attempt appended a synthetic review event")
 		}
+	}
+}
+
+func TestD1ReviewCycleWithoutSeparateReviewContractRemainsReadable(t *testing.T) {
+	stateDir, state, acceptance, now := acceptanceRunFixture(t)
+	acceptance = successfulAcceptanceRun(acceptance, now, TaskCheckpointSubject(acceptance.Checkpoint))
+	if err := CompleteAcceptanceRun(stateDir, &state, acceptance); err != nil {
+		t.Fatal(err)
+	}
+	contextHash := sha256.Sum256([]byte("legacy D1 review context"))
+	id, err := NewReviewCycleID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle := ReviewCycle{
+		ID: id, TaskID: acceptance.TaskID, Attempt: acceptance.Attempt,
+		PolicySHA256: acceptance.ContractSHA256, ContextSHA256: hex.EncodeToString(contextHash[:]),
+		CheckpointEventID: acceptance.CheckpointEventID, Checkpoint: acceptance.Checkpoint,
+		Reviewer: "hermes-readonly-v1", StartedAt: now.Add(40 * time.Second),
+	}
+	started, err := BeginReviewCycle(stateDir, &state, cycle)
+	if err != nil {
+		t.Fatalf("append D1-compatible review start: %v", err)
+	}
+	started.EndedAt = now.Add(50 * time.Second)
+	started.DurationMilliseconds = started.EndedAt.Sub(started.StartedAt).Milliseconds()
+	started.Outcome = ReviewOutcomeClear
+	if err := CompleteReviewCycle(stateDir, &state, started); err != nil {
+		t.Fatalf("append D1-compatible review result: %v", err)
+	}
+	if _, err := LoadState(stateDir, state.SessionID); err != nil {
+		t.Fatalf("load D1 review history under D2: %v", err)
 	}
 }
 

@@ -80,6 +80,9 @@ func determineAcceptedMissionOutcome(state DeepState) MissionOutcome {
 	if err := ValidateMissionAcceptanceContract(state.MissionDefinition()); err != nil {
 		return MissionOutcomeUnresolved
 	}
+	if err := ValidateMissionSemanticReviewContract(state.MissionDefinition()); err != nil {
+		return MissionOutcomeUnresolved
+	}
 	if strings.TrimSpace(state.Verify) != "" && state.LandingVerifyDone &&
 		state.LandingVerificationOutcome == VerificationFailed {
 		if finalVerificationMatchesCheckpoint(state) {
@@ -95,6 +98,9 @@ func determineAcceptedMissionOutcome(state DeepState) MissionOutcome {
 			switch task.AcceptanceOutcome {
 			case AcceptanceAccepted:
 				if !taskHasBoundAcceptance(task) {
+					return MissionOutcomeUnresolved
+				}
+				if state.SemanticReviewContractVersion == SemanticReviewContractVersion && !taskHasBoundClearReview(task) {
 					return MissionOutcomeUnresolved
 				}
 			case AcceptanceUnresolved:
@@ -120,6 +126,20 @@ func determineAcceptedMissionOutcome(state DeepState) MissionOutcome {
 		return MissionOutcomeUnresolved
 	}
 	return MissionOutcomeSucceeded
+}
+
+func taskHasBoundClearReview(task Task) bool {
+	if task.ReviewOutcome != ReviewOutcomeClear || task.ReviewReason != "" || len(task.ReviewFindings) != 0 ||
+		len(task.ReviewCycleID) != 32 || task.ReviewCheckpointEventID == "" || task.ReviewCheckpointCommit == "" ||
+		task.ReviewCheckpointTreeSHA == "" || task.ReviewCheckpointCommit != task.AcceptanceCheckpointCommit ||
+		task.ReviewCheckpointTreeSHA != task.AcceptanceCheckpointTreeSHA ||
+		task.ReviewCheckpointEventID != task.AcceptanceCheckpointEventID {
+		return false
+	}
+	if _, err := hex.DecodeString(task.ReviewCycleID); err != nil {
+		return false
+	}
+	return true
 }
 
 func finalVerificationMatchesCheckpoint(state DeepState) bool {

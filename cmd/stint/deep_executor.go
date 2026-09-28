@@ -24,11 +24,21 @@ type execInput struct {
 	sessionID     string
 	executorRunID string
 	// allowedCommands is advisory guidance included in the Hermes prompt.
-	allowedCommands []string
-	provider        string
-	model           string
-	reasoning       string
-	actionPlan      string
+	allowedCommands  []string
+	provider         string
+	model            string
+	reasoning        string
+	actionPlan       string
+	semanticReviewer bool
+}
+
+const semanticReviewNoToolsToolset = deep.SemanticReviewToolsetName
+
+func addSemanticReviewIsolationArgs(args []string, in execInput) []string {
+	if !in.semanticReviewer {
+		return args
+	}
+	return append(args, "--safe-mode", "--ignore-user-config", "--ignore-rules", "--toolsets", semanticReviewNoToolsToolset)
 }
 
 // execResult is the observable outcome of an invocation. The invocation

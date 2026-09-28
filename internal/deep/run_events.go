@@ -360,6 +360,7 @@ func appendAndProjectRunEvent(stateDir string, state *DeepState, event RunEvent,
 		}
 		if state.RunEventWatermark != current.RunEventWatermark || state.RunID != current.RunID ||
 			state.ExecutionEpochID != current.ExecutionEpochID || state.RunEventSchemaVersion != current.RunEventSchemaVersion ||
+			!sameMissionContractProjection(*state, current) ||
 			!sameLifecycleProjection(*state, current) || !sameVerificationProjection(*state, current) ||
 			!sameTaskCheckpointProjection(*state, current) || !sameAcceptanceProjection(*state, current) ||
 			!sameReviewProjection(*state, current) {
@@ -1284,6 +1285,10 @@ func validateProjectionAtWatermark(dir string, state DeepState, event RunEvent) 
 		if !ok || !reviewProjectionMatches(*task, *event.ReviewCycle) {
 			return errors.New("deep.json review projection disagrees with its watermark event")
 		}
+		if event.ReviewCycle.QuiescenceUnconfirmed &&
+			(!state.ExecutionQuiescenceUnconfirmed || state.ExecutionQuiescenceTaskID != event.ReviewCycle.TaskID) {
+			return errors.New("deep.json reviewer quiescence block disagrees with its watermark event")
+		}
 	}
 	return nil
 }
@@ -1628,6 +1633,13 @@ func sameReviewProjection(a, b DeepState) bool {
 		}
 	}
 	return true
+}
+
+func sameMissionContractProjection(a, b DeepState) bool {
+	return a.AcceptanceContractVersion == b.AcceptanceContractVersion &&
+		a.AcceptanceContractSHA256 == b.AcceptanceContractSHA256 &&
+		a.SemanticReviewContractVersion == b.SemanticReviewContractVersion &&
+		a.SemanticReviewContractSHA256 == b.SemanticReviewContractSHA256
 }
 
 func sameLandingRecord(a, b LandingRecord) bool {

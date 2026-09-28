@@ -17,6 +17,9 @@ func (s *DeepState) SaveDir(stateDir string) error {
 	if err := ValidateMissionAcceptanceContract(s.MissionDefinition()); err != nil {
 		return fmt.Errorf("invalid persisted mission acceptance contract: %w", err)
 	}
+	if err := ValidateMissionSemanticReviewContract(s.MissionDefinition()); err != nil {
+		return fmt.Errorf("invalid persisted semantic review contract: %w", err)
+	}
 	return withRunStateLock(stateDir, s.SessionID, func(dir string) error {
 		current, err := readStateFileIfPresent(dir, s.SessionID)
 		if err != nil {
@@ -36,6 +39,7 @@ func (s *DeepState) SaveDir(stateDir string) error {
 				}
 				if s.RunEventSchemaVersion != recovered.RunEventSchemaVersion || s.RunEventWatermark != recovered.RunEventWatermark ||
 					s.RunID != recovered.RunID || s.ExecutionEpochID != recovered.ExecutionEpochID ||
+					!sameMissionContractProjection(*s, recovered) ||
 					!sameLifecycleProjection(*s, recovered) || !sameVerificationProjection(*s, recovered) ||
 					!sameTaskCheckpointProjection(*s, recovered) || !sameAcceptanceProjection(*s, recovered) ||
 					!sameReviewProjection(*s, recovered) {
@@ -95,6 +99,9 @@ func LoadState(stateDir, sessionID string) (DeepState, error) {
 	}
 	if err := ValidateMissionAcceptanceContract(state.MissionDefinition()); err != nil {
 		return DeepState{}, fmt.Errorf("invalid persisted mission acceptance contract: %w", err)
+	}
+	if err := ValidateMissionSemanticReviewContract(state.MissionDefinition()); err != nil {
+		return DeepState{}, fmt.Errorf("invalid persisted semantic review contract: %w", err)
 	}
 	return state, nil
 }

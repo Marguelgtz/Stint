@@ -21,6 +21,23 @@ func newV2AcceptanceEnv(t *testing.T, taskVerify, missionVerify string, expectat
 }
 
 func newV2AcceptanceEnvWithCheck(t *testing.T, taskVerify, missionVerify string, expectation deep.RepositoryChangeExpectation, acceptanceCheck string) *testEnv {
+	return newV2AcceptanceEnvWithReview(t, taskVerify, missionVerify, expectation, acceptanceCheck, false)
+}
+
+func newSemanticReviewEnv(t *testing.T, taskVerify, missionVerify string, expectation deep.RepositoryChangeExpectation, acceptanceCheck string) *testEnv {
+	env := newV2AcceptanceEnvWithReview(t, taskVerify, missionVerify, expectation, acceptanceCheck, true)
+	env.coord.verify = func(_ context.Context, command, workdir string) verificationResult {
+		outcome, code, output := verificationPassed, 0, "semantic fixture check passed"
+		if _, err := os.Stat(filepath.Join(workdir, "work-1.txt")); err != nil {
+			outcome, code, output = verificationFailed, 1, err.Error()
+		}
+		return verificationResult{Command: command, Outcome: outcome, HasExitCode: true, ExitCode: code,
+			StartedAt: env.clock.now, CompletedAt: env.clock.now, Output: output}
+	}
+	return env
+}
+
+func newV2AcceptanceEnvWithReview(t *testing.T, taskVerify, missionVerify string, expectation deep.RepositoryChangeExpectation, acceptanceCheck string, semanticReview bool) *testEnv {
 	t.Helper()
 	env := newTestEnv(t, nil, 3)
 	mission := deep.Mission{
@@ -29,11 +46,20 @@ func newV2AcceptanceEnvWithCheck(t *testing.T, taskVerify, missionVerify string,
 		Tasks: []deep.Task{{ID: "OBJ-1", Objective: "produce the requested outcome", Verify: taskVerify,
 			RepositoryChange: expectation, AcceptanceCheck: acceptanceCheck, Status: deep.StatusQueued}},
 	}
+	if semanticReview {
+		mission.SemanticReviewContractVersion = deep.SemanticReviewContractVersion
+	}
 	identity, err := deep.AcceptanceContractIdentity(mission)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mission.AcceptanceContractSHA256 = identity
+	if semanticReview {
+		mission.SemanticReviewContractSHA256, err = deep.SemanticReviewContractIdentity(mission)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	now := env.clock.now
 	state := deep.NewState(env.state.SessionID, mission, env.repo, env.wt,
 		env.state.Deadline, env.state.LandBefore, 3, now)

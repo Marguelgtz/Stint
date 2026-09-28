@@ -3,6 +3,7 @@ package deep
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -11,6 +12,11 @@ import (
 )
 
 const maxReviewFindings = 8
+
+const (
+	reviewCycleSchemaEvidenceOnly = 1
+	reviewCycleSchemaGated        = 2
+)
 
 type ReviewOutcome string
 
@@ -59,25 +65,28 @@ type ReviewFinding struct {
 // against an exact task checkpoint. It stores structured findings, not raw
 // prompts, chain-of-thought, environment dumps, or unbounded model output.
 type ReviewCycle struct {
-	SchemaVersion        int             `json:"schemaVersion"`
-	ID                   string          `json:"id"`
-	StartEventID         string          `json:"startEventId"`
-	TaskID               string          `json:"taskId"`
-	Attempt              int             `json:"attempt"`
-	PolicySHA256         string          `json:"policySha256"`
-	ContextSHA256        string          `json:"contextSha256"`
-	CheckpointEventID    string          `json:"checkpointEventId"`
-	Checkpoint           TaskCheckpoint  `json:"checkpoint"`
-	Reviewer             string          `json:"reviewer"`
-	Provider             string          `json:"provider,omitempty"`
-	Model                string          `json:"model,omitempty"`
-	StartedInEpochID     string          `json:"startedInEpochId"`
-	StartedAt            time.Time       `json:"startedAt"`
-	EndedAt              time.Time       `json:"endedAt,omitempty"`
-	DurationMilliseconds int64           `json:"durationMilliseconds,omitempty"`
-	Outcome              ReviewOutcome   `json:"outcome"`
-	Reason               string          `json:"reason,omitempty"`
-	Findings             []ReviewFinding `json:"findings,omitempty"`
+	SchemaVersion                 int             `json:"schemaVersion"`
+	ID                            string          `json:"id"`
+	StartEventID                  string          `json:"startEventId"`
+	TaskID                        string          `json:"taskId"`
+	Attempt                       int             `json:"attempt"`
+	PolicySHA256                  string          `json:"policySha256"`
+	ContextSHA256                 string          `json:"contextSha256"`
+	CheckpointEventID             string          `json:"checkpointEventId"`
+	Checkpoint                    TaskCheckpoint  `json:"checkpoint"`
+	Reviewer                      string          `json:"reviewer"`
+	Provider                      string          `json:"provider,omitempty"`
+	Model                         string          `json:"model,omitempty"`
+	StartedInEpochID              string          `json:"startedInEpochId"`
+	StartedAt                     time.Time       `json:"startedAt"`
+	TimeoutMilliseconds           int64           `json:"timeoutMilliseconds"`
+	RemainingDeadlineMilliseconds int64           `json:"remainingDeadlineMilliseconds,omitempty"`
+	EndedAt                       time.Time       `json:"endedAt,omitempty"`
+	DurationMilliseconds          int64           `json:"durationMilliseconds,omitempty"`
+	Outcome                       ReviewOutcome   `json:"outcome"`
+	Reason                        string          `json:"reason,omitempty"`
+	QuiescenceUnconfirmed         bool            `json:"quiescenceUnconfirmed,omitempty"`
+	Findings                      []ReviewFinding `json:"findings,omitempty"`
 }
 
 func NewReviewCycleID() (string, error) {
@@ -91,7 +100,8 @@ func NewReviewCycleID() (string, error) {
 func reviewCycleEventID(id, action string) string { return "review/" + id + "/" + action }
 
 func validateReviewCycle(cycle ReviewCycle, starting bool) error {
-	if cycle.SchemaVersion != 1 || cycle.ID == "" || len(cycle.ID) != 32 || cycle.TaskID == "" ||
+	if (cycle.SchemaVersion != reviewCycleSchemaEvidenceOnly && cycle.SchemaVersion != reviewCycleSchemaGated) ||
+		cycle.ID == "" || len(cycle.ID) != 32 || cycle.TaskID == "" ||
 		len(cycle.TaskID) > 128 || strings.ContainsAny(cycle.TaskID, "\x00\r\n") || cycle.Attempt < 1 || cycle.Attempt > 1_000_000 {
 		return errors.New("review cycle schema or Objective identity is invalid")
 	}
@@ -117,6 +127,11 @@ func validateReviewCycle(cycle ReviewCycle, starting bool) error {
 	if err := validateTaskCheckpoint(cycle.Checkpoint); err != nil {
 		return fmt.Errorf("review cycle checkpoint is invalid: %w", err)
 	}
+	maxDurationMilliseconds := int64((7 * 24 * time.Hour) / time.Millisecond)
+	if cycle.TimeoutMilliseconds < 0 || cycle.TimeoutMilliseconds > maxDurationMilliseconds ||
+		cycle.RemainingDeadlineMilliseconds < 0 || cycle.RemainingDeadlineMilliseconds > maxDurationMilliseconds {
+		return errors.New("review-cycle time budget facts are invalid")
+	}
 	for name, value := range map[string]string{"reviewer": cycle.Reviewer, "provider": cycle.Provider, "model": cycle.Model} {
 		if (name == "reviewer" && value == "") || len(value) > 128 || strings.ContainsAny(value, "\x00\r\n") {
 			return fmt.Errorf("review cycle %s identity is invalid", name)
@@ -124,13 +139,13 @@ func validateReviewCycle(cycle ReviewCycle, starting bool) error {
 	}
 	if starting {
 		if cycle.Outcome != ReviewOutcomeStarted || !cycle.EndedAt.IsZero() || cycle.DurationMilliseconds != 0 ||
-			cycle.Reason != "" || len(cycle.Findings) != 0 {
+			cycle.Reason != "" || cycle.QuiescenceUnconfirmed || len(cycle.Findings) != 0 {
 			return errors.New("review-cycle start contains result-only facts")
 		}
 		return nil
 	}
 	if cycle.EndedAt.IsZero() || cycle.EndedAt.Before(cycle.StartedAt) || cycle.DurationMilliseconds < 0 ||
-		cycle.DurationMilliseconds > int64((7*24*time.Hour)/time.Millisecond) || len(cycle.Reason) > maxRunEventTextBytes || strings.ContainsRune(cycle.Reason, '\x00') {
+		cycle.DurationMilliseconds > int64((7*24*time.Hour)/time.Millisecond) || len(cycle.Reason) > maxRunEventTextBytes || strings.ContainsAny(cycle.Reason, "\x00\r\n") {
 		return errors.New("review-cycle result timestamps or reason are invalid")
 	}
 	if len(cycle.Findings) > maxReviewFindings {
@@ -151,6 +166,9 @@ func validateReviewCycle(cycle ReviewCycle, starting bool) error {
 		}
 	default:
 		return fmt.Errorf("invalid review-cycle outcome %q", cycle.Outcome)
+	}
+	if cycle.QuiescenceUnconfirmed && (cycle.SchemaVersion != reviewCycleSchemaGated || cycle.Outcome != ReviewOutcomeUnknown) {
+		return errors.New("unconfirmed reviewer quiescence requires an unknown review outcome")
 	}
 	seen := make(map[string]bool, len(cycle.Findings))
 	for _, finding := range cycle.Findings {
@@ -173,7 +191,20 @@ func validateReviewCycle(cycle ReviewCycle, starting bool) error {
 			}
 		}
 	}
+	data, err := json.Marshal(cycle)
+	if err != nil {
+		return fmt.Errorf("encode bounded review cycle: %w", err)
+	}
+	if len(data) > maxRunEventLineBytes-2048 {
+		return errors.New("review-cycle record exceeds its bounded journal size")
+	}
 	return nil
+}
+
+// ValidateReviewCycleResult checks a completed review record before a caller
+// attempts to append it to the run journal.
+func ValidateReviewCycleResult(cycle ReviewCycle) error {
+	return validateReviewCycle(cycle, false)
 }
 
 // BeginReviewCycle durably binds a fresh-context review to the latest
@@ -185,6 +216,10 @@ func BeginReviewCycle(stateDir string, state *DeepState, cycle ReviewCycle) (Rev
 	if state.Phase != PhaseExecuting || state.ExecutionQuiescenceUnconfirmed {
 		return ReviewCycle{}, errors.New("review-cycle start requires an executing, quiescent run")
 	}
+	cycle.SchemaVersion = reviewCycleSchemaEvidenceOnly
+	if state.SemanticReviewContractVersion == SemanticReviewContractVersion {
+		cycle.SchemaVersion = reviewCycleSchemaGated
+	}
 	task, ok := findTask(state, cycle.TaskID)
 	if !reviewPolicyFactsMatch(*state, cycle) || !ok || task.Attempts != cycle.Attempt || task.CheckpointCommit != cycle.Checkpoint.Commit ||
 		task.CheckpointTreeSHA != cycle.Checkpoint.TreeSHA || task.ExecutorRunID != cycle.Checkpoint.ExecutorRunID ||
@@ -192,13 +227,19 @@ func BeginReviewCycle(stateDir string, state *DeepState, cycle ReviewCycle) (Rev
 		*task.VerificationSubject != cycle.Checkpoint.VerificationSubject {
 		return ReviewCycle{}, errors.New("review-cycle start does not match the latest durable Objective checkpoint")
 	}
-	cycle.SchemaVersion = 1
 	cycle.StartEventID = reviewCycleEventID(cycle.ID, "started")
 	cycle.StartedInEpochID = state.ExecutionEpochID
 	cycle.StartedAt = cycle.StartedAt.UTC()
 	cycle.Outcome = ReviewOutcomeStarted
 	if err := validateReviewCycle(cycle, true); err != nil {
 		return ReviewCycle{}, err
+	}
+	prior, err := ReadRunEvents(stateDir, state.SessionID)
+	if err != nil {
+		return ReviewCycle{}, err
+	}
+	if cycle.SchemaVersion == reviewCycleSchemaGated && !hasCurrentAcceptedCheckpoint(prior, cycle) {
+		return ReviewCycle{}, errors.New("semantic review requires a canonical accepted decision for the current checkpoint")
 	}
 	event := RunEvent{
 		EventID: cycle.StartEventID, RunID: state.RunID, EpochID: state.ExecutionEpochID,
@@ -286,6 +327,10 @@ func applyReviewResult(state *DeepState, cycle ReviewCycle) error {
 	task.ReviewOutcome = cycle.Outcome
 	task.ReviewReason = cycle.Reason
 	task.ReviewFindings = cloneReviewFindings(cycle.Findings)
+	if cycle.QuiescenceUnconfirmed {
+		state.ExecutionQuiescenceUnconfirmed = true
+		state.ExecutionQuiescenceTaskID = task.ID
+	}
 	return nil
 }
 
@@ -324,16 +369,29 @@ func validateReviewEventTransition(prior []RunEvent, event RunEvent) error {
 		if !hasCheckpointEvent(prior, event.ReviewCycle.CheckpointEventID, *event.ReviewCycle) {
 			return errors.New("review cycle references a checkpoint that is not in prior run history")
 		}
+		if event.ReviewCycle.SchemaVersion == reviewCycleSchemaGated && !hasCurrentAcceptedCheckpoint(prior, *event.ReviewCycle) {
+			return errors.New("semantic review start has no prior accepted decision for the current checkpoint")
+		}
 	case RunEventReviewResult, RunEventReviewRecovery:
 		start, ok := unmatchedReviewStart(prior, event.ReviewCycle.ID)
 		if !ok || !sameReviewCycleStart(*start, *event.ReviewCycle) {
 			return errors.New("review result does not match an unmatched durable review start")
+		}
+		if event.Type == RunEventReviewResult && start.SchemaVersion != event.ReviewCycle.SchemaVersion {
+			return errors.New("review result schema differs from its durable start")
+		}
+		if event.Type == RunEventReviewRecovery && start.SchemaVersion != event.ReviewCycle.SchemaVersion &&
+			!(start.SchemaVersion == reviewCycleSchemaEvidenceOnly && event.ReviewCycle.SchemaVersion == reviewCycleSchemaGated && event.ReviewCycle.QuiescenceUnconfirmed) {
+			return errors.New("review recovery has an incompatible schema transition")
 		}
 		if event.OccurredAt.Before(start.StartedAt) {
 			return errors.New("review result observation precedes its durable start")
 		}
 		if event.Type == RunEventReviewResult && event.EpochID != start.StartedInEpochID {
 			return errors.New("review result cannot be reused across a resume epoch; recover the prior cycle as unresolved")
+		}
+		if event.Type == RunEventReviewRecovery && !event.ReviewCycle.QuiescenceUnconfirmed {
+			return errors.New("review recovery must preserve unconfirmed reviewer quiescence")
 		}
 		for _, old := range prior {
 			if old.Sequence <= reviewStartSequence(prior, start.ID) {
@@ -350,6 +408,29 @@ func validateReviewEventTransition(prior []RunEvent, event RunEvent) error {
 	return nil
 }
 
+func hasCurrentAcceptedCheckpoint(events []RunEvent, cycle ReviewCycle) bool {
+	latestCheckpointEventID := ""
+	accepted := false
+	for _, event := range events {
+		switch {
+		case event.Type == RunEventTaskCheckpointCreated && event.TaskCheckpoint != nil && event.TaskCheckpoint.TaskID == cycle.TaskID:
+			latestCheckpointEventID = event.EventID
+			accepted = false
+		case event.Type == RunEventExecutorStarted && event.ExecutorRun != nil && event.ExecutorRun.TaskID == cycle.TaskID:
+			accepted = false
+		case event.Type == RunEventAcceptanceStarted && event.AcceptanceRun != nil && event.AcceptanceRun.TaskID == cycle.TaskID:
+			accepted = false
+		case (event.Type == RunEventAcceptanceResult || event.Type == RunEventAcceptanceRecovery) &&
+			event.AcceptanceRun != nil && event.AcceptanceRun.TaskID == cycle.TaskID:
+			run := event.AcceptanceRun
+			accepted = event.Type == RunEventAcceptanceResult && run.Decision == AcceptanceAccepted &&
+				run.CheckOutcome == AcceptanceCheckPassed && run.CheckpointEventID == latestCheckpointEventID &&
+				reflect.DeepEqual(run.Checkpoint, cycle.Checkpoint)
+		}
+	}
+	return latestCheckpointEventID == cycle.CheckpointEventID && accepted
+}
+
 func hasCheckpointEvent(events []RunEvent, eventID string, cycle ReviewCycle) bool {
 	for _, event := range events {
 		if event.EventID == eventID && event.Type == RunEventTaskCheckpointCreated && event.TaskCheckpoint != nil {
@@ -360,7 +441,7 @@ func hasCheckpointEvent(events []RunEvent, eventID string, cycle ReviewCycle) bo
 }
 
 func sameReviewCycleStart(start, result ReviewCycle) bool {
-	return start.SchemaVersion == result.SchemaVersion && start.ID == result.ID && start.StartEventID == result.StartEventID &&
+	return start.ID == result.ID && start.StartEventID == result.StartEventID &&
 		start.TaskID == result.TaskID && start.Attempt == result.Attempt && start.PolicySHA256 == result.PolicySHA256 &&
 		start.ContextSHA256 == result.ContextSHA256 && start.CheckpointEventID == result.CheckpointEventID &&
 		reflect.DeepEqual(start.Checkpoint, result.Checkpoint) && start.Reviewer == result.Reviewer &&
@@ -447,13 +528,22 @@ func reviewProjectionMatches(task Task, cycle ReviewCycle) bool {
 }
 
 func reviewPolicyFactsMatch(state DeepState, cycle ReviewCycle) bool {
-	return state.AcceptanceContractVersion == DeterministicAcceptanceContractVersion &&
+	if state.SemanticReviewContractVersion == SemanticReviewContractVersion {
+		return cycle.SchemaVersion == reviewCycleSchemaGated && cycle.PolicySHA256 == state.SemanticReviewContractSHA256
+	}
+	// D1 allowed evidence-only cycles under deterministic acceptance v2. Keep
+	// those already-journaled facts readable after D2 adds a separate review
+	// contract identity.
+	return state.SemanticReviewContractVersion == 0 &&
+		state.AcceptanceContractVersion == DeterministicAcceptanceContractVersion &&
+		(cycle.SchemaVersion == reviewCycleSchemaEvidenceOnly || cycle.SchemaVersion == reviewCycleSchemaGated) &&
 		cycle.PolicySHA256 == state.AcceptanceContractSHA256
 }
 
 func applyReviewRecovery(state *DeepState, cycle ReviewCycle, reason string) error {
 	cycle.Outcome = ReviewOutcomeUnknown
 	cycle.Reason = reason
+	cycle.QuiescenceUnconfirmed = true
 	return applyReviewResult(state, cycle)
 }
 
@@ -478,6 +568,10 @@ func RecoverUnmatchedReviewCycle(stateDir string, state *DeepState, at time.Time
 	cycle.DurationMilliseconds = max(0, at.Sub(cycle.StartedAt).Milliseconds())
 	cycle.Outcome = ReviewOutcomeUnknown
 	cycle.Reason = "coordinator resumed without a durable semantic review result"
+	if cycle.SchemaVersion == reviewCycleSchemaEvidenceOnly {
+		cycle.SchemaVersion = reviewCycleSchemaGated
+	}
+	cycle.QuiescenceUnconfirmed = true
 	if err := validateReviewCycle(*cycle, false); err != nil {
 		return nil, err
 	}

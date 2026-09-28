@@ -34,6 +34,9 @@ type deepCoordinator struct {
 	// verifyTimeout bounds one verification command run by the coordinator;
 	// a hung verify must not stall the loop (zero = the 3 m built-in bound).
 	verifyTimeout time.Duration
+	// reviewTimeout bounds one fresh-context semantic review (zero = the
+	// built-in three-minute limit).
+	reviewTimeout time.Duration
 	// verify runs one verification command in the worktree; the coordinator
 	// decides which command (the task's own, else the mission's) to hand it.
 	verify func(ctx context.Context, command, workdir string) verificationResult
@@ -284,6 +287,9 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		return nil
 	}
 	journaled := c.state.RunEventSchemaVersion == deep.RunEventSchemaVersion
+	if pendingSemanticReview(*t, *c.state) {
+		return c.runSemanticReview(ctx, t.ID)
+	}
 	if journaled && c.state.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion &&
 		t.IsAcceptanceContractTask() && (t.Status == deep.StatusVerified || t.Status == deep.StatusCheckpointed) &&
 		(t.AcceptanceOutcome == "" || t.AcceptanceOutcome == deep.AcceptanceNotEvaluated) {
@@ -906,24 +912,51 @@ func (c *deepCoordinator) effectiveTaskTimeout(now time.Time, task deep.Task) (t
 			acceptanceReserve = defaultTaskVerifyReserve
 		}
 	}
+	reviewReserve := time.Duration(0)
+	if c.state.SemanticReviewContractVersion == deep.SemanticReviewContractVersion && task.IsAcceptanceContractTask() {
+		reviewReserve = c.effectiveReviewLimit()
+	}
 	remaining := c.state.LandBefore.Sub(now)
-	usable := remaining - verifyReserve - acceptanceReserve - coordinatorReserve
+	usable := remaining - verifyReserve - acceptanceReserve - reviewReserve - coordinatorReserve
 	minimum := minDuration(maximum, minimumUsefulTaskWindow)
 	reserveLabel := "coordinator checkpoint work"
-	if verifyReserve > 0 && acceptanceReserve > 0 {
+	if verifyReserve > 0 && acceptanceReserve > 0 && reviewReserve > 0 {
+		reserveLabel = "verification, acceptance-check, semantic review, and coordinator work"
+	} else if verifyReserve > 0 && acceptanceReserve > 0 {
 		reserveLabel = "verification, acceptance-check, and coordinator work"
+	} else if reviewReserve > 0 && verifyReserve > 0 {
+		reserveLabel = "verification, semantic review, and coordinator work"
+	} else if reviewReserve > 0 && acceptanceReserve > 0 {
+		reserveLabel = "acceptance-check, semantic review, and coordinator work"
+	} else if reviewReserve > 0 {
+		reserveLabel = "semantic review and coordinator work"
 	} else if verifyReserve > 0 {
 		reserveLabel = "verification and coordinator work"
 	} else if acceptanceReserve > 0 {
 		reserveLabel = "acceptance-check and coordinator work"
 	}
 	if usable < minimum {
-		return 0, fmt.Sprintf("deferred: %s remains before landing cutoff; %s is reserved for %s, leaving less than the %s minimum useful invocation window (configured maximum %s)", remaining.Round(time.Second), (verifyReserve + acceptanceReserve + coordinatorReserve).Round(time.Second), reserveLabel, minimum.Round(time.Second), maximum.Round(time.Second))
+		return 0, fmt.Sprintf("deferred: %s remains before landing cutoff; %s is reserved for %s, leaving less than the %s minimum useful invocation window (configured maximum %s)", remaining.Round(time.Second), (verifyReserve + acceptanceReserve + reviewReserve + coordinatorReserve).Round(time.Second), reserveLabel, minimum.Round(time.Second), maximum.Round(time.Second))
 	}
 	if usable < maximum {
-		return usable, fmt.Sprintf("shortened from configured maximum %s to preserve %s for %s", maximum.Round(time.Second), (verifyReserve + acceptanceReserve + coordinatorReserve).Round(time.Second), reserveLabel)
+		return usable, fmt.Sprintf("shortened from configured maximum %s to preserve %s for %s", maximum.Round(time.Second), (verifyReserve + acceptanceReserve + reviewReserve + coordinatorReserve).Round(time.Second), reserveLabel)
 	}
 	return maximum, "started at configured maximum"
+}
+
+func (c *deepCoordinator) effectiveReviewLimit() time.Duration {
+	if c.reviewTimeout > 0 {
+		return c.reviewTimeout
+	}
+	return defaultTaskVerifyReserve
+}
+
+func (c *deepCoordinator) effectiveReviewTimeout(now time.Time) time.Duration {
+	remaining := c.state.LandBefore.Sub(now) - coordinatorReserve
+	if remaining <= 0 {
+		return 0
+	}
+	return minDuration(c.effectiveReviewLimit(), remaining)
 }
 
 func minDuration(a, b time.Duration) time.Duration {
@@ -951,6 +984,10 @@ func (c *deepCoordinator) failedPrerequisite(task deep.Task) string {
 			if c.state.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion && required.IsAcceptanceContractTask() {
 				requires = "accepted"
 				satisfied = status == deep.StatusAccepted && required.AcceptanceOutcome == deep.AcceptanceAccepted
+				if c.state.SemanticReviewContractVersion == deep.SemanticReviewContractVersion {
+					requires = "accepted and clear-reviewed"
+					satisfied = satisfied && required.HasClearReviewForCurrentAcceptance()
+				}
 			}
 		}
 		if !satisfied {
@@ -975,15 +1012,27 @@ func (c *deepCoordinator) hasUsefulTaskWindow(now time.Time, task deep.Task) boo
 func (c *deepCoordinator) selectTask() (int, bool) {
 	for i := range c.state.Tasks {
 		task := c.state.Tasks[i]
-		if task.TerminalInContract(c.state.AcceptanceContractVersion) {
+		pendingReview := pendingSemanticReview(task, *c.state)
+		if task.TerminalInContract(c.state.AcceptanceContractVersion) && !pendingReview {
 			continue
 		}
-		if c.state.TaskAttemptCap > 0 && task.Attempts >= c.state.TaskAttemptCap && !taskHasPendingAcceptanceProjection(task, c.state.AcceptanceContractVersion) {
+		if c.state.TaskAttemptCap > 0 && task.Attempts >= c.state.TaskAttemptCap &&
+			!taskHasPendingAcceptanceProjection(task, c.state.AcceptanceContractVersion) && !pendingReview {
 			continue
 		}
 		return i, true
 	}
 	return 0, false
+}
+
+func pendingSemanticReview(task deep.Task, state deep.DeepState) bool {
+	if state.SemanticReviewContractVersion != deep.SemanticReviewContractVersion ||
+		state.AcceptanceContractVersion != deep.DeterministicAcceptanceContractVersion || !task.IsAcceptanceContractTask() ||
+		task.Status != deep.StatusAccepted || task.AcceptanceOutcome != deep.AcceptanceAccepted ||
+		task.AcceptanceCheckOutcome != deep.AcceptanceCheckPassed || task.AcceptanceCheckpointEventID == "" {
+		return false
+	}
+	return task.ReviewCycleID == "" || task.ReviewCheckpointEventID != task.AcceptanceCheckpointEventID
 }
 
 func taskHasPendingAcceptanceProjection(task deep.Task, contractVersion int) bool {
@@ -1059,6 +1108,14 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 			*c.state = fresh
 			return fmt.Errorf("Deep Work is blocked: acceptance-check %s for task %s has no durable result and process quiescence is unknown", unmatched.ID, unmatched.TaskID)
 		}
+		if fresh.RunEventSchemaVersion == deep.RunEventSchemaVersion {
+			if unmatched, err := deep.RecoverUnmatchedReviewCycle(c.stateDir, &fresh, c.now()); err != nil {
+				return fmt.Errorf("recover unmatched semantic review: %w", err)
+			} else if unmatched != nil {
+				*c.state = fresh
+				return fmt.Errorf("Deep Work is blocked: semantic review %s for task %s has no durable result and reviewer process quiescence is unknown", unmatched.ID, unmatched.TaskID)
+			}
+		}
 		if fresh.ExecutionQuiescenceUnconfirmed {
 			*c.state = fresh
 			return fmt.Errorf("Deep Work is blocked because executor writers may still be active or verifier writers may still be active (task %s)", fresh.ExecutionQuiescenceTaskID)
@@ -1082,6 +1139,15 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 			return c.land(ctx, "no safe useful work remaining")
 		}
 		task := c.state.Tasks[idx]
+		if pendingSemanticReview(task, *c.state) {
+			if c.effectiveReviewTimeout(now) <= 0 {
+				return c.land(ctx, "insufficient semantic review window before landing cutoff")
+			}
+			if err := c.runTask(ctx, idx, now); err != nil {
+				return err
+			}
+			continue
+		}
 		if taskHasPendingAcceptanceProjection(task, c.state.AcceptanceContractVersion) {
 			_, _, pending, err := c.pendingAcceptanceCheckpoint(task)
 			if err != nil {

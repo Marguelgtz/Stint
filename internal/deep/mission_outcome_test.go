@@ -110,6 +110,43 @@ func TestDetermineMissionOutcomeV2RequiresBoundObjectiveAcceptance(t *testing.T)
 	}
 }
 
+func TestSemanticReviewContractRequiresClearReviewBoundToAcceptedCheckpoint(t *testing.T) {
+	state := acceptedMissionOutcomeFixture(t)
+	mission := state.MissionDefinition()
+	mission.SemanticReviewContractVersion = SemanticReviewContractVersion
+	var err error
+	mission.SemanticReviewContractSHA256, err = SemanticReviewContractIdentity(mission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.SemanticReviewContractVersion = mission.SemanticReviewContractVersion
+	state.SemanticReviewContractSHA256 = mission.SemanticReviewContractSHA256
+
+	if got := DetermineMissionOutcome(state); got != MissionOutcomeUnresolved {
+		t.Fatalf("accepted deterministic evidence without semantic review = %q, want unresolved", got)
+	}
+
+	task := &state.Tasks[0]
+	task.ReviewCycleID = strings.Repeat("c", 32)
+	task.ReviewOutcome = ReviewOutcomeClear
+	task.ReviewCheckpointEventID = task.AcceptanceCheckpointEventID
+	task.ReviewCheckpointCommit = task.AcceptanceCheckpointCommit
+	task.ReviewCheckpointTreeSHA = task.AcceptanceCheckpointTreeSHA
+	if got := DetermineMissionOutcome(state); got != MissionOutcomeSucceeded {
+		t.Fatalf("clear review bound to accepted checkpoint = %q, want succeeded", got)
+	}
+
+	task.ReviewOutcome = ReviewOutcomeFindings
+	if got := DetermineMissionOutcome(state); got != MissionOutcomeUnresolved {
+		t.Fatalf("review with findings = %q, want unresolved", got)
+	}
+	task.ReviewOutcome = ReviewOutcomeClear
+	task.ReviewCheckpointTreeSHA = "stale-tree"
+	if got := DetermineMissionOutcome(state); got != MissionOutcomeUnresolved {
+		t.Fatalf("clear review for a stale tree = %q, want unresolved", got)
+	}
+}
+
 func acceptedMissionOutcomeFixture(t *testing.T) DeepState {
 	t.Helper()
 	task := Task{

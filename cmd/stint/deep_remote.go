@@ -13,6 +13,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Marguelgtz/Stint/internal/config"
 	"github.com/Marguelgtz/Stint/internal/deep"
@@ -30,6 +31,7 @@ type gitOps interface {
 	logOneline(dir string, n int) (string, error)
 	statusShort(dir string) (string, error)
 	diffStat(dir, base string) (string, error)
+	reviewDiff(ctx context.Context, dir, fromTree, toTree string, maxBytes int) (string, bool, error)
 	verificationSubject(dir string, bookkeepingPaths []string) (verificationSnapshot, error)
 	checkpointSubject(dir, message string, snapshot verificationSnapshot) (string, string, error)
 	worktreeAdd(repo, worktree, branch string) error
@@ -137,6 +139,41 @@ func (g *remoteGit) diffStat(dir, base string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+func (g *remoteGit) reviewDiff(ctx context.Context, dir, fromTree, toTree string, maxBytes int) (string, bool, error) {
+	if maxBytes < 1 {
+		return "", false, errors.New("semantic review diff bound must be positive")
+	}
+	command := "set -e; f=$(mktemp /tmp/stint-review-diff.XXXXXX) || exit 125; " +
+		"trap 'rm -f \"$f\"' EXIT; " +
+		"git -C " + shellQuote(dir) + " --no-pager diff --no-ext-diff --no-textconv --no-renames --binary --unified=3 " +
+		shellQuote(fromTree) + " " + shellQuote(toTree) + " -- >\"$f\" || exit $?; " +
+		"n=$(wc -c <\"$f\" | tr -d '[:space:]') || exit 125; " +
+		"case \"$n\" in ''|*[!0-9]*) exit 125;; esac; " +
+		"if [ \"$n\" -gt " + strconv.Itoa(maxBytes) + " ]; then printf '%s\\n' '__STINT_REVIEW_DIFF_TOO_LARGE_V1__'; " +
+		"else printf '__STINT_REVIEW_DIFF_V1__%s\\n' \"$n\"; base64 <\"$f\"; printf '%s\\n' '__STINT_REVIEW_DIFF_END_V1__'; fi"
+	out, err := g.remote(ctx, command)
+	if err != nil {
+		return "", false, fmt.Errorf("capture bounded semantic review diff remotely: %w", err)
+	}
+	if strings.TrimSpace(out) == "__STINT_REVIEW_DIFF_TOO_LARGE_V1__" {
+		return "", true, nil
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 2 || !strings.HasPrefix(lines[0], "__STINT_REVIEW_DIFF_V1__") || lines[len(lines)-1] != "__STINT_REVIEW_DIFF_END_V1__" {
+		return "", false, errors.New("remote semantic review diff frame is malformed")
+	}
+	size, err := strconv.Atoi(strings.TrimPrefix(lines[0], "__STINT_REVIEW_DIFF_V1__"))
+	if err != nil || size < 0 || size > maxBytes {
+		return "", false, errors.New("remote semantic review diff size is invalid")
+	}
+	encoded := strings.Join(lines[1:len(lines)-1], "")
+	diff, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(diff) != size || !utf8.Valid(diff) {
+		return "", false, errors.New("remote semantic review diff payload is invalid")
+	}
+	return string(diff), false, nil
 }
 
 // verificationSubject captures the worktree's Git-visible product tree using
@@ -535,6 +572,9 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 	if in.reasoning != "" {
 		hermesArgs += " --reasoning " + shellQuote(in.reasoning)
 	}
+	if in.semanticReviewer {
+		hermesArgs += " --safe-mode --ignore-user-config --ignore-rules --toolsets " + shellQuote(semanticReviewNoToolsToolset)
+	}
 	line := remoteHermesCommand(in, b64, hermesArgs, secs)
 
 	out, err := e.remote(ctx, line)
@@ -863,6 +903,7 @@ func (e *localHermesExecutor) run(ctx context.Context, in execInput) (execResult
 	if in.reasoning != "" {
 		argv = append(argv, "--reasoning", in.reasoning)
 	}
+	argv = addSemanticReviewIsolationArgs(argv, in)
 
 	cmd := exec.CommandContext(ctx, e.binary, argv...)
 	cmd.Dir = in.workdir
@@ -920,6 +961,9 @@ func (e *localHermesExecutor) runJournaled(ctx context.Context, in execInput, st
 	}
 	if in.reasoning != "" {
 		hermesArgs += " --reasoning " + shellQuote(in.reasoning)
+	}
+	if in.semanticReviewer {
+		hermesArgs += " --safe-mode --ignore-user-config --ignore-rules --toolsets " + shellQuote(semanticReviewNoToolsToolset)
 	}
 	timeoutSeconds := int(in.timeout.Seconds())
 	if timeoutSeconds < 1 {

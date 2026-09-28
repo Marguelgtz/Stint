@@ -121,6 +121,24 @@ projections, and mission outcome use acceptance semantics. A verified
 checkpoint remains available as durable evidence when acceptance is not yet
 satisfied.
 
+Missions may additionally opt into a checkpoint-bound semantic review:
+
+```markdown
+## Semantic Review Contract
+version: 1
+```
+
+This requires Acceptance Contract version 2. After deterministic acceptance,
+Stint starts a separate fresh Hermes invocation with no tools and supplies the
+mission criteria, deterministic evidence, and a bounded Git diff from the
+Objective's first-executor baseline to its accepted checkpoint. A `clear`
+result for that same checkpoint is required for semantic-contract mission
+success and for satisfying its dependents. Structured findings and unresolved
+results remain separate from deterministic acceptance and are shown in the
+handoff and dashboard; they do not create repair work automatically. Malformed
+review output, reviewer failure, stale evidence, or an uncertain repository
+subject cannot produce a clear result.
+
 Production on-box missions must persist an explicit GitHub policy. The launcher
 configuration (mode, repository, base, allowed authors, and approval) must match
 that mission section exactly or launch fails. The current on-box publisher only
