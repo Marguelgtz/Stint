@@ -161,6 +161,16 @@ the declared deterministic acceptance check passes against the bound
 checkpoint and repository-change expectation. A successful generic verifier
 does not establish the Objective by itself.
 
+The append-only journal can also record a bounded semantic `ReviewCycle` for
+an exact task checkpoint. Each cycle carries its mission-contract and review
+context identities, reviewer/runtime identity, typed outcome, structured
+findings with explicit initial dispositions, and the checkpoint event/tree it
+examined. A review start without a durable result recovers as `unknown`; it
+cannot become a clean review by inference. Review records preserve evidence
+independently and do not change legacy or version 2 acceptance semantics.
+Fresh-context reviewer execution, review-gated acceptance, repair routing, and
+mission-level review are introduced by later Objective D slices.
+
 The current `verified` value is also a legacy terminal coordinator state, not
 just a verifier result: `Status.Terminal` makes task selection skip it,
 `depends-on` requires it, and `DetermineMissionOutcome` counts it toward
