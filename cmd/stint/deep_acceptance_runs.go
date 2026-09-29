@@ -17,6 +17,8 @@ var errAcceptanceWindowUnavailable = errors.New("insufficient landing window for
 // after the task checkpoint exists. The command is bound to that checkpoint,
 // and the repository subject is captured again after the command is quiescent.
 func (c *deepCoordinator) runJournaledAcceptanceCheck(ctx context.Context, taskID string, checkpoint deep.TaskCheckpoint, checkpointEventID string) error {
+	acceptanceStarted := time.Now()
+	defer func() { c.recordTiming("acceptance.total", taskID, 0, acceptanceStarted) }()
 	task := c.taskByID(taskID)
 	if task == nil {
 		return fmt.Errorf("acceptance Work Unit %s disappeared", taskID)
@@ -31,7 +33,7 @@ func (c *deepCoordinator) runJournaledAcceptanceCheck(ctx context.Context, taskI
 		return fmt.Errorf("task %s acceptance-check command is invalid: %w", taskID, err)
 	}
 
-	before, err := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+	before, err := c.captureVerificationSubject("acceptance.pre_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), taskID, checkpoint.Attempt)
 	if err != nil {
 		return fmt.Errorf("capture repository subject before acceptance-check for task %s: %w", taskID, err)
 	}
@@ -75,9 +77,11 @@ func (c *deepCoordinator) runJournaledAcceptanceCheck(ctx context.Context, taskI
 
 	vctx, cancel := context.WithTimeout(ctx, bound)
 	result := verificationResult{Outcome: verificationExecutionErr, Error: "acceptance-check runner is unavailable"}
+	acceptanceCommandStarted := time.Now()
 	if c.verify != nil {
 		result = c.verify(vctx, task.AcceptanceCheck, c.state.WorktreePath)
 	}
+	c.recordTiming("acceptance.command", taskID, checkpoint.Attempt, acceptanceCommandStarted)
 	contextErr := vctx.Err()
 	cancel()
 	if contextErr != nil && result.Outcome != verificationInvalid {
@@ -111,7 +115,7 @@ func (c *deepCoordinator) runJournaledAcceptanceCheck(ctx context.Context, taskI
 	run.DurationMilliseconds = max(0, run.EndedAt.Sub(run.StartedAt).Milliseconds())
 	run.Error = boundedExecutionFact(run.Error, 512)
 	if !result.QuiescenceUnconfirmed {
-		after, captureErr := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+		after, captureErr := c.captureVerificationSubject("acceptance.post_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), taskID, checkpoint.Attempt)
 		if captureErr != nil {
 			run.SubjectAfterError = boundedExecutionFact(captureErr.Error(), 512)
 		} else {
@@ -179,7 +183,7 @@ func (c *deepCoordinator) pendingAcceptanceCheckpoint(task deep.Task) (deep.Task
 		checkpoint.TreeSHA != task.CheckpointTreeSHA {
 		return deep.TaskCheckpoint{}, "", false, nil
 	}
-	current, err := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+	current, err := c.captureVerificationSubject("acceptance.pending_checkpoint_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), task.ID, task.Attempts)
 	if err != nil {
 		return deep.TaskCheckpoint{}, "", false, fmt.Errorf("capture current repository subject for task %s acceptance: %w", task.ID, err)
 	}

@@ -460,7 +460,7 @@ func remoteVerificationCommand(workdir, command string) string {
 			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || { printf '\\n%s127\\n'; exit 0; }; "+
 			"case \"$stint_group\" in ''|*[!0-9]*) printf '\\n%s127\\n'; exit 0;; esac; "+
 			"if ! kill -KILL -- -\"$stint_group\" 2>/dev/null && kill -0 -- -\"$stint_group\" 2>/dev/null; then printf '\\n%s127\\n'; exit 0; fi; "+
-			"status=$(cat \"$stint_status_file\" 2>/dev/null) || { printf '\\n%s126\\n'; exit 0; }; "+
+			"IFS= read -r status < \"$stint_status_file\" 2>/dev/null || { printf '\\n%s126\\n'; exit 0; }; "+
 			"case \"$status\" in ''|*[!0-9]*) printf '\\n%s126\\n'; exit 0;; esac; "+
 			"printf '\\n%s%%s\\n' \"$status\"; exit 0",
 		shellQuote(workdir), verifySetupMarker,
@@ -733,11 +733,12 @@ stint_finalize_times() {
 stint_write_receipt() {
   stint_receipt_launched=$1; stint_receipt_status=$2; stint_receipt_completed=$3; stint_receipt_timed_out=$4; stint_receipt_canceled=$5
   stint_receipt_head=$6; stint_receipt_tree=$7; stint_receipt_subject_observed_ns=$8; stint_receipt_subject_error=$9
+  stint_exit_to_quiescence_ms=${10:-0}
   stint_receipt_tmp="$stint_receipt_file.tmp.$$"
-  printf '{"schemaVersion":1,"executorRunId":"%s","endedAtUnixNano":%s,"durationMilliseconds":%s,"exitCode":%s,"launched":%s,"completed":%s,"timedOut":%s,"canceled":%s,"processQuiescent":true,"repositoryAfterHeadCommit":"%s","repositoryAfterTreeSha":"%s","repositoryAfterObservedAtUnixNano":%s,"repositoryAfterError":"%s"}\n' \
+  printf '{"schemaVersion":1,"executorRunId":"%s","endedAtUnixNano":%s,"durationMilliseconds":%s,"exitCode":%s,"launched":%s,"completed":%s,"timedOut":%s,"canceled":%s,"processQuiescent":true,"hermesExitToQuiescenceMilliseconds":%s,"repositoryAfterHeadCommit":"%s","repositoryAfterTreeSha":"%s","repositoryAfterObservedAtUnixNano":%s,"repositoryAfterError":"%s"}\n' \
     ` + shellQuote(in.executorRunID) + ` "$stint_receipt_ended_ns" "$stint_receipt_duration" "$stint_receipt_status" \
     "$stint_receipt_launched" "$stint_receipt_completed" "$stint_receipt_timed_out" "$stint_receipt_canceled" \
-    "$stint_receipt_head" "$stint_receipt_tree" "$stint_receipt_subject_observed_ns" "$stint_receipt_subject_error" > "$stint_receipt_tmp" || return 1
+    "$stint_exit_to_quiescence_ms" "$stint_receipt_head" "$stint_receipt_tree" "$stint_receipt_subject_observed_ns" "$stint_receipt_subject_error" > "$stint_receipt_tmp" || return 1
   chmod 600 "$stint_receipt_tmp" && sync -f "$stint_receipt_tmp" && mv -f "$stint_receipt_tmp" "$stint_receipt_file" && sync -f "$stint_receipt_dir" || {
     rm -f "$stint_receipt_tmp"; return 1;
   }
@@ -753,7 +754,7 @@ stint_write_receipt() {
 			`[ "$stint_cancel_requested" = 1 ] && stint_receipt_canceled=true; ` +
 			`[ "$ec" = 0 ] && stint_receipt_completed=true; [ "$ec" = 124 ] && stint_receipt_timed_out=true; ` +
 			`[ "$stint_cancel_requested" = 1 ] && { stint_receipt_status=-1; stint_receipt_completed=false; }; ` +
-			`stint_write_receipt true "$stint_receipt_status" "$stint_receipt_completed" "$stint_receipt_timed_out" "$stint_receipt_canceled" "$stint_subject_head" "$stint_subject_tree" "$stint_subject_observed_ns" "$stint_subject_error" || exit 125; `
+			`stint_write_receipt true "$stint_receipt_status" "$stint_receipt_completed" "$stint_receipt_timed_out" "$stint_receipt_canceled" "$stint_subject_head" "$stint_subject_tree" "$stint_subject_observed_ns" "$stint_subject_error" "$stint_exit_to_quiescence_ms" || exit 125; `
 	}
 	setupFailure := "stint_setup_failure() { stint_setup_status=$1; " +
 		"if [ \"$stint_receipt_ready\" = 1 ]; then stint_finalize_times || exit 125; " + executorRepositorySubjectCaptureShell(in) +
@@ -787,7 +788,9 @@ stint_write_receipt() {
 			"case \"$stint_group\" in ''|*[!0-9]*) exit 125;; esac; " +
 			`if [ "$stint_cancel_requested" = 1 ]; then kill -KILL -- -"$stint_group" 2>/dev/null || true; fi; ` +
 			"if ! kill -KILL -- -\"$stint_group\" 2>/dev/null && kill -0 -- -\"$stint_group\" 2>/dev/null; then exit 125; fi; " +
-			"ec=$(cat \"$stint_status_file\" 2>/dev/null) || exit 125; " +
+			"stint_exit_to_quiescence_ms=0; { IFS= read -r ec; IFS= read -r stint_child_exit_ms || true; } < \"$stint_status_file\" || exit 125; " +
+			"stint_quiescence_ms=$(python3 -c 'import time; print(time.monotonic_ns() // 1000000)' 2>/dev/null || true); " +
+			"case \"$stint_child_exit_ms:$stint_quiescence_ms\" in *[!0-9:]*|:*) :;; *) stint_exit_to_quiescence_ms=$((stint_quiescence_ms - stint_child_exit_ms)); [ \"$stint_exit_to_quiescence_ms\" -ge 0 ] || stint_exit_to_quiescence_ms=0;; esac; " +
 			"case \"$ec\" in ''|*[!0-9]*) exit 125;; esac; " +
 			receiptCapture +
 			receiptFinish +
@@ -1060,7 +1063,9 @@ func runReceiptSupervisor(ctx context.Context, cmd *exec.Cmd) (runErr, quiesceEr
 func executorReceiptResult(receipt deep.ExecutorReceipt, output, stderr string, duration time.Duration) execResult {
 	result := execResult{
 		exitCode: receipt.ExitCode, completed: receipt.Completed, timedOut: receipt.TimedOut,
-		outputText: output, duration: duration, endedAt: time.Unix(0, receipt.EndedAtUnixNano).UTC(),
+		outputText: output, duration: duration,
+		exitToQuiescence:     time.Duration(receipt.HermesExitToQuiescenceMillis) * time.Millisecond,
+		endedAt:              time.Unix(0, receipt.EndedAtUnixNano).UTC(),
 		endedAtSource:        deep.ExecutorEndTimeSupervisor,
 		repositoryAfterError: receipt.RepositoryAfterError,
 		stderrTail:           tailLine(stderr, 5),

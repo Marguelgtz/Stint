@@ -51,6 +51,7 @@ type execResult struct {
 	finishReason              string
 	outputText                string // final worker report text
 	duration                  time.Duration
+	exitToQuiescence          time.Duration
 	endedAt                   time.Time
 	endedAtSource             deep.ExecutorEndTimeSource
 	repositoryAfter           *deep.VerificationSubject

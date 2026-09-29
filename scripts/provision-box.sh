@@ -13,6 +13,7 @@ set -Eeuo pipefail
 export PATH="/usr/local/go/bin:/usr/local/bin:$PATH:$HOME/.local/bin"
 
 TARGET_REPO="${STINT_TARGET_REPO:-}"
+TARGET_MISSION="${STINT_TARGET_MISSION:-}"
 MODEL_ID="${STINT_MODEL_ID:-qwen3.8-27b}"
 PHASING_DIR="${PHASING_DIR:-/root/stint-phasing}"
 GO_STAGE=""
@@ -135,6 +136,49 @@ if [ -f "$TARGET_REPO/go.mod" ]; then
     (cd "$TARGET_REPO" && timeout "${STINT_BOOTSTRAP_TEST_TIMEOUT:-20m}" go test ./...) \
       || fail "Stint go test ./... failed before Deep Work startup"
   fi
+fi
+
+if [ -f "$TARGET_REPO/pnpm-lock.yaml" ]; then
+  RPT "installing pinned pnpm 10.15.1 for the target repository"
+  npm install --global pnpm@10.15.1 || fail "pnpm 10.15.1 installation failed"
+  [ "$(pnpm --version)" = "10.15.1" ] || fail "target repository requires pnpm 10.15.1"
+  (cd "$TARGET_REPO" && pnpm install --frozen-lockfile) || fail "target repository frozen-lockfile install failed"
+
+  TARGET_VERIFY=""
+  if [ -n "$TARGET_MISSION" ] && [ -r "$TARGET_MISSION" ]; then
+    TARGET_VERIFY="$(python3 - "$TARGET_MISSION" <<'PY'
+import sys
+text = open(sys.argv[1], encoding="utf-8").read()
+lines = text.splitlines()
+inside = False
+commands = []
+for line in lines:
+    if line.strip().lower() == "## verification":
+        inside = True
+        continue
+    if inside and line.lstrip().startswith("## "):
+        break
+    if inside and line.strip():
+        commands.append(line.strip())
+print("\n".join(commands))
+PY
+)"
+  fi
+  if [ -z "$TARGET_VERIFY" ]; then
+    TARGET_VERIFY="$(python3 - "$TARGET_REPO/package.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    package = json.load(stream)
+scripts = package.get("scripts", {})
+if scripts.get("test") and scripts.get("typecheck"):
+    print("pnpm test && pnpm typecheck")
+PY
+)"
+  fi
+  [ -n "$TARGET_VERIFY" ] || fail "pnpm target has no mission Verification command or root test/typecheck scripts"
+  RPT "running target generic verifier before the supervisor can report RUNNING"
+  (cd "$TARGET_REPO" && timeout "${STINT_BOOTSTRAP_PNPM_TIMEOUT:-20m}" bash -o pipefail -c "$TARGET_VERIFY") \
+    || fail "target pnpm verifier failed before Deep Work startup"
 fi
 
 ninfer_pid="$(pgrep -xo ninfer-serve 2>/dev/null || true)"

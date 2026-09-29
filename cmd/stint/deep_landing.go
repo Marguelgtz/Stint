@@ -18,7 +18,10 @@ import (
 // creation, checkpoint commits, and the state summaries folded into task
 // context. All operations are local-only (no push, no fetch).
 type gitRunner struct {
-	run func(dir string, args ...string) (string, error)
+	run           func(dir string, args ...string) (string, error)
+	timing        func(phase string, taskID string, attempt int, started time.Time)
+	timingTaskID  string
+	timingAttempt int
 }
 
 func newGitRunner() *gitRunner {
@@ -47,6 +50,12 @@ func (g *gitRunner) repoHead(dir string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+func (g *gitRunner) recordTiming(phase string, started time.Time) {
+	if g.timing != nil {
+		g.timing(phase, g.timingTaskID, g.timingAttempt, started)
+	}
 }
 
 // cleanTracked reports whether the repository has no tracked modifications
@@ -321,7 +330,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	}
 
 	bookkeepingPaths := c.verificationBookkeepingPaths()
-	verificationSnapshot, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+	verificationSnapshot, err := c.captureVerificationSubject("landing.pre_verification_subject_capture", c.state.WorktreePath, bookkeepingPaths, "mission", 0)
 	if err != nil {
 		return fmt.Errorf("capture repository state before final verification: %w", err)
 	}
@@ -389,7 +398,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 					}
 					return fmt.Errorf("landing stopped because final verifier process quiescence is unconfirmed")
 				}
-				afterVerify, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+				afterVerify, err := c.captureVerificationSubject("landing.post_verification_subject_capture", c.state.WorktreePath, bookkeepingPaths, "mission", 0)
 				if err != nil {
 					return fmt.Errorf("capture repository state after final verification: %w", err)
 				}
@@ -457,7 +466,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	}
 
 	commitSubject := fmt.Sprintf("deep: %s handoff", c.state.SessionID)
-	checkpointSnapshot, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+	checkpointSnapshot, err := c.captureVerificationSubject("landing.checkpoint_pre_capture", c.state.WorktreePath, bookkeepingPaths, "mission", 0)
 	if err != nil {
 		return fmt.Errorf("capture repository state before landing checkpoint: %w", err)
 	}
@@ -484,7 +493,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 		if c.state.ExecutionQuiescenceUnconfirmed {
 			return errors.New("landing stopped because mission-review process quiescence is unconfirmed")
 		}
-		afterReview, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+		afterReview, err := c.captureVerificationSubject("mission_review.post_subject_capture", c.state.WorktreePath, bookkeepingPaths, "mission", 0)
 		if err != nil {
 			return fmt.Errorf("confirm checkpoint subject after mission review: %w", err)
 		}
@@ -561,7 +570,7 @@ func (c *deepCoordinator) refreshLandedSummary() error {
 		}
 	}
 	bookkeepingPaths := c.verificationBookkeepingPaths()
-	snapshot, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+	snapshot, err := c.captureVerificationSubject("landing.final_subject_capture", c.state.WorktreePath, bookkeepingPaths, "mission", 0)
 	if err != nil {
 		return nil // the durable state and state-dir handoff remain authoritative
 	}

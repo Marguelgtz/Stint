@@ -23,6 +23,7 @@ type ExecutorReceipt struct {
 	ExecutorRunID                     string `json:"executorRunId"`
 	EndedAtUnixNano                   int64  `json:"endedAtUnixNano"`
 	DurationMillis                    int64  `json:"durationMilliseconds"`
+	HermesExitToQuiescenceMillis      int64  `json:"hermesExitToQuiescenceMilliseconds,omitempty"`
 	ExitCode                          int    `json:"exitCode"`
 	Launched                          bool   `json:"launched"`
 	Completed                         bool   `json:"completed"`
@@ -60,7 +61,8 @@ func ValidateExecutorReceipt(receipt ExecutorReceipt) error {
 	if _, err := hex.DecodeString(receipt.ExecutorRunID); err != nil {
 		return errors.New("executor receipt run identity is not hexadecimal")
 	}
-	if receipt.EndedAtUnixNano <= 0 || receipt.DurationMillis < 0 || receipt.DurationMillis > int64((7*24*time.Hour)/time.Millisecond) {
+	if receipt.EndedAtUnixNano <= 0 || receipt.DurationMillis < 0 || receipt.DurationMillis > int64((7*24*time.Hour)/time.Millisecond) ||
+		receipt.HermesExitToQuiescenceMillis < 0 || receipt.HermesExitToQuiescenceMillis > int64(time.Hour/time.Millisecond) {
 		return errors.New("executor receipt end time or duration is invalid")
 	}
 	if receipt.ExitCode < -1 || receipt.ExitCode > 255 || !receipt.ProcessQuiescent {

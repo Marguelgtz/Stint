@@ -31,7 +31,7 @@ func (c *deepCoordinator) verifyTaskAttempt(ctx context.Context, task *deep.Task
 		result, used := c.accept(ctx, task)
 		return result, used, false, nil
 	}
-	current, err := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+	current, err := c.captureVerificationSubject("verification.pre_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), task.ID, task.Attempts)
 	if err != nil {
 		return verificationResult{}, command, false, fmt.Errorf("capture repository state immediately before task verification: %w", err)
 	}
@@ -123,7 +123,9 @@ func (c *deepCoordinator) runJournaledVerification(
 		return verificationResult{}, deep.VerificationRun{}, fmt.Errorf("persist verification start before command execution: %w", err)
 	}
 	vctx, cancel := context.WithTimeout(ctx, bound)
+	verificationStarted := time.Now()
 	result := invoke(vctx, command, c.state.WorktreePath)
+	c.recordTiming("verification.command", taskID, attempt, verificationStarted)
 	verifyContextErr := vctx.Err()
 	cancel()
 	if result.Outcome == verificationNotRun {
@@ -165,7 +167,7 @@ func (c *deepCoordinator) runJournaledVerification(
 	if result.QuiescenceUnconfirmed {
 		run.SubjectAfterError = "post-verification subject unavailable because process quiescence is unconfirmed"
 	} else {
-		after, captureErr := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+		after, captureErr := c.captureVerificationSubject("verification.post_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), taskID, attempt)
 		if captureErr != nil {
 			run.SubjectAfterError = boundedExecutionFact(captureErr.Error(), 512)
 		} else {

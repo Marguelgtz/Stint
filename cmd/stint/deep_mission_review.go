@@ -87,6 +87,8 @@ func missionSemanticReviewPrompt(state deep.DeepState, checkpoint deep.Verificat
 // Its durable cycle binds the reviewer output to that exact committed tree and
 // to the final-verifier run when the mission requires one.
 func (c *deepCoordinator) runMissionSemanticReview(ctx context.Context, checkpointCommit, checkpointTree string, finalVerificationRunID string) error {
+	reviewTotalStarted := time.Now()
+	defer func() { c.recordTiming("mission_review.total", "mission", 0, reviewTotalStarted) }()
 	if c.state.SemanticReviewContractVersion != deep.SemanticReviewMissionContractVersion {
 		return nil
 	}
@@ -97,7 +99,7 @@ func (c *deepCoordinator) runMissionSemanticReview(ctx context.Context, checkpoi
 	if checkpointCommit == "" || checkpointTree == "" {
 		return errors.New("mission review requires the landing checkpoint identity")
 	}
-	current, err := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+	current, err := c.captureVerificationSubject("mission_review.pre_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), "mission", 0)
 	if err != nil {
 		return fmt.Errorf("capture repository subject before mission review: %w", err)
 	}
@@ -177,7 +179,7 @@ func (c *deepCoordinator) runMissionSemanticReview(ctx context.Context, checkpoi
 		contextSHA = hex.EncodeToString(hash[:])
 	}
 	cycle.ContextSHA256 = contextSHA
-	if before, captureErr := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths()); captureErr != nil {
+	if before, captureErr := c.captureVerificationSubject("mission_review.packet_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), "mission", 0); captureErr != nil {
 		if preflightErr == nil {
 			preflightErr = fmt.Errorf("re-capture repository subject before mission review: %w", captureErr)
 		}
@@ -237,7 +239,9 @@ func (c *deepCoordinator) runMissionSemanticReview(ctx context.Context, checkpoi
 	}
 	in.provider = provider
 	in.reasoning = reasoning
+	reviewStarted := time.Now()
 	result, executionErr := c.executor.run(reviewCtx, in)
+	c.recordTimingWithPacket("mission_review.invocation", "mission", 0, reviewStarted, len(prompt))
 	if result.timedOut && executionErr == nil {
 		executionErr = context.DeadlineExceeded
 	}
@@ -274,7 +278,7 @@ func (c *deepCoordinator) runMissionSemanticReview(ctx context.Context, checkpoi
 		}
 	}
 	if !c.state.ExecutionQuiescenceUnconfirmed {
-		after, captureErr := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+		after, captureErr := c.captureVerificationSubject("mission_review.result_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), "mission", 0)
 		if captureErr != nil || after.Subject != reviewSubject {
 			// The just-recorded review remains an immutable fact about its checkpoint,
 			// but it cannot accept a different current tree.

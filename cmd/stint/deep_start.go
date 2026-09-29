@@ -30,8 +30,10 @@ func runDeep(args []string) error {
 		return runDeepResume(args[1:])
 	case "onbox":
 		return runDeepOnBox(args[1:])
+	case "qualification":
+		return runDeepQualification(args[1:])
 	default:
-		return fmt.Errorf("unknown deep subcommand %q (stint deep <start|status|dash|stop|resume|onbox>)", args[0])
+		return fmt.Errorf("unknown deep subcommand %q (stint deep <start|status|dash|stop|resume|onbox|qualification>)", args[0])
 	}
 }
 
