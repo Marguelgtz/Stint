@@ -25,7 +25,7 @@ The qualification target remains the production on-box route at PR #183 tip `024
 
 Before recording GO, bind a concrete rental to an hourly offer ceiling, a maximum duration, and a total-cost ceiling that leaves time for both tasks, landing, evidence retrieval, and teardown. Confirm the selected instance ID, independent watchdog process/session identity, R2 prefix, and operator-side `stint down` recovery path before starting the supervisor. Acknowledged destruction is insufficient: provider inventory must show that exact ID absent.
 
-The isolated Spark branch is committed and ready to stage. Stint qualification support is committed on the local D4 branch at `a4f2eef16e045512db833dd489a86f97b71057fa`, directly on top of #183, and its qualification binary was built with SHA-256 `6085e76739cfa19c0d7450856f539c5c7674b05672f5f73a64a373030bb980ff`. The tooling commit has not been pushed to the public PR branch. After the live run, verify the final bundle off-box, record each manifest SHA-256, confirm exact-instance destruction, score the assertions below, and only then review PR consolidation.
+The isolated Spark branch is committed and ready to stage. Stint qualification support is committed on the local D4 branch at `a4f2eef16e045512db833dd489a86f97b71057fa`, directly on top of #183, and the qualification binary has been built from this source. The live manifest will bind the exact binary hash. The tooling commit has not been pushed to the public PR branch. After the live run, verify the final bundle off-box, record each manifest SHA-256, confirm exact-instance destruction, score the assertions below, and only then review PR consolidation.
 
 ## Assertion ledger
 
