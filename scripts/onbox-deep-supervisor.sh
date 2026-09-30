@@ -13,6 +13,11 @@
 # back to the same instance and has no operator-side fallback.
 set -Eeuo pipefail
 
+# The supervisor is detached from the interactive SSH shell. Preserve the
+# locations used by the fresh-box bootstrap in the long-lived coordinator
+# environment so Hermes and Go remain resolvable after SSH disconnects.
+export PATH="/usr/local/go/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}:$HOME/.local/bin"
+
 ROOT="${STINT_ONBOX_ROOT:-/var/lib/stint-onbox}"
 STATE_HOME="$ROOT/state"
 CONFIG_HOME="${STINT_ONBOX_CONFIG_HOME:-$HOME/.config}"
@@ -377,6 +382,7 @@ watch_ninfer_observer_for_new_session() {
 
 run_supervisor() {
   local -a onbox_args=("$@")
+  command -v hermes >/dev/null 2>&1 || die "Hermes is not on the detached supervisor PATH"
   mkdir -p "$ROOT" "$RUNTIME_DIR" "$CONFIG_HOME/stint" "$STATE_HOME"
   if [ "${STINT_ONBOX_SKIP_GITHUB:-0}" != 1 ]; then
     [ -x "${STINT_ONBOX_GITHUB_PUBLISH:-}" ] || die "on-box GitHub publisher is required"

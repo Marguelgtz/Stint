@@ -167,6 +167,17 @@ class PublisherAuthorityTests(unittest.TestCase):
                 "handoffPath": str(handoff_path),
             }
             self.assertEqual(PUBLISH.exact_landing_commit(state, str(repo)), head)
+            worktree_handoff = repo / "DEEP_WORK_HANDOFF.md"
+            worktree_handoff.write_text(handoff, encoding="utf-8")
+            self.assertEqual(PUBLISH.exact_landing_commit(state, str(repo)), head)
+            worktree_handoff.write_text("tampered\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "untracked worktree handoff differs"):
+                PUBLISH.exact_landing_commit(state, str(repo))
+            worktree_handoff.unlink()
+            (repo / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "uncommitted changes"):
+                PUBLISH.exact_landing_commit(state, str(repo))
+            (repo / "unexpected.txt").unlink()
             state["landingCommit"] = "b" * 40
             with self.assertRaisesRegex(RuntimeError, "differs from durable landingCommit"):
                 PUBLISH.exact_landing_commit(state, str(repo))

@@ -400,8 +400,17 @@ def exact_landing_commit(state: dict, worktree: str) -> str:
     if head != commit:
         raise PermanentPublicationError(f"worktree HEAD {head} differs from durable landingCommit {commit}")
     git(worktree, "cat-file", "-e", commit + "^{commit}")
-    if git(worktree, "status", "--porcelain"):
-        raise PermanentPublicationError("landed worktree has uncommitted changes")
+    status = git(worktree, "status", "--porcelain", "-z", "--untracked-files=all")
+    entries = [entry for entry in status.split("\0") if entry]
+    handoff_entry = "?? DEEP_WORK_HANDOFF.md"
+    handoff_worktree_path = Path(worktree) / "DEEP_WORK_HANDOFF.md"
+    if entries:
+        if entries != [handoff_entry]:
+            raise PermanentPublicationError("landed worktree has uncommitted changes")
+        if handoff_worktree_path.is_symlink() or not handoff_worktree_path.is_file():
+            raise PermanentPublicationError("untracked worktree handoff is not a regular file")
+        if handoff_worktree_path.read_text(encoding="utf-8") != state["landingHandoff"]:
+            raise PermanentPublicationError("untracked worktree handoff differs from persisted landingHandoff")
     handoff_path = str(state.get("handoffPath", ""))
     if not handoff_path or not os.path.isfile(handoff_path):
         raise PermanentPublicationError("durable handoff file is missing")
