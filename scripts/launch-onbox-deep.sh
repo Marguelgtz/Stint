@@ -37,6 +37,8 @@ REBIND_REASON="${STINT_ONBOX_REBIND_REASON:-}"
 ONBOX_MODEL="${STINT_ONBOX_MODEL:-}"
 ONBOX_MODEL_SET="${STINT_ONBOX_MODEL+x}"
 if [ "$RESUME" != 1 ] && [ -z "$ONBOX_MODEL" ]; then ONBOX_MODEL="qwen3.8-27b"; fi
+ONBOX_PROVIDER="${STINT_ONBOX_PROVIDER:-}"
+[ -n "$ONBOX_PROVIDER" ] || ONBOX_PROVIDER='custom:qwen-stint-{reasoning}'
 PHASING_DIR="${STINT_PHASING_DIR:-/root/stint-phasing}"
 SKIP_GITHUB="${STINT_ONBOX_SKIP_GITHUB:-0}"
 SKIP_WATCHDOG="${STINT_ONBOX_SKIP_WATCHDOG:-0}"
@@ -49,6 +51,7 @@ GITHUB_ALLOWED_AUTHORS="${STINT_GITHUB_ALLOWED_AUTHORS:-}"
 ACTION_PLAN_LOCAL="${STINT_ONBOX_ACTION_PLAN:-}"
 ACTION_PLAN_TARGET="${STINT_ONBOX_ACTION_PLAN_PATH:-}"
 REMOTE_BIN="$ROOT/bin/stint"
+REMOTE_BIN_STAGE="$ROOT/bin/stint.staged.$$"
 REMOTE_SUPERVISOR="$ROOT/onbox-deep-supervisor.sh"
 REMOTE_BOOTSTRAP="$ROOT/bootstrap"
 REMOTE_PROVISION="$REMOTE_BOOTSTRAP/provision-box.sh"
@@ -75,6 +78,10 @@ TRANSFER_ATTEMPTS="${STINT_ONBOX_TRANSFER_ATTEMPTS:-5}"
 TRANSFER_RETRY_SECONDS="${STINT_ONBOX_TRANSFER_RETRY_SECONDS:-3}"
 
 die() { echo "ONBOX_LAUNCH_FAIL $*" >&2; exit 1; }
+provider_probe="${ONBOX_PROVIDER//\{reasoning\}/medium}"
+case "$provider_probe" in
+  *'{'*|*'}'*) die "Hermes provider template contains an unmatched brace: $ONBOX_PROVIDER" ;;
+esac
 retry_step() {
   local label="$1"
   shift
@@ -266,8 +273,11 @@ supervisor_script_status=$?
 set -e
 case "$supervisor_script_status" in
   0)
-    existing_status="$("${SSH[@]}" "env STINT_ONBOX_ROOT='$ROOT' STINT_ONBOX_BIN='$ROOT/bin/stint' '$ROOT/onbox-deep-supervisor.sh' status")" || \
+    if existing_status="$("${SSH[@]}" "env STINT_ONBOX_ROOT='$ROOT' STINT_ONBOX_BIN='$ROOT/bin/stint' '$ROOT/onbox-deep-supervisor.sh' status")"; then
+      :
+    elif ! printf '%s\n' "$existing_status" | grep -qx 'ONBOX_SUPERVISOR_STOPPED'; then
       die "could not verify the existing on-box supervisor state; refusing to stage over it"
+    fi
     if printf '%s\n' "$existing_status" | grep -q '^ONBOX_SUPERVISOR_RUNNING'; then
       die "an on-box supervisor is already running at $ROOT; inspect it with 'stint deep dash' before launching another mission"
     fi
@@ -374,7 +384,8 @@ else
   echo "transferring pinned Stint runtime and mission repository"
 fi
 retry_step "prepare remote directories" "${SSH[@]}" "mkdir -p '$ROOT/bin' '$ROOT/runtime' '$ROOT/config' '$ROOT/state' '$REMOTE_BOOTSTRAP' /root/.config/stint && chmod 700 '$ROOT' '$ROOT/config' '$ROOT/state' '$ROOT/runtime' '$REMOTE_BOOTSTRAP' /root/.config/stint"
-retry_step "transfer Stint binary" "${SCP[@]}" "$BIN" "root@$HOST:$REMOTE_BIN"
+retry_step "transfer Stint binary" "${SCP[@]}" "$BIN" "root@$HOST:$REMOTE_BIN_STAGE"
+retry_step "install Stint binary" "${SSH[@]}" "chmod 0755 '$REMOTE_BIN_STAGE' && mv -f '$REMOTE_BIN_STAGE' '$REMOTE_BIN'"
 retry_step "transfer supervisor" "${SCP[@]}" "$SUPERVISOR_LOCAL" "root@$HOST:$REMOTE_SUPERVISOR"
 retry_step "install remote executables" "${SSH[@]}" "chmod 0755 '$REMOTE_BIN' '$REMOTE_SUPERVISOR'"
 if [ "$RESUME" = 0 ]; then
@@ -532,7 +543,7 @@ if [ "$RESUME" = 1 ]; then
   fi
 else
   args=(--mission "$REMOTE_MISSION" --repo "$REMOTE_REPO" --deadline "$STINT_DEADLINE" \
-    --provider "${STINT_ONBOX_PROVIDER:-custom:qwen-stint-{reasoning}}" \
+    --provider "$ONBOX_PROVIDER" \
     --model "$ONBOX_MODEL" \
     --reasoning "${STINT_ONBOX_REASONING:-medium}" \
     --task-timeout "${STINT_ONBOX_TASK_TIMEOUT:-15m}" \
