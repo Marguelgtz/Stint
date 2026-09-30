@@ -1,5 +1,11 @@
 # Spark–Stint MCP MVP — living action plan
 
+## This run: 20260930-183840
+
+Branch `stint/deep-20260930-183840`, plan checkpoint at head `8a0dacc` (on top of preserved draft `2cfc6a1`, base head `7d15e26`). Mission contract for this run: `docs/missions/spark-stint-status-mcp-continuation.md`; execution task `STINT-STATUS-MCP-FINISH-001` (renames/supersedes the prior run's `STINT-STATUS-MCP-001`, whose draft is preserved at `2cfc6a1` and remains **unaccepted** until inspected, repaired, verified, and reviewed in this run).
+
+Plan-time evidence (this run, at head `8a0dacc`): `go build ./internal/deep ./cmd/stint` passes; the focused gate `go test ./internal/deep -run 'Test(BuildStatusReply|ValidateStatusSessionID|StatusReply)' && go test ./cmd/stint -run 'Test.*MCP' && go vet ./internal/deep ./cmd/stint && git diff --check` passes in ~7s, comfortably inside the coordinator's fixed 180s task-verifier bound. Full suite plus race check are reserved for final mission verification (separate 10-minute bound) and will not be skipped or weakened.
+
 ## Continuation status
 
 Deep run `20260930-171348` reached `landed` with `STINT-STATUS-MCP-001` blocked after two executor and task-verifier timeouts; its MCP code had no accepted checkpoint. This tree preserves Hermes's working diff from that run on top of the verified planning checkpoint `7d15e26`. The implementation details below record work attempted, not accepted mission evidence. The next run uses `docs/missions/spark-stint-status-mcp-continuation.md` and `STINT-STATUS-MCP-FINISH-001` to inspect, repair, verify, and review this draft. The focused task verifier addresses the observed 180-second coordinator cap; full unit, vet, and race checks remain required at final mission verification. Spark consumption and persistence remain a separate dependent workstream.
@@ -11,10 +17,10 @@ Prior run: `20260930-171348`, branch `stint/deep-20260930-171348`, base head `21
 ## Current graph
 
 - Objective A (authorized, this run) — expose Stint's persisted Deep run status through a validated, bounded local stdio MCP provider.
-  - `STINT-STATUS-MCP-001` — in verification (attempt 2); single work unit, repository change required, verification per mission.
-    - A1 — plan checkpoint (this file, STINT-PLAN-001): done (v2 at plan time, v3 status update below).
-    - A2 — Go MCP provider: done in this run — `internal/deep/status_provider.go` (projection, bounds, session-ID validation) + `internal/deep/status_provider_test.go`; `cmd/stint/mcp_status.go` (`stint mcp serve --session <ID>`, help entry in `cmd/stint/help.go`, dispatch in `cmd/stint/main.go`) + `cmd/stint/mcp_status_test.go` (protocol-level: in-memory SDK client + subprocess stdio client of the built binary).
-    - A3 — documentation: done — `docs/mcp/status-provider.md` (local stdio client configuration + explicit Spark-side follow-up: consume and persist `deep_run_status`; separate repository workstream, blocking only the cross-repository MVP claim).
+  - `STINT-STATUS-MCP-FINISH-001` — active (this run, attempt 1); single work unit, repository change required, verification per mission. Draft exists at `2cfc6a1`; acceptance requires inspect, repair-if-needed, focused gate, acceptance check, review, and final mission verification.
+    - A1 — plan checkpoint (this file, STINT-PLAN-001): v4 updated at the start of run `20260930-183840` (header + provenance below); prior v3 from run `20260930-171348`.
+    - A2 — Go MCP provider: present in preserved draft — `internal/deep/status_provider.go` (projection, bounds, session-ID validation) + `internal/deep/status_provider_test.go`; `cmd/stint/mcp_status.go` (`stint mcp serve --session <ID>`, help entry in `cmd/stint/help.go`, dispatch in `cmd/stint/main.go`) + `cmd/stint/mcp_status_test.go` (protocol-level: in-memory SDK client + subprocess stdio client of the built binary).
+    - A3 — documentation: present in draft — `docs/mcp/status-provider.md` (local stdio client configuration + explicit Spark-side follow-up: consume and persist `deep_run_status`; separate repository workstream, blocking only the cross-repository MVP claim).
   - PR stack: A2 -> A3 (one coherent stack, independently landable).
 - Objective B (separate repository workstream, NOT authorized in this run) — Spark consumes and persists Stint status over MCP, building on `Marguelgtz/spark-observability-test` PRs #97–#101 (the `evaluate_change` stdio server stays as-is; do not recreate or modify it).
   - Dependency: Objective A's `schemaVersion: 1` projection and a cross-repository fixture.
@@ -46,16 +52,16 @@ Prior run: `20260930-171348`, branch `stint/deep-20260930-171348`, base head `21
 - Epoch-recovery proof: must restart the *observation* (new load through the same validated path), not merely re-read in-process, to match "after process restart and epoch recovery".
 - Scope guard: anything touching Spark, D1/API persistence, credentials, or journal semantics is out of scope and must become a separate workstream/human-attention item, not an absorbed change.
 
-## Next steps (execution order)
+## Next steps (execution order, run 20260930-183840)
 
-1. A2a: add SDK dependency, verify `go build` with the Go 1.23 baseline (toolchain 1.27.1 is installed; the `go 1.23` module line governs).
-2. A2b: projection + bounds + redaction in `internal/deep` (unit tests).
-3. A2c: `stint mcp serve` command in `cmd/stint` (help registry entry, dispatch, required `--session` validation before path open; stdout/stderr discipline).
-4. A2d: protocol-level tests (MCP client over in-memory + stdio transports) covering every mission-listed scenario; acceptance probe `go test ./cmd/stint -run 'Test.*MCP'`.
-5. A3: documentation — local stdio client configuration (command + args, environment for the state dir if applicable) and the explicit Spark-side follow-up (consume `deep_run_status`, persist per Spark policy, cross-repo fixture) named as a separate workstream.
-6. Full verification per mission: `go test ./internal/deep ./cmd/stint && go vet ./internal/deep ./cmd/stint && go test -race ./internal/deep ./cmd/stint && git diff --check` (plus `go test ./...` sanity if time permits).
+1. A2-inspect: re-derive the draft's claims against this tree — SDK v1.3.0 pinned in `go.mod`; session-ID validation precedes `LoadState`; allow-listed projection; 64 KiB reply cap with clear failure; stdio-only transport, stdout reserved for protocol frames, diagnostics on stderr; no provider/SSH/git/publication/status-store side effects. Repair any divergence instead of weakening the contract.
+2. A2-verify-focused (task gate, must finish inside the fixed 180s verifier bound): `go test ./internal/deep -run 'Test(BuildStatusReply|ValidateStatusSessionID|StatusReply)' && go test ./cmd/stint -run 'Test.*MCP' && go vet ./internal/deep ./cmd/stint && git diff --check`.
+3. A2-verify-acceptance (separate acceptance check): `go test ./cmd/stint -run 'Test.*MCP'`.
+4. A3: documentation already drafted in `docs/mcp/status-provider.md` (local stdio client configuration + explicit Spark-side consume+persist follow-up as a separate workstream); confirm it matches the verified implementation.
+5. A1: keep this living plan current with decisions, risks, next steps, evidence pointers, and the v4 provenance.
+6. Final mission verification (separate 10-minute bound; do not skip or weaken): `go test ./internal/deep ./cmd/stint && go vet ./internal/deep ./cmd/stint && go test -race ./internal/deep ./cmd/stint && git diff --check` (plus `go test ./...` sanity if time permits), review, checkpoint, and outcome.
 
-## Evidence pointers (as of plan time)
+## Evidence pointers (as of plan time, re-checked at this run's head 8a0dacc)
 
 - Mission contract: `docs/missions/spark-stint-status-mcp-mvp.md` (success/constraints/verification/acceptance contract v2).
 - Governing policy: `docs/missions/living-mission-execution-policy.md`.
@@ -64,7 +70,8 @@ Prior run: `20260930-171348`, branch `stint/deep-20260930-171348`, base head `21
 - CLI dispatch/help conventions: `cmd/stint/main.go`, `cmd/stint/deep_start.go:runDeep`, `cmd/stint/help.go` (command registry), `cmd/stint/deep_status.go` (existing human-readable status; its `--json` verbatim dump must NOT be exposed by the provider).
 - Test seeding pattern: `internal/deep/run_events_test.go:15` (`journalFixture` + journal lifecycle across resume epochs).
 - Base lineage: `20177e78` (Stint #183 tip, "require journaled executor admission canary") verified as an ancestor of HEAD `21cd8403`.
-- Prior context: failed Stint mission `20260930-013503` (single broad MCP status task, two timeouts) — this run keeps the provider narrow and read-only.
+- Prior context: failed Stint mission `20260930-013503` (single broad MCP status task, two timeouts) and failed mission `20260930-171348` (draft preserved at `2cfc6a1` after two 30-minute executor timeouts and two 180-second task-verifier timeouts) — this run keeps the provider narrow and read-only and verifies within the 180s per-task bound.
+- Re-checked in this run (head `8a0dacc`): `go.mod` pins `github.com/modelcontextprotocol/go-sdk v1.3.0`; `LoadState` at `internal/deep/state_persist.go:90`; `NewSessionID` at `internal/deep/state.go:158`; `DisplayMissionOutcome` at `internal/deep/mission_outcome.go:26`; `runMCPCommand`/`isCleanStdioShutdown` and `deepRunStatusToolName` in `cmd/stint/mcp_status.go`; `go build ./internal/deep ./cmd/stint` and the focused gate (see header) pass.
 
 ## Provenance
 
@@ -75,9 +82,15 @@ Prior run: `20260930-171348`, branch `stint/deep-20260930-171348`, base head `21
   - Reason: the previously failed run shows a broad single task times out; a narrower, evidence-pinned plan with an ordered execution sequence reduces rework and keeps Objective A independently landable.
   - Acceptance impact: none — mission objective, success criteria, and constraints are unchanged.
   - Dependencies: Objective B depends on Objective A's projection; nothing in this run blocks on Objective B.
-- v3 (this run, STINT-STATUS-MCP-001 attempt 2, same branch):
+- v3 (run `20260930-171348`, STINT-STATUS-MCP-001 attempt 2, same branch):
   - Triggering evidence: execution of A2/A3 against the in-tree contracts — SDK v1.3.0 API verified from module sources (`mcp.NewServer`/`AddTool`/`NewInMemoryTransports`, `Server.Run`+`StdioTransport`); `LoadState` confirmed to require the durable `deep.json` projection and to replay the journal over it (`internal/deep/state_persist.go`); SDK surfaces a clean stdio client disconnect as a wrapped "server is closing" error, so `runMCPCommand` maps that plus `io.EOF`/`mcp.ErrConnectionClosed` to a clean exit 0 (`isCleanStdioShutdown`, verified with a live binary probe over stdio).
   - Change: implemented `internal/deep/status_provider.go` (allow-listed projection, 64 KiB reply cap, 512-row bound, session-ID validation tightened to alnum/`-`/`_` so a crafted id cannot traverse paths — dots are legal in task IDs and were removed from the session-ID charset) and `cmd/stint/mcp_status.go` (single `deep_run_status` tool, no resources/prompts advertised, tool-only capability, stderr-only diagnostics); protocol-level tests in both packages (in-memory SDK client for discovery/projection/fail-closed cases; subprocess stdio test of the built binary for discovery, projection, cap, and secret/path exclusion); documentation in `docs/mcp/status-provider.md` including the local stdio client configuration and the explicit Spark-side consume+persist follow-up.
   - Reason: completes STINT-STATUS-MCP-001 as an independently reviewable, Git-visible, local read-only provider; no journal/checkpoint semantics, journal schema, A–D contracts, or Spark-side behavior were changed.
   - Acceptance impact: all Stint-side acceptance criteria now have in-repo evidence; the cross-repository MVP claim remains blocked on Objective B (Spark consumption/persistence) per the mission contract.
   - Dependencies: none new; Objective B still depends on this provider's `schemaVersion: 1` projection.
+- v4 (this run, STINT-PLAN-001, run `20260930-183840`, head `8a0dacc`):
+  - Triggering evidence: start of continuation run; mission contract `docs/missions/spark-stint-status-mcp-continuation.md` (task `STINT-STATUS-MCP-FINISH-001`) read; plan re-derived against repository state at head `8a0dacc`: `go build ./internal/deep ./cmd/stint` passes and the focused task gate (`go test ./internal/deep -run 'Test(BuildStatusReply|ValidateStatusSessionID|StatusReply)' && go test ./cmd/stint -run 'Test.*MCP' && go vet ./internal/deep ./cmd/stint && git diff --check`) passes in ~7s, inside the fixed 180s coordinator verifier bound; preserved draft symbols re-verified in-tree (`go.mod` SDK v1.3.0 pin, `LoadState`, `NewSessionID`, `DisplayMissionOutcome`, `runMCPCommand`/`isCleanStdioShutdown`).
+  - Change: added a run header recording branch/head/draft lineage and the 180s-vs-10-minute bound split; re-scoped the graph so the preserved draft is explicitly unaccepted and `STINT-STATUS-MCP-FINISH-001` is the authorized work unit; replaced the prior run's execution sequence (SDK fetch/implementation steps, already present as draft) with inspect/verify/doc/plan/final-verification steps; re-checked evidence pointers and added the prior failed run `20260930-171348` (draft at `2cfc6a1`) to prior context.
+  - Reason: the v3 status described execution that was preserved but never accepted or verified at a checkpoint; this run must treat it as an unaccepted draft, verify within the coordinator's 180s per-task bound, and reserve the full suite plus race check for the separate 10-minute final mission verification.
+  - Acceptance impact: none — mission objective, success criteria, and constraints are unchanged; the cross-repository MVP claim remains blocked on Objective B.
+  - Dependencies: none new; Objective B (Spark consumption/persistence) still depends on this provider's `schemaVersion: 1` projection and a cross-repository fixture.
