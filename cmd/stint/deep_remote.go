@@ -420,7 +420,7 @@ func remoteVerificationCommand(workdir, command string) string {
 			"%s & stint_verifier_pid=$!; wait \"$stint_verifier_pid\" 2>/dev/null || true; "+
 			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || { printf '\\n%s127\\n'; exit 0; }; "+
 			"case \"$stint_group\" in ''|*[!0-9]*) printf '\\n%s127\\n'; exit 0;; esac; "+
-			"kill -KILL -- -\"$stint_group\" 2>/dev/null || true; "+
+			"kill -KILL -\"$stint_group\" 2>/dev/null || true; "+
 			"stint_quiescent=0; for stint_wait in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do "+
 			"if ! ps -eo pgid=,stat= | awk -v pgid=\"$stint_group\" '$1 == pgid && $2 !~ /^Z/ { found=1 } END { exit !found }'; then stint_quiescent=1; break; fi; "+
 			"sleep 0.1 || { printf '\\n%s127\\n'; exit 0; }; done; [ \"$stint_quiescent\" = 1 ] || { printf '\\n%s127\\n'; exit 0; }; "+
@@ -628,7 +628,7 @@ func remoteHermesCommand(in execInput, b64, hermesArgs string, timeoutSeconds in
 			"%s & stint_hermes_pid=$!; wait \"$stint_hermes_pid\" 2>/dev/null || true; "+
 			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || exit 125; "+
 			"case \"$stint_group\" in ''|*[!0-9]*) exit 125;; esac; "+
-			"kill -KILL -- -\"$stint_group\" 2>/dev/null || true; "+
+			"kill -KILL -\"$stint_group\" 2>/dev/null || true; "+
 			"stint_quiescent=0; for stint_wait in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do "+
 			"if ! ps -eo pgid=,stat= | awk -v pgid=\"$stint_group\" '$1 == pgid && $2 !~ /^Z/ { found=1 } END { exit !found }'; then stint_quiescent=1; break; fi; "+
 			"sleep 0.1 || exit 125; done; [ \"$stint_quiescent\" = 1 ] || exit 125; "+

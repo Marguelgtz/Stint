@@ -17,7 +17,7 @@ func remoteProcessGroupInvocation(command string, timeoutSeconds int, name, stat
 		timeoutSeconds = 1
 	}
 	inner := `printf '%s\n' "$$" > "$4"
-trap 'kill -KILL -- -$$ 2>/dev/null || true' EXIT HUP INT TERM
+trap 'kill -KILL -$$ 2>/dev/null || true' EXIT HUP INT TERM
 if timeout --foreground -k 1 "$1" sh -c "$2"; then status=0; else status=$?; fi
 printf '%s\n' "$status" > "$3"
 exit "$status"`
