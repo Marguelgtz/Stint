@@ -99,6 +99,8 @@ func run(args []string) error {
 		return runOnboard(args[1:])
 	case "deep":
 		return runDeep(args[1:])
+	case "mcp":
+		return runMCPCommand(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q (run 'stint help')", args[0])
 	}

@@ -323,16 +323,42 @@ Subcommands:
 		usage:    "stint help [command]",
 		examples: []string{"stint help", "stint help start", "stint start --help"},
 	}
+
+	cmdMCP = cliCommand{
+		name:    "mcp",
+		section: "deepwork",
+		summary: "serve the local read-only Deep run status MCP provider",
+		detail: `Stint exposes the selected Deep run's validated, durable status as a local, read-only stdio Model Context Provider (MCP) server. It exposes exactly one tool, ` + "`deep_run_status`" + `, and no MCP resources or prompts.
+
+The provider reads status from Stint's existing durable Deep Work state and journal recovery path. It creates no competing status store, makes no provider calls, SSH, Git mutation, publication, or remote transport, and it never exposes mission prose, prompts, verifier or acceptance commands, worker output, local paths, credentials, or raw journal events. The reply is a single JSON text content item (schemaVersion 1) capped at 64 KiB.
+
+` + "`stint mcp serve --session <ID>`" + ` selects the run. The session identity is validated before any state path is opened. Missing or corrupt state, an invalid selection, and an over-cap projection all return a tool error; the server never reports an unvalidated success.
+
+A local stdio client configuration and the explicit Spark-side follow-up (consume and persist this provider's status) are documented in ` + "`docs/mcp/status-provider.md`" + `.`,
+		usage: "stint mcp serve --session <ID>",
+		args:  []cliArg{{name: "<subcommand>", purpose: "serve"}},
+		flags: []cliFlag{
+			{name: "--session", argument: "<id>", purpose: "required: Deep Work session id to expose"},
+		},
+		examples: []string{
+			"stint mcp serve --session 20260930-171348",
+		},
+		notes: []string{
+			"Stdout carries only MCP protocol frames; diagnostics go to stderr.",
+			"phase (operational boundary) and missionOutcome (completion evidence) are reported as separate fields.",
+			"Consuming and persisting this status on the Spark side is a separate repository workstream and remains a blocking dependency for the complete cross-repository MVP.",
+		},
+	}
 )
 
-var cliCommands = []cliCommand{cmdAuth, cmdSetup, cmdDoctor, cmdStatus, cmdOnboard, cmdPlan, cmdStart, cmdResume, cmdDown, cmdPerf, cmdDeep, cmdVersion, cmdHelp}
+var cliCommands = []cliCommand{cmdAuth, cmdSetup, cmdDoctor, cmdStatus, cmdOnboard, cmdPlan, cmdStart, cmdResume, cmdDown, cmdPerf, cmdDeep, cmdMCP, cmdVersion, cmdHelp}
 
 var helpSections = []helpSection{
 	{title: "Setup & checks", commands: []cliCommand{cmdAuth, cmdSetup, cmdDoctor, cmdStatus, cmdOnboard}},
 	{title: "Planning (read-only)", commands: []cliCommand{cmdPlan}},
 	{title: "Compute (paid)", commands: []cliCommand{cmdStart, cmdResume, cmdDown}},
 	{title: "Diagnostics", commands: []cliCommand{cmdPerf}},
-	{title: "Deep Work", commands: []cliCommand{cmdDeep}},
+	{title: "Deep Work", commands: []cliCommand{cmdDeep, cmdMCP}},
 	{title: "Reference", commands: []cliCommand{cmdVersion, cmdHelp}},
 }
 
