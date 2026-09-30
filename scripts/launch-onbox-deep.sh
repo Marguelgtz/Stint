@@ -51,6 +51,7 @@ GITHUB_ALLOWED_AUTHORS="${STINT_GITHUB_ALLOWED_AUTHORS:-}"
 ACTION_PLAN_LOCAL="${STINT_ONBOX_ACTION_PLAN:-}"
 ACTION_PLAN_TARGET="${STINT_ONBOX_ACTION_PLAN_PATH:-}"
 REMOTE_BIN="$ROOT/bin/stint"
+REMOTE_BIN_STAGE="$ROOT/bin/stint.staged.$$"
 REMOTE_SUPERVISOR="$ROOT/onbox-deep-supervisor.sh"
 REMOTE_BOOTSTRAP="$ROOT/bootstrap"
 REMOTE_PROVISION="$REMOTE_BOOTSTRAP/provision-box.sh"
@@ -383,7 +384,8 @@ else
   echo "transferring pinned Stint runtime and mission repository"
 fi
 retry_step "prepare remote directories" "${SSH[@]}" "mkdir -p '$ROOT/bin' '$ROOT/runtime' '$ROOT/config' '$ROOT/state' '$REMOTE_BOOTSTRAP' /root/.config/stint && chmod 700 '$ROOT' '$ROOT/config' '$ROOT/state' '$ROOT/runtime' '$REMOTE_BOOTSTRAP' /root/.config/stint"
-retry_step "transfer Stint binary" "${SCP[@]}" "$BIN" "root@$HOST:$REMOTE_BIN"
+retry_step "transfer Stint binary" "${SCP[@]}" "$BIN" "root@$HOST:$REMOTE_BIN_STAGE"
+retry_step "install Stint binary" "${SSH[@]}" "chmod 0755 '$REMOTE_BIN_STAGE' && mv -f '$REMOTE_BIN_STAGE' '$REMOTE_BIN'"
 retry_step "transfer supervisor" "${SCP[@]}" "$SUPERVISOR_LOCAL" "root@$HOST:$REMOTE_SUPERVISOR"
 retry_step "install remote executables" "${SSH[@]}" "chmod 0755 '$REMOTE_BIN' '$REMOTE_SUPERVISOR'"
 if [ "$RESUME" = 0 ]; then
