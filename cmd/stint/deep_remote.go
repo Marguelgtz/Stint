@@ -415,21 +415,24 @@ func remoteVerificationCommand(workdir, command string) string {
 	inner = strings.Replace(inner, shellQuote("__STINT_GROUP_FILE__"), `"$stint_group_file"`, 1)
 	return fmt.Sprintf(
 		"cd %s || { status=$?; printf '\\n%s%%s\\n' \"$status\"; exit 0; }; "+
-			"command -v setsid >/dev/null 2>&1 || { printf '\\n%s126\\n'; exit 0; }; "+
+			"for stint_tool in setsid ps awk sleep; do command -v \"$stint_tool\" >/dev/null 2>&1 || { printf '\\n%s126\\n'; exit 0; }; done; "+
 			"stint_status_file=%s || { printf '\\n%s126\\n'; exit 0; }; "+
 			"stint_group_file=%s || { rm -f \"$stint_status_file\"; printf '\\n%s126\\n'; exit 0; }; "+
 			"trap 'rm -f \"$stint_status_file\" \"$stint_group_file\"' EXIT; "+
 			"%s & stint_verifier_pid=$!; wait \"$stint_verifier_pid\" 2>/dev/null || true; "+
 			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || { printf '\\n%s127\\n'; exit 0; }; "+
 			"case \"$stint_group\" in ''|*[!0-9]*) printf '\\n%s127\\n'; exit 0;; esac; "+
-			"if ! kill -KILL -- -\"$stint_group\" 2>/dev/null && kill -0 -- -\"$stint_group\" 2>/dev/null; then printf '\\n%s127\\n'; exit 0; fi; "+
+			"kill -KILL -\"$stint_group\" 2>/dev/null || true; "+
+			"stint_quiescent=0; for stint_wait in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do "+
+			"if ! ps -eo pgid=,stat= | awk -v pgid=\"$stint_group\" '$1 == pgid && $2 !~ /^Z/ { found=1 } END { exit !found }'; then stint_quiescent=1; break; fi; "+
+			"sleep 0.1 || { printf '\\n%s127\\n'; exit 0; }; done; [ \"$stint_quiescent\" = 1 ] || { printf '\\n%s127\\n'; exit 0; }; "+
 			"status=$(cat \"$stint_status_file\" 2>/dev/null) || { printf '\\n%s126\\n'; exit 0; }; "+
 			"case \"$status\" in ''|*[!0-9]*) printf '\\n%s126\\n'; exit 0;; esac; "+
 			"printf '\\n%s%%s\\n' \"$status\"; exit 0",
 		shellQuote(workdir), verifySetupMarker,
 		verifySetupMarker, statusFile, verifySetupMarker, groupFile, verifySetupMarker,
 		inner, verifySetupMarker, verifySetupMarker, verifySetupMarker, verifySetupMarker,
-		verifySetupMarker, verifyExitMarker,
+		verifySetupMarker, verifySetupMarker, verifyExitMarker,
 	)
 }
 
@@ -727,9 +730,9 @@ stint_write_receipt() {
 		command += "for stint_tool in date mkdir chmod sync mv rm; do command -v \"$stint_tool\" >/dev/null 2>&1 || stint_setup_failure 127; done; " + receiptSetup +
 			"stint_prompt_file=; stint_status_file=; stint_group_file=; stint_subject_tmp=; " +
 			"trap 'for stint_tmp in \"$stint_prompt_file\" \"$stint_status_file\" \"$stint_group_file\"; do [ -z \"$stint_tmp\" ] || rm -f \"$stint_tmp\"; done; [ -z \"$stint_subject_tmp\" ] || rm -rf \"$stint_subject_tmp\"' EXIT; "
-		command += "for stint_tool in mktemp base64 setsid timeout cat grep; do command -v \"$stint_tool\" >/dev/null 2>&1 || stint_setup_failure 127; done; "
+		command += "for stint_tool in mktemp base64 setsid timeout cat grep ps awk sleep; do command -v \"$stint_tool\" >/dev/null 2>&1 || stint_setup_failure 127; done; "
 	} else {
-		command += "for stint_tool in mktemp base64 setsid timeout cat rm; do command -v \"$stint_tool\" >/dev/null 2>&1 || stint_setup_failure 127; done; " +
+		command += "for stint_tool in mktemp base64 setsid timeout cat rm ps awk sleep; do command -v \"$stint_tool\" >/dev/null 2>&1 || stint_setup_failure 127; done; " +
 			"stint_prompt_file=; stint_status_file=; stint_group_file=; stint_subject_tmp=; " +
 			"trap 'for stint_tmp in \"$stint_prompt_file\" \"$stint_status_file\" \"$stint_group_file\"; do [ -z \"$stint_tmp\" ] || rm -f \"$stint_tmp\"; done; [ -z \"$stint_subject_tmp\" ] || rm -rf \"$stint_subject_tmp\"' EXIT; "
 	}
@@ -740,13 +743,16 @@ stint_write_receipt() {
 			"printf %s " + shellQuote(b64) + " | base64 -d > \"$stint_prompt_file\" 2>/dev/null || stint_setup_failure $?; " +
 			"cd " + shellQuote(in.workdir) + " >/dev/null 2>&1 || stint_setup_failure $?; export stint_prompt_file; " +
 			"stint_cancel_requested=0; stint_group=; " +
-			`trap 'stint_cancel_requested=1; case "$stint_group" in ""|*[!0-9]*) :;; *) kill -KILL -- -"$stint_group" 2>/dev/null || true;; esac' HUP INT TERM; ` +
+			`trap 'stint_cancel_requested=1; case "$stint_group" in ""|*[!0-9]*) :;; *) kill -KILL -"$stint_group" 2>/dev/null || true;; esac' HUP INT TERM; ` +
 			"printf '%s\\n' " + shellQuote(hermesInvocationStartMarker) + "; " +
 			inner + " & stint_hermes_pid=$!; wait \"$stint_hermes_pid\" 2>/dev/null || true; " +
 			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || exit 125; " +
 			"case \"$stint_group\" in ''|*[!0-9]*) exit 125;; esac; " +
-			`if [ "$stint_cancel_requested" = 1 ]; then kill -KILL -- -"$stint_group" 2>/dev/null || true; fi; ` +
-			"if ! kill -KILL -- -\"$stint_group\" 2>/dev/null && kill -0 -- -\"$stint_group\" 2>/dev/null; then exit 125; fi; " +
+			`if [ "$stint_cancel_requested" = 1 ]; then kill -KILL -"$stint_group" 2>/dev/null || true; fi; ` +
+			"kill -KILL -\"$stint_group\" 2>/dev/null || true; " +
+			"stint_quiescent=0; for stint_wait in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do " +
+			"if ! ps -eo pgid=,stat= | awk -v pgid=\"$stint_group\" '$1 == pgid && $2 !~ /^Z/ { found=1 } END { exit !found }'; then stint_quiescent=1; break; fi; " +
+			"sleep 0.1 || exit 125; done; [ \"$stint_quiescent\" = 1 ] || exit 125; " +
 			"ec=$(cat \"$stint_status_file\" 2>/dev/null) || exit 125; " +
 			"case \"$ec\" in ''|*[!0-9]*) exit 125;; esac; " +
 			receiptCapture +
