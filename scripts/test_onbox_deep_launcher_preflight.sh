@@ -152,4 +152,18 @@ if grep -Fq 'could not verify the existing on-box supervisor state' <<<"$output"
 fi
 grep -Fq 'TEST_SCP_REACHED' "$STINT_TEST_SSH_LOG"
 
-echo "on-box launcher active-supervisor, stopped-supervisor, and pinned-source preflight passed"
+rm -f "$STINT_TEST_SSH_LOG"
+export STINT_ONBOX_PROVIDER='custom:qwen-stint-{reasoning}}'
+set +e
+output="$(bash "$REPO_ROOT/scripts/launch-onbox-deep.sh" 2>&1)"
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  printf '%s\n' "$output" >&2
+  echo "launcher accepted a malformed provider template" >&2
+  exit 1
+fi
+grep -Fq 'Hermes provider template contains an unmatched brace' <<<"$output"
+test ! -s "$STINT_TEST_SSH_LOG"
+
+echo "on-box launcher active-supervisor, stopped-supervisor, provider-template, and pinned-source preflight passed"
