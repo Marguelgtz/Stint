@@ -13,6 +13,7 @@ import (
 
 const (
 	defaultTaskVerifyReserve = 3 * time.Minute
+	defaultMissionVerifyTime = 10 * time.Minute
 	coordinatorReserve       = 30 * time.Second
 	minimumUsefulTaskWindow  = 5 * time.Minute
 )

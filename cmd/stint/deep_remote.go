@@ -339,7 +339,7 @@ func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir 
 	if err := deep.ValidateVerifyCommand(command); err != nil {
 		return verificationResult{Command: command, Outcome: verificationInvalid, StartedAt: started, CompletedAt: time.Now().UTC(), Error: err.Error()}
 	}
-	vctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	vctx, cancel := context.WithTimeout(ctx, defaultMissionVerifyTime)
 	defer cancel()
 	line := remoteVerificationCommand(workdir, command)
 	out, err := remote(vctx, line)
@@ -413,20 +413,24 @@ func remoteVerificationCommand(workdir, command string) string {
 	inner = strings.Replace(inner, shellQuote("__STINT_GROUP_FILE__"), `"$stint_group_file"`, 1)
 	return fmt.Sprintf(
 		"cd %s || { status=$?; printf '\\n%s%%s\\n' \"$status\"; exit 0; }; "+
-			"command -v setsid >/dev/null 2>&1 || { printf '\\n%s126\\n'; exit 0; }; "+
+			"for stint_tool in setsid ps awk sleep; do command -v \"$stint_tool\" >/dev/null 2>&1 || { printf '\\n%s126\\n'; exit 0; }; done; "+
 			"stint_status_file=%s || { printf '\\n%s126\\n'; exit 0; }; "+
 			"stint_group_file=%s || { rm -f \"$stint_status_file\"; printf '\\n%s126\\n'; exit 0; }; "+
 			"trap 'rm -f \"$stint_status_file\" \"$stint_group_file\"' EXIT; "+
 			"%s & stint_verifier_pid=$!; wait \"$stint_verifier_pid\" 2>/dev/null || true; "+
 			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || { printf '\\n%s127\\n'; exit 0; }; "+
 			"case \"$stint_group\" in ''|*[!0-9]*) printf '\\n%s127\\n'; exit 0;; esac; "+
-			"if ! kill -KILL -- -\"$stint_group\" 2>/dev/null && kill -0 -- -\"$stint_group\" 2>/dev/null; then printf '\\n%s127\\n'; exit 0; fi; "+
+			"kill -KILL -- -\"$stint_group\" 2>/dev/null || true; "+
+			"stint_quiescent=0; for stint_wait in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do "+
+			"if ! ps -eo pgid=,stat= | awk -v pgid=\"$stint_group\" '$1 == pgid && $2 !~ /^Z/ { found=1 } END { exit !found }'; then stint_quiescent=1; break; fi; "+
+			"sleep 0.1 || { printf '\\n%s127\\n'; exit 0; }; done; [ \"$stint_quiescent\" = 1 ] || { printf '\\n%s127\\n'; exit 0; }; "+
 			"status=$(cat \"$stint_status_file\" 2>/dev/null) || { printf '\\n%s126\\n'; exit 0; }; "+
 			"case \"$status\" in ''|*[!0-9]*) printf '\\n%s126\\n'; exit 0;; esac; "+
 			"printf '\\n%s%%s\\n' \"$status\"; exit 0",
 		shellQuote(workdir), verifySetupMarker,
 		verifySetupMarker, statusFile, verifySetupMarker, groupFile, verifySetupMarker,
 		inner, verifySetupMarker, verifySetupMarker, verifySetupMarker, verifySetupMarker,
+		verifySetupMarker,
 		verifySetupMarker, verifyExitMarker,
 	)
 }
@@ -612,7 +616,7 @@ func remoteHermesCommand(in execInput, b64, hermesArgs string, timeoutSeconds in
 		shellQuote(hermesSetupFailureMarker+"%%s\\n") + " \"$stint_setup_status\"; exit 0; }; "
 	return fmt.Sprintf(
 		setupFailure+"umask 077 || stint_setup_failure $?; "+
-			"for stint_tool in mktemp base64 setsid timeout cat rm; do command -v \"$stint_tool\" >/dev/null 2>&1 || stint_setup_failure 127; done; "+
+			"for stint_tool in mktemp base64 setsid timeout cat rm ps awk sleep; do command -v \"$stint_tool\" >/dev/null 2>&1 || stint_setup_failure 127; done; "+
 			"stint_prompt_file=; stint_status_file=; stint_group_file=; "+
 			"trap 'for stint_tmp in \"$stint_prompt_file\" \"$stint_status_file\" \"$stint_group_file\"; do [ -z \"$stint_tmp\" ] || rm -f \"$stint_tmp\"; done' EXIT; "+
 			"stint_prompt_file=$(mktemp /tmp/stint-deep-prompt.XXXXXX 2>/dev/null) || stint_setup_failure $?; "+
@@ -624,7 +628,10 @@ func remoteHermesCommand(in execInput, b64, hermesArgs string, timeoutSeconds in
 			"%s & stint_hermes_pid=$!; wait \"$stint_hermes_pid\" 2>/dev/null || true; "+
 			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || exit 125; "+
 			"case \"$stint_group\" in ''|*[!0-9]*) exit 125;; esac; "+
-			"if ! kill -KILL -- -\"$stint_group\" 2>/dev/null && kill -0 -- -\"$stint_group\" 2>/dev/null; then exit 125; fi; "+
+			"kill -KILL -- -\"$stint_group\" 2>/dev/null || true; "+
+			"stint_quiescent=0; for stint_wait in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do "+
+			"if ! ps -eo pgid=,stat= | awk -v pgid=\"$stint_group\" '$1 == pgid && $2 !~ /^Z/ { found=1 } END { exit !found }'; then stint_quiescent=1; break; fi; "+
+			"sleep 0.1 || exit 125; done; [ \"$stint_quiescent\" = 1 ] || exit 125; "+
 			"ec=$(cat \"$stint_status_file\" 2>/dev/null) || exit 125; "+
 			"case \"$ec\" in ''|*[!0-9]*) exit 125;; esac; printf '\\n%s%%s\\n' \"$ec\"; exit 0",
 		shellQuote(b64), shellQuote(in.workdir), inner, hermesExitMarker,
