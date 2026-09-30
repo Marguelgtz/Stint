@@ -45,6 +45,9 @@ func TestJournaledFinalVerificationIsBoundAndReusedAfterLandingInterruption(t *t
 	for _, event := range events {
 		if event.Type == deep.RunEventVerificationStarted && event.VerificationRun != nil && event.VerificationRun.ID == firstID {
 			starts++
+			if event.VerificationRun.TimeoutSeconds != int(defaultMissionVerifyTime.Seconds()) {
+				t.Errorf("final verification timeout = %d seconds, want %d", event.VerificationRun.TimeoutSeconds, int(defaultMissionVerifyTime.Seconds()))
+			}
 		}
 		if event.Type == deep.RunEventVerificationResult && event.VerificationRun != nil && event.VerificationRun.ID == firstID {
 			results++
