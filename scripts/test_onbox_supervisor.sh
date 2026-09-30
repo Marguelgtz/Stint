@@ -134,6 +134,7 @@ chmod 0700 "$TMP/permanent-publisher"
 printf 'fixture-token\n' >"$TMP/github-token"
 set +e
 env \
+  PATH="$TMP:$PATH" \
   STINT_ONBOX_BIN="$TMP/stint" \
   STINT_ONBOX_ROOT="$TMP/permanent-publish-root" \
   STINT_ONBOX_INSTANCE_ID=4242 \

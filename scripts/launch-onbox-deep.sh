@@ -18,6 +18,7 @@ PHASE_PROXY_LOCAL="${STINT_PHASE_PROXY_LOCAL:-$SCRIPT_DIR/phaseproxy.py}"
 PHASE_SETUP_LOCAL="${STINT_PHASE_SETUP_LOCAL:-$SCRIPT_DIR/box-phase-setup.sh}"
 DEEP_OBSERVE_LOCAL="${STINT_DEEP_OBSERVE_LOCAL:-$SCRIPT_DIR/deep-observe.sh}"
 BOX_SMOKE_LOCAL="${STINT_BOX_SMOKE_LOCAL:-$SCRIPT_DIR/box-smoke.sh}"
+ADMISSION_CANARY_LOCAL="${STINT_ONBOX_ADMISSION_CANARY_LOCAL:-$SCRIPT_DIR/onbox-deep-admission-canary.sh}"
 LANE_SMOKE_LOCAL="${STINT_LANE_SMOKE_LOCAL:-$SCRIPT_DIR/phase-lane-concurrency-smoke.sh}"
 AGENT_LOG_TAIL_LOCAL="${STINT_AGENT_LOG_TAIL_LOCAL:-$SCRIPT_DIR/deep-agent-log-tail.py}"
 NINFER_OBSERVER_LOCAL="${STINT_NINFER_OBSERVER_LOCAL:-$SCRIPT_DIR/onbox-ninfer-observe.py}"
@@ -55,6 +56,7 @@ REMOTE_PHASE_PROXY="$REMOTE_BOOTSTRAP/phaseproxy.py"
 REMOTE_PHASE_SETUP="$REMOTE_BOOTSTRAP/box-phase-setup.sh"
 REMOTE_DEEP_OBSERVE="$REMOTE_BOOTSTRAP/deep-observe.sh"
 REMOTE_BOX_SMOKE="$REMOTE_BOOTSTRAP/box-smoke.sh"
+REMOTE_ADMISSION_CANARY="$REMOTE_BOOTSTRAP/onbox-deep-admission-canary.sh"
 REMOTE_LANE_SMOKE="$REMOTE_BOOTSTRAP/phase-lane-concurrency-smoke.sh"
 REMOTE_AGENT_LOG_TAIL="$REMOTE_BOOTSTRAP/deep-agent-log-tail.py"
 REMOTE_NINFER_OBSERVER="$REMOTE_BOOTSTRAP/onbox-ninfer-observe.py"
@@ -152,7 +154,7 @@ fi
 [ -x "$BIN" ] || die "stint binary is missing or not executable: $BIN"
 [ -x "$SUPERVISOR_LOCAL" ] || die "supervisor script is missing or not executable: $SUPERVISOR_LOCAL"
 for script in "$PROVISION_LOCAL" "$PHASE_PROXY_LOCAL" "$PHASE_SETUP_LOCAL" \
-  "$DEEP_OBSERVE_LOCAL" "$BOX_SMOKE_LOCAL" "$LANE_SMOKE_LOCAL" \
+  "$DEEP_OBSERVE_LOCAL" "$BOX_SMOKE_LOCAL" "$ADMISSION_CANARY_LOCAL" "$LANE_SMOKE_LOCAL" \
   "$AGENT_LOG_TAIL_LOCAL" "$NINFER_OBSERVER_LOCAL"; do
   [ -r "$script" ] || die "fresh-box bootstrap component is missing: $script"
 done
@@ -448,11 +450,11 @@ if [ "$SKIP_GITHUB" != 1 ]; then
 fi
 retry_step "transfer Deep Work bootstrap" rsync -a -e "$RSYNC_SSH" \
   "$PROVISION_LOCAL" "$PHASE_PROXY_LOCAL" "$PHASE_SETUP_LOCAL" \
-  "$DEEP_OBSERVE_LOCAL" "$BOX_SMOKE_LOCAL" "$LANE_SMOKE_LOCAL" \
+  "$DEEP_OBSERVE_LOCAL" "$BOX_SMOKE_LOCAL" "$ADMISSION_CANARY_LOCAL" "$LANE_SMOKE_LOCAL" \
   "$AGENT_LOG_TAIL_LOCAL" "$NINFER_OBSERVER_LOCAL" \
   "root@$HOST:$REMOTE_BOOTSTRAP/"
 retry_step "protect Deep Work bootstrap" "${SSH[@]}" \
-  "chmod 0755 '$REMOTE_PROVISION' '$REMOTE_PHASE_PROXY' '$REMOTE_PHASE_SETUP' '$REMOTE_DEEP_OBSERVE' '$REMOTE_BOX_SMOKE' '$REMOTE_LANE_SMOKE' '$REMOTE_AGENT_LOG_TAIL' '$REMOTE_NINFER_OBSERVER'"
+  "chmod 0755 '$REMOTE_PROVISION' '$REMOTE_PHASE_PROXY' '$REMOTE_PHASE_SETUP' '$REMOTE_DEEP_OBSERVE' '$REMOTE_BOX_SMOKE' '$REMOTE_ADMISSION_CANARY' '$REMOTE_LANE_SMOKE' '$REMOTE_AGENT_LOG_TAIL' '$REMOTE_NINFER_OBSERVER'"
 
 # Production and the live smoke use this same fresh-box sequence. Do not start
 # the detached supervisor until runtime, model, phase providers, compression
@@ -476,6 +478,16 @@ remote_box_smoke=(env "STINT_PHASED=1" "HERMES_MODEL=$ONBOX_MODEL" \
 remote_box_smoke_cmd="$(printf '%q ' "${remote_box_smoke[@]}")"
 "${SSH[@]}" "$remote_box_smoke_cmd" || \
   die "Hermes phase routes or compression configuration failed qualification"
+remote_admission_canary=(env \
+  "STINT_ONBOX_BIN=$REMOTE_BIN" \
+  "STINT_INSTANCE_ID=$STINT_INSTANCE_ID" \
+  "STINT_DEADLINE=$STINT_DEADLINE" \
+  "HERMES_MODEL=$ONBOX_MODEL" \
+  "PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/root/.local/bin" \
+  timeout "${STINT_ONBOX_ADMISSION_CANARY_TIMEOUT:-12m}" "$REMOTE_ADMISSION_CANARY")
+remote_admission_canary_cmd="$(printf '%q ' "${remote_admission_canary[@]}")"
+"${SSH[@]}" "$remote_admission_canary_cmd" || \
+  die "journaled Deep Work admission canary failed before the detached supervisor could start"
 if [ "$CLIENTS" -eq 2 ]; then
   remote_lane_smoke=(env "HERMES_MODEL=$ONBOX_MODEL" "PHASING_DIR=$PHASING_DIR" \
     timeout "${STINT_LANE_SMOKE_TIMEOUT:-8m}" "$REMOTE_LANE_SMOKE")

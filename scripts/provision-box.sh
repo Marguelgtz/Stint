@@ -125,7 +125,7 @@ install_go_for_repo
 git config --global user.name "Stint Deep Work"
 git config --global user.email "deepwork@stint.local"
 
-for executable in git python3 node npm npx hermes timeout curl; do
+for executable in git python3 node npm npx hermes timeout curl ps awk sleep pgrep; do
   command -v "$executable" >/dev/null 2>&1 || fail "required Deep Work executable is unavailable: $executable"
 done
 
