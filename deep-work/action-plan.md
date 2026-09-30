@@ -7,10 +7,10 @@ Run: `20260930-171348`, branch `stint/deep-20260930-171348`, base head `21cd8403
 ## Current graph
 
 - Objective A (authorized, this run) — expose Stint's persisted Deep run status through a validated, bounded local stdio MCP provider.
-  - `STINT-STATUS-MCP-001` — active (this task is its execution); single work unit, repository change required, verification per mission.
-    - A1 — plan checkpoint (this file, STINT-PLAN-001): in progress.
-    - A2 — Go MCP provider: `internal/deep` status projection + `cmd/stint` `stint mcp serve --session <ID>` entry point + protocol tests. Queued.
-    - A3 — documentation: local stdio client configuration + explicit Spark-side follow-up (consume and persist `deep_run_status`; separate repository workstream). Queued, same stack.
+  - `STINT-STATUS-MCP-001` — in verification (attempt 2); single work unit, repository change required, verification per mission.
+    - A1 — plan checkpoint (this file, STINT-PLAN-001): done (v2 at plan time, v3 status update below).
+    - A2 — Go MCP provider: done in this run — `internal/deep/status_provider.go` (projection, bounds, session-ID validation) + `internal/deep/status_provider_test.go`; `cmd/stint/mcp_status.go` (`stint mcp serve --session <ID>`, help entry in `cmd/stint/help.go`, dispatch in `cmd/stint/main.go`) + `cmd/stint/mcp_status_test.go` (protocol-level: in-memory SDK client + subprocess stdio client of the built binary).
+    - A3 — documentation: done — `docs/mcp/status-provider.md` (local stdio client configuration + explicit Spark-side follow-up: consume and persist `deep_run_status`; separate repository workstream, blocking only the cross-repository MVP claim).
   - PR stack: A2 -> A3 (one coherent stack, independently landable).
 - Objective B (separate repository workstream, NOT authorized in this run) — Spark consumes and persists Stint status over MCP, building on `Marguelgtz/spark-observability-test` PRs #97–#101 (the `evaluate_change` stdio server stays as-is; do not recreate or modify it).
   - Dependency: Objective A's `schemaVersion: 1` projection and a cross-repository fixture.
@@ -71,3 +71,9 @@ Run: `20260930-171348`, branch `stint/deep-20260930-171348`, base head `21cd8403
   - Reason: the previously failed run shows a broad single task times out; a narrower, evidence-pinned plan with an ordered execution sequence reduces rework and keeps Objective A independently landable.
   - Acceptance impact: none — mission objective, success criteria, and constraints are unchanged.
   - Dependencies: Objective B depends on Objective A's projection; nothing in this run blocks on Objective B.
+- v3 (this run, STINT-STATUS-MCP-001 attempt 2, same branch):
+  - Triggering evidence: execution of A2/A3 against the in-tree contracts — SDK v1.3.0 API verified from module sources (`mcp.NewServer`/`AddTool`/`NewInMemoryTransports`, `Server.Run`+`StdioTransport`); `LoadState` confirmed to require the durable `deep.json` projection and to replay the journal over it (`internal/deep/state_persist.go`); SDK surfaces a clean stdio client disconnect as a wrapped "server is closing" error, so `runMCPCommand` maps that plus `io.EOF`/`mcp.ErrConnectionClosed` to a clean exit 0 (`isCleanStdioShutdown`, verified with a live binary probe over stdio).
+  - Change: implemented `internal/deep/status_provider.go` (allow-listed projection, 64 KiB reply cap, 512-row bound, session-ID validation tightened to alnum/`-`/`_` so a crafted id cannot traverse paths — dots are legal in task IDs and were removed from the session-ID charset) and `cmd/stint/mcp_status.go` (single `deep_run_status` tool, no resources/prompts advertised, tool-only capability, stderr-only diagnostics); protocol-level tests in both packages (in-memory SDK client for discovery/projection/fail-closed cases; subprocess stdio test of the built binary for discovery, projection, cap, and secret/path exclusion); documentation in `docs/mcp/status-provider.md` including the local stdio client configuration and the explicit Spark-side consume+persist follow-up.
+  - Reason: completes STINT-STATUS-MCP-001 as an independently reviewable, Git-visible, local read-only provider; no journal/checkpoint semantics, journal schema, A–D contracts, or Spark-side behavior were changed.
+  - Acceptance impact: all Stint-side acceptance criteria now have in-repo evidence; the cross-repository MVP claim remains blocked on Objective B (Spark consumption/persistence) per the mission contract.
+  - Dependencies: none new; Objective B still depends on this provider's `schemaVersion: 1` projection.
