@@ -147,6 +147,29 @@ of journaled Work Units; unresolved work never promotes mission success.
 Malformed review output, reviewer failure, stale evidence, or an uncertain
 repository subject cannot produce a clear result.
 
+Semantic Review Contract version 2 keeps all version 1 Objective-review
+behavior and adds a final fresh-context review of the whole mission:
+
+```markdown
+## Semantic Review Contract
+version: 2
+```
+
+Stint runs this mission review after every Objective has accepted evidence and
+its required Objective review gate is satisfied, the final verifier has passed
+when configured, and the exact landing checkpoint exists. The review packet
+contains the mission objective, success criteria and constraints, bounded
+Objective acceptance/review facts, and a bounded Git diff from the run's base
+commit to the checkpoint. The durable `MissionReviewCycle` records its policy
+and context identities, runtime and time facts, exact checkpoint commit/tree,
+the final verifier provenance when configured, and bounded findings. Its
+result is journaled before the landing event. A clear result can satisfy the
+mission review gate; findings, malformed output, reviewer errors, timeouts,
+stale subjects, and recovery without a result leave mission outcome unresolved.
+The review never changes already-recorded Objective acceptance. Semantic
+Review Contract version 1 and legacy missions retain their existing task-only
+review meaning.
+
 Production on-box missions must persist an explicit GitHub policy. The launcher
 configuration (mode, repository, base, allowed authors, and approval) must match
 that mission section exactly or launch fails. The current on-box publisher only

@@ -13,6 +13,11 @@
 # back to the same instance and has no operator-side fallback.
 set -Eeuo pipefail
 
+# The supervisor is detached from the interactive SSH shell. Preserve the
+# locations used by the fresh-box bootstrap in the long-lived coordinator
+# environment so Hermes and Go remain resolvable after SSH disconnects.
+export PATH="/usr/local/go/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}:$HOME/.local/bin"
+
 ROOT="${STINT_ONBOX_ROOT:-/var/lib/stint-onbox}"
 STATE_HOME="$ROOT/state"
 CONFIG_HOME="${STINT_ONBOX_CONFIG_HOME:-$HOME/.config}"
@@ -88,6 +93,53 @@ start_watchdog() {
   fi
 }
 
+qualification_run_timed() {
+  local phase="$1" state_dir="$2" start_ns end_ns status=0
+  shift 2
+  start_ns="$(python3 -c 'import time; print(time.monotonic_ns())' 2>/dev/null)" || start_ns=0
+  "$@" || status=$?
+  end_ns="$(python3 -c 'import time; print(time.monotonic_ns())' 2>/dev/null)" || end_ns=0
+  if [ "${STINT_ONBOX_QUALIFICATION_EXPORT:-0}" = 1 ] && [ "$start_ns" -gt 0 ] && [ "$end_ns" -ge "$start_ns" ]; then
+    python3 - "$state_dir" "$phase" "$start_ns" "$end_ns" <<'PY' || true
+import datetime
+import json
+import os
+import sys
+from pathlib import Path
+
+state_dir, phase, start_ns, end_ns = sys.argv[1:]
+state_path = Path(state_dir) / "deep.json"
+try:
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    start_ns, end_ns = int(start_ns), int(end_ns)
+    duration_ms = max(0, (end_ns - start_ns) // 1_000_000)
+    ended = datetime.datetime.now(datetime.timezone.utc)
+    started = ended - datetime.timedelta(milliseconds=duration_ms)
+    record = {
+        "schemaVersion": 1,
+        "runId": state.get("runId") or state.get("sessionId", ""),
+        "epochId": state.get("executionEpochId", ""),
+        "phase": phase,
+        "startedAtUtc": started.isoformat().replace("+00:00", "Z"),
+        "endedAtUtc": ended.isoformat().replace("+00:00", "Z"),
+        "durationMilliseconds": duration_ms,
+        "durationSource": "process-local-monotonic",
+    }
+    if record["runId"]:
+        path = Path(state_dir) / "qualification-timings.jsonl"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+except Exception:
+    pass
+PY
+  fi
+  return "$status"
+}
+
 publish_once() {
   [ "${STINT_ONBOX_SKIP_GITHUB:-0}" = 1 ] && return 0
   local publisher="${STINT_ONBOX_GITHUB_PUBLISH:-}"
@@ -95,7 +147,7 @@ publish_once() {
   local state_dir
   state_dir="$(latest_state_dir)" || return 0
   local status=0
-  "$publisher" sync "$state_dir" >>"$LOG_FILE" 2>&1 || status=$?
+  qualification_run_timed publication.sync "$state_dir" "$publisher" sync "$state_dir" >>"$LOG_FILE" 2>&1 || status=$?
   [ "$status" -eq 0 ] && return 0
   [ "$status" -eq 3 ] && return 3
   return 1
@@ -241,7 +293,25 @@ archive_final() {
     echo "configured R2 archive has no durable Deep Work state to archive" >&2
     return 1
   }
-  "$STINT_ONBOX_R2_ARCHIVE" "$state_dir"
+  qualification_run_timed evidence.archive "$state_dir" "$STINT_ONBOX_R2_ARCHIVE" "$state_dir"
+}
+
+qualification_snapshot() {
+  [ "${STINT_ONBOX_QUALIFICATION_EXPORT:-0}" = 1 ] || return 0
+  local state_dir session snapshot_id
+  state_dir="$(latest_state_dir)" || return 1
+  session="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1], encoding="utf-8")); print(s.get("runId") or s.get("sessionId", ""))' "$state_dir/deep.json")"
+  snapshot_id="$(python3 -c 'import datetime,json,sys; s=json.load(open(sys.argv[1], encoding="utf-8")); e=s.get("executionEpochId", ""); w=s.get("runEventWatermark", 0); assert e and isinstance(w, int); stamp=datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"); print(f"epoch-{e}-seq-{w}-{stamp}")' "$state_dir/deep.json")"
+  [ -n "$session" ] || return 1
+  local -a export_args=(deep qualification export --state-dir "$STATE_HOME/stint" --run-id "$session" --snapshot-id "$snapshot_id")
+  if [ -n "${STINT_ONBOX_QUALIFICATION_CONTEXT:-}" ]; then
+    [ -r "$STINT_ONBOX_QUALIFICATION_CONTEXT" ] || return 1
+    export_args+=(--context "$STINT_ONBOX_QUALIFICATION_CONTEXT")
+  fi
+  if ! "$STINT_BIN" "${export_args[@]}" >>"$LOG_FILE" 2>&1; then
+    echo "$(date -u +%FT%TZ) qualification evidence snapshot failed at coordinator boundary $snapshot_id" >>"$LOG_FILE"
+    return 1
+  fi
 }
 
 durable_phase() {
@@ -312,6 +382,7 @@ watch_ninfer_observer_for_new_session() {
 
 run_supervisor() {
   local -a onbox_args=("$@")
+  command -v hermes >/dev/null 2>&1 || die "Hermes is not on the detached supervisor PATH"
   mkdir -p "$ROOT" "$RUNTIME_DIR" "$CONFIG_HOME/stint" "$STATE_HOME"
   if [ "${STINT_ONBOX_SKIP_GITHUB:-0}" != 1 ]; then
     [ -x "${STINT_ONBOX_GITHUB_PUBLISH:-}" ] || die "on-box GitHub publisher is required"
@@ -359,6 +430,13 @@ run_supervisor() {
     else
       "$STINT_BIN" deep onbox --resume || rc=$?
     fi
+    if [ "${STINT_ONBOX_QUALIFICATION_EXPORT:-0}" = 1 ]; then
+      if qualification_snapshot; then
+        if ! archive_final; then
+          echo "$(date -u +%FT%TZ) qualification boundary snapshot archived locally but R2 upload failed" >>"$LOG_FILE"
+        fi
+      fi
+    fi
     publish_once || true
     snapshot || true
     local phase=""
@@ -369,6 +447,15 @@ run_supervisor() {
           return 1
         fi
         snapshot || true
+        if [ "${STINT_ONBOX_QUALIFICATION_EXPORT:-0}" = 1 ]; then
+          if qualification_snapshot; then
+            if ! archive_final; then
+              echo "$(date -u +%FT%TZ) final qualification evidence snapshot upload failed" >>"$LOG_FILE"
+            fi
+          else
+            echo "$(date -u +%FT%TZ) final qualification evidence snapshot failed" >>"$LOG_FILE"
+          fi
+        fi
         return "$rc"
         ;;
     esac

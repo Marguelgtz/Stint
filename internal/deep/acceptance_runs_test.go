@@ -39,23 +39,31 @@ func acceptanceRunFixture(t *testing.T) (string, DeepState, AcceptanceRun, time.
 }
 
 func acceptanceRunFixtureWithSemanticReview(t *testing.T, semanticReview bool) (string, DeepState, AcceptanceRun, time.Time) {
+	version := 0
+	if semanticReview {
+		version = SemanticReviewContractVersion
+	}
+	return acceptanceRunFixtureWithReviewVersion(t, version, "go test ./...")
+}
+
+func acceptanceRunFixtureWithReviewVersion(t *testing.T, reviewVersion int, missionVerify string) (string, DeepState, AcceptanceRun, time.Time) {
 	t.Helper()
 	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	mission := Mission{
-		Name: "acceptance journal fixture", Objective: "record deterministic acceptance", Verify: "go test ./...",
+		Name: "acceptance journal fixture", Objective: "record deterministic acceptance", Verify: missionVerify,
 		AcceptanceContractVersion: DeterministicAcceptanceContractVersion,
 		Tasks: []Task{{ID: "T-1", Objective: "produce output", RepositoryChange: RepositoryChangeRequired,
 			AcceptanceCheck: "test -e output.txt", Status: StatusQueued}},
 	}
-	if semanticReview {
-		mission.SemanticReviewContractVersion = SemanticReviewContractVersion
+	if reviewVersion != 0 {
+		mission.SemanticReviewContractVersion = reviewVersion
 	}
 	var err error
 	mission.AcceptanceContractSHA256, err = AcceptanceContractIdentity(mission)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if semanticReview {
+	if reviewVersion != 0 {
 		mission.SemanticReviewContractSHA256, err = SemanticReviewContractIdentity(mission)
 		if err != nil {
 			t.Fatal(err)

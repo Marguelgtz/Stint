@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -14,6 +15,7 @@ import (
 
 const (
 	defaultTaskVerifyReserve = 3 * time.Minute
+	defaultMissionVerifyTime = 10 * time.Minute
 	coordinatorReserve       = 30 * time.Second
 	minimumUsefulTaskWindow  = 5 * time.Minute
 )
@@ -357,7 +359,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		if !continuing {
 			return nil
 		}
-		subject, subjectErr = c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+		subject, subjectErr = c.captureVerificationSubject("executor.recovery_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), t.ID, t.Attempts)
 		if subjectErr == nil {
 			switch {
 			case executorRun.RepositoryAfterError != "":
@@ -393,7 +395,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		}
 		attempt := t.Attempts + 1
 		if journaled {
-			before, err := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+			before, err := c.captureVerificationSubject("executor.pre_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), t.ID, attempt)
 			if err != nil {
 				return fmt.Errorf("capture repository state before executor for task %s: %w", t.ID, err)
 			}
@@ -444,12 +446,23 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 			input.sessionID = c.state.SessionID
 			input.executorRunID = executorRun.ID
 		}
+		executorStarted := time.Now()
 		res, execErr = c.executor.run(tc, input)
+		c.recordTiming("executor.exit_to_coordinator_return", t.ID, t.Attempts, executorStarted)
+		c.recordProviderRuntime(t.ID, t.Attempts, res.duration)
+		if res.exitToQuiescence > 0 {
+			c.recordMeasuredTiming("executor.exit_to_quiescence", t.ID, t.Attempts, res.exitToQuiescence, "supervisor-monotonic")
+		}
 		if res.timedOut && execErr == nil {
 			execErr = context.DeadlineExceeded
 		}
 		if execErr == nil && tc.Err() != nil {
 			execErr = tc.Err()
+		}
+		if injected, faultErr := qualificationFaultAfterReceipt(c, *t, executorRun, res, execErr); faultErr != nil {
+			return fmt.Errorf("qualification receipt fault: %w", faultErr)
+		} else if injected {
+			os.Exit(qualificationFaultExitCode)
 		}
 		if execErr != nil {
 			c.logf("task %s: executor error: %v", t.ID, execErr)
@@ -487,7 +500,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		}
 		// Capture the exact Git-visible state after the executor is quiescent.
 		// Stint bookkeeping is recorded separately by the Git backend.
-		subject, subjectErr = c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+		subject, subjectErr = c.captureVerificationSubject("executor.post_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), t.ID, t.Attempts)
 		if subjectErr != nil {
 			c.logf("task %s: capture verification subject: %v", t.ID, subjectErr)
 			c.incident(deep.IncidentCheckpointFail, t.ID, "could not capture verification subject: "+subjectErr.Error())
@@ -683,7 +696,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 			}
 			return fmt.Errorf("verification subject unavailable for task %s: %w", t.ID, subjectErr)
 		}
-		currentSubject, err := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+		currentSubject, err := c.captureVerificationSubject("checkpoint.pre_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), t.ID, t.Attempts)
 		if err == nil && !sameVerificationSnapshot(subject, currentSubject) {
 			err = fmt.Errorf("repository changed after verification; verified subject %s/%s no longer matches %s/%s", subject.Subject.HeadCommit, subject.Subject.TreeSHA, currentSubject.Subject.HeadCommit, currentSubject.Subject.TreeSHA)
 		}
@@ -913,7 +926,7 @@ func (c *deepCoordinator) effectiveTaskTimeout(now time.Time, task deep.Task) (t
 		}
 	}
 	reviewReserve := time.Duration(0)
-	if c.state.SemanticReviewContractVersion == deep.SemanticReviewContractVersion && task.IsAcceptanceContractTask() {
+	if deep.HasSemanticReviewContract(c.state.SemanticReviewContractVersion) && task.IsAcceptanceContractTask() {
 		reviewReserve = c.effectiveReviewLimit()
 	}
 	remaining := c.state.LandBefore.Sub(now)
@@ -984,7 +997,7 @@ func (c *deepCoordinator) failedPrerequisite(task deep.Task) string {
 			if c.state.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion && required.IsAcceptanceContractTask() {
 				requires = "accepted"
 				satisfied = status == deep.StatusAccepted && required.AcceptanceOutcome == deep.AcceptanceAccepted
-				if c.state.SemanticReviewContractVersion == deep.SemanticReviewContractVersion {
+				if deep.HasSemanticReviewContract(c.state.SemanticReviewContractVersion) {
 					requires = "accepted and clear-reviewed"
 					satisfied = satisfied && deep.TaskHasSatisfiedReviewGate(required.ID, c.state.Tasks)
 				}
@@ -1017,7 +1030,7 @@ func (c *deepCoordinator) selectTask() (int, bool) {
 			continue
 		}
 		if c.state.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion &&
-			c.state.SemanticReviewContractVersion == deep.SemanticReviewContractVersion && task.IsAcceptanceContractTask() &&
+			deep.HasSemanticReviewContract(c.state.SemanticReviewContractVersion) && task.IsAcceptanceContractTask() &&
 			c.failedPrerequisite(task) != "" {
 			// Keep a dependent queued while a prerequisite has repair findings.
 			// Dynamic repair Work Units may resolve it later in this same epoch.
@@ -1033,7 +1046,7 @@ func (c *deepCoordinator) selectTask() (int, bool) {
 }
 
 func pendingSemanticReview(task deep.Task, state deep.DeepState) bool {
-	if state.SemanticReviewContractVersion != deep.SemanticReviewContractVersion ||
+	if !deep.HasSemanticReviewContract(state.SemanticReviewContractVersion) ||
 		state.AcceptanceContractVersion != deep.DeterministicAcceptanceContractVersion || !task.IsAcceptanceContractTask() ||
 		task.Status != deep.StatusAccepted || task.AcceptanceOutcome != deep.AcceptanceAccepted ||
 		task.AcceptanceCheckOutcome != deep.AcceptanceCheckPassed || task.AcceptanceCheckpointEventID == "" {
@@ -1074,14 +1087,16 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 				if found {
 					var repositoryAtRecovery *deep.VerificationSubject
 					repositoryAtRecoveryError := ""
-					snapshot, captureErr := c.git.verificationSubject(fresh.WorktreePath, c.verificationBookkeepingPaths())
+					snapshot, captureErr := c.captureVerificationSubject("executor.reconciliation_subject_capture", fresh.WorktreePath, c.verificationBookkeepingPaths(), unmatchedExecutor.TaskID, unmatchedExecutor.Attempt)
 					if captureErr != nil {
 						repositoryAtRecoveryError = boundedExecutionFact(captureErr.Error(), 512)
 					} else {
 						subject := snapshot.Subject
 						repositoryAtRecovery = &subject
 					}
+					reconciliationStarted := time.Now()
 					reconciled, err := deep.ReconcileExecutorRunReceipt(c.stateDir, &fresh, receipt, repositoryAtRecovery, repositoryAtRecoveryError, c.now().UTC())
+					c.recordTiming("executor.receipt_reconciliation", unmatchedExecutor.TaskID, unmatchedExecutor.Attempt, reconciliationStarted)
 					if err != nil {
 						return fmt.Errorf("reconcile executor completion receipt: %w", err)
 					}
@@ -1121,6 +1136,12 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 			} else if unmatched != nil {
 				*c.state = fresh
 				return fmt.Errorf("Deep Work is blocked: semantic review %s for task %s has no durable result and reviewer process quiescence is unknown", unmatched.ID, unmatched.TaskID)
+			}
+			if unmatched, err := deep.RecoverUnmatchedMissionReviewCycle(c.stateDir, &fresh, c.now()); err != nil {
+				return fmt.Errorf("recover unmatched mission semantic review: %w", err)
+			} else if unmatched != nil {
+				*c.state = fresh
+				return fmt.Errorf("Deep Work is blocked: mission semantic review %s has no durable result and reviewer process quiescence is unknown", unmatched.ID)
 			}
 		}
 		if fresh.ExecutionQuiescenceUnconfirmed {

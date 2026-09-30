@@ -48,6 +48,50 @@ func DetermineMissionOutcome(state DeepState) MissionOutcome {
 	return determineLegacyMissionOutcome(state)
 }
 
+// MissionObjectivesSemanticallyComplete reports whether every Objective in a
+// deterministic-acceptance mission has accepted evidence and, when the
+// semantic-review contract is enabled, a satisfied checkpoint-bound review
+// gate. A whole-mission review is only useful after this boundary.
+func MissionObjectivesSemanticallyComplete(state DeepState) bool {
+	if state.AcceptanceContractVersion != DeterministicAcceptanceContractVersion {
+		return false
+	}
+	seen := false
+	for _, task := range state.Tasks {
+		if !task.IsAcceptanceContractTask() {
+			continue
+		}
+		seen = true
+		if task.Status != StatusAccepted || task.AcceptanceOutcome != AcceptanceAccepted || !taskHasBoundAcceptance(task) {
+			return false
+		}
+		if HasSemanticReviewContract(state.SemanticReviewContractVersion) && !TaskHasSatisfiedReviewGate(task.ID, state.Tasks) {
+			return false
+		}
+	}
+	return seen
+}
+
+// MissionReviewRequiredAtLanding reports whether the semantic mission-review
+// gate applies to this landing checkpoint. A configured final verifier must
+// have passed against the same Git tree; a failed, timed-out, canceled, or
+// otherwise inconclusive verifier keeps mission outcome unresolved without
+// preventing the coordinator from reaching a recoverable landing boundary.
+func MissionReviewRequiredAtLanding(state DeepState, checkpointCommit, checkpointTree string) bool {
+	if state.SemanticReviewContractVersion != SemanticReviewMissionContractVersion ||
+		!MissionObjectivesSemanticallyComplete(state) || checkpointCommit == "" || checkpointTree == "" {
+		return false
+	}
+	if strings.TrimSpace(state.Verify) == "" {
+		return state.LandingVerifyDone && state.LandingVerificationOutcome == VerificationNotRun &&
+			state.LandingVerificationRunID == "" && state.LandingVerificationSubject == nil
+	}
+	subject := state.LandingVerificationSubject
+	return state.LandingVerifyDone && state.LandingVerificationOutcome == VerificationPassed &&
+		state.LandingVerificationRunID != "" && subject != nil && subject.HeadCommit != "" &&
+		subject.TreeSHA == checkpointTree
+}
+
 func determineLegacyMissionOutcome(state DeepState) MissionOutcome {
 	if strings.TrimSpace(state.Verify) != "" && state.LandingVerifyDone &&
 		state.LandingVerificationOutcome == VerificationFailed && finalVerificationMatchesCheckpoint(state) {
@@ -100,7 +144,7 @@ func determineAcceptedMissionOutcome(state DeepState) MissionOutcome {
 				if !taskHasBoundAcceptance(task) {
 					return MissionOutcomeUnresolved
 				}
-				if state.SemanticReviewContractVersion == SemanticReviewContractVersion && !TaskHasSatisfiedReviewGate(task.ID, state.Tasks) {
+				if HasSemanticReviewContract(state.SemanticReviewContractVersion) && !TaskHasSatisfiedReviewGate(task.ID, state.Tasks) {
 					return MissionOutcomeUnresolved
 				}
 			case AcceptanceUnresolved:
@@ -123,6 +167,11 @@ func determineAcceptedMissionOutcome(state DeepState) MissionOutcome {
 		}
 	}
 	if state.LandingCommit == "" || state.LandingCheckpointTreeSHA == "" {
+		return MissionOutcomeUnresolved
+	}
+	if state.SemanticReviewContractVersion == SemanticReviewMissionContractVersion &&
+		(!missionReviewProjectionMatchesCheckpoint(state, state.MissionReviewCycleID, state.LandingCommit, state.LandingCheckpointTreeSHA) ||
+			state.MissionReviewOutcome != ReviewOutcomeClear) {
 		return MissionOutcomeUnresolved
 	}
 	return MissionOutcomeSucceeded

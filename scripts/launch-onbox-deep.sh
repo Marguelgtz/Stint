@@ -18,6 +18,7 @@ PHASE_PROXY_LOCAL="${STINT_PHASE_PROXY_LOCAL:-$SCRIPT_DIR/phaseproxy.py}"
 PHASE_SETUP_LOCAL="${STINT_PHASE_SETUP_LOCAL:-$SCRIPT_DIR/box-phase-setup.sh}"
 DEEP_OBSERVE_LOCAL="${STINT_DEEP_OBSERVE_LOCAL:-$SCRIPT_DIR/deep-observe.sh}"
 BOX_SMOKE_LOCAL="${STINT_BOX_SMOKE_LOCAL:-$SCRIPT_DIR/box-smoke.sh}"
+ADMISSION_CANARY_LOCAL="${STINT_ONBOX_ADMISSION_CANARY_LOCAL:-$SCRIPT_DIR/onbox-deep-admission-canary.sh}"
 LANE_SMOKE_LOCAL="${STINT_LANE_SMOKE_LOCAL:-$SCRIPT_DIR/phase-lane-concurrency-smoke.sh}"
 AGENT_LOG_TAIL_LOCAL="${STINT_AGENT_LOG_TAIL_LOCAL:-$SCRIPT_DIR/deep-agent-log-tail.py}"
 NINFER_OBSERVER_LOCAL="${STINT_NINFER_OBSERVER_LOCAL:-$SCRIPT_DIR/onbox-ninfer-observe.py}"
@@ -55,6 +56,7 @@ REMOTE_PHASE_PROXY="$REMOTE_BOOTSTRAP/phaseproxy.py"
 REMOTE_PHASE_SETUP="$REMOTE_BOOTSTRAP/box-phase-setup.sh"
 REMOTE_DEEP_OBSERVE="$REMOTE_BOOTSTRAP/deep-observe.sh"
 REMOTE_BOX_SMOKE="$REMOTE_BOOTSTRAP/box-smoke.sh"
+REMOTE_ADMISSION_CANARY="$REMOTE_BOOTSTRAP/onbox-deep-admission-canary.sh"
 REMOTE_LANE_SMOKE="$REMOTE_BOOTSTRAP/phase-lane-concurrency-smoke.sh"
 REMOTE_AGENT_LOG_TAIL="$REMOTE_BOOTSTRAP/deep-agent-log-tail.py"
 REMOTE_NINFER_OBSERVER="$REMOTE_BOOTSTRAP/onbox-ninfer-observe.py"
@@ -68,6 +70,7 @@ REMOTE_REPO="$ROOT/repo"
 REMOTE_READY="$ROOT/runtime/RUNNING.json"
 TOKEN_TMP=""
 REPO_STAGE=""
+QUALIFICATION_CONTEXT_TMP=""
 TRANSFER_ATTEMPTS="${STINT_ONBOX_TRANSFER_ATTEMPTS:-5}"
 TRANSFER_RETRY_SECONDS="${STINT_ONBOX_TRANSFER_RETRY_SECONDS:-3}"
 
@@ -90,6 +93,7 @@ retry_step() {
 cleanup_local() {
   [ -z "$TOKEN_TMP" ] || rm -f "$TOKEN_TMP"
   [ -z "$REPO_STAGE" ] || rm -rf "$REPO_STAGE"
+  [ -z "$QUALIFICATION_CONTEXT_TMP" ] || rm -f "$QUALIFICATION_CONTEXT_TMP"
 }
 trap cleanup_local EXIT
 
@@ -150,7 +154,7 @@ fi
 [ -x "$BIN" ] || die "stint binary is missing or not executable: $BIN"
 [ -x "$SUPERVISOR_LOCAL" ] || die "supervisor script is missing or not executable: $SUPERVISOR_LOCAL"
 for script in "$PROVISION_LOCAL" "$PHASE_PROXY_LOCAL" "$PHASE_SETUP_LOCAL" \
-  "$DEEP_OBSERVE_LOCAL" "$BOX_SMOKE_LOCAL" "$LANE_SMOKE_LOCAL" \
+  "$DEEP_OBSERVE_LOCAL" "$BOX_SMOKE_LOCAL" "$ADMISSION_CANARY_LOCAL" "$LANE_SMOKE_LOCAL" \
   "$AGENT_LOG_TAIL_LOCAL" "$NINFER_OBSERVER_LOCAL"; do
   [ -r "$script" ] || die "fresh-box bootstrap component is missing: $script"
 done
@@ -234,7 +238,8 @@ if parsed.tzinfo is None or parsed <= datetime.datetime.now(datetime.timezone.ut
     raise SystemExit("compute session deadline is not in the future")
 print(instance)
 print(deadline)
-print(state.get("startedAt", ""))
+print(state.get("rentalStartedAt") or state.get("startedAt", ""))
+print(state.get("hourlyUsd", ""))
 PY
   )" || die "could not read a READY compute identity from $session_json"
   mapfile -t session_values <<<"$SESSION_DATA"
@@ -249,6 +254,7 @@ PY
   STINT_INSTANCE_ID="$state_instance"
   STINT_DEADLINE="$state_deadline"
   STINT_STARTED_AT="${session_values[2]:-}"
+  STINT_HOURLY_USD="${session_values[3]:-}"
 fi
 [ -n "${STINT_INSTANCE_ID:-}" ] && [ -n "${STINT_DEADLINE:-}" ] || \
   die "set STINT_INSTANCE_ID and STINT_DEADLINE or provide a READY session file at $session_json"
@@ -383,6 +389,44 @@ if [ "$RESUME" = 0 ]; then
   retry_step "prepare remote repository" "${SSH[@]}" "rm -rf '$REMOTE_REPO' && mkdir -p '$REMOTE_REPO'"
   retry_step "transfer repository" rsync -a --delete -e "$RSYNC_SSH" "$REPO_STAGE/" "root@$HOST:$REMOTE_REPO/"
 fi
+if [ "${STINT_ONBOX_QUALIFICATION_EXPORT:-0}" = 1 ]; then
+  [ "$RESUME" = 0 ] || die "qualification evidence export must begin on a new pinned run"
+  base_sha_file="$REPO_LOCAL/qualification/base.sha"
+  [ -r "$base_sha_file" ] || die "qualification run requires qualification/base.sha in the target repository"
+  SPARK_BASE_SHA="$(tr -d '[:space:]' < "$base_sha_file")"
+  [[ "$SPARK_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || die "qualification/base.sha must contain one full lowercase Git SHA"
+  [ "$(git -C "$REPO_LOCAL" cat-file -t "$SPARK_BASE_SHA" 2>/dev/null || true)" = commit ] || die "qualification base commit is absent from the target repository"
+  QUALIFICATION_CONTEXT_TMP="$(mktemp)"
+  chmod 0600 "$QUALIFICATION_CONTEXT_TMP"
+  STINT_SOURCE_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  STINT_PR183_SHA="${STINT_ONBOX_QUALIFICATION_PR183_SHA:-02436c01d17ff541b1d9902baa00bf5eb08f3ac7}"
+  STINT_SOURCE_SHA="$STINT_SOURCE_SHA" STINT_PR183_SHA="$STINT_PR183_SHA" STINT_HOURLY_USD="${STINT_HOURLY_USD:-}" python3 - "$QUALIFICATION_CONTEXT_TMP" "$SOURCE_HEAD" "$SPARK_BASE_SHA" "$STINT_INSTANCE_ID" "${STINT_STARTED_AT:-}" <<'PY'
+import json, math, os, sys
+path, spark_source, spark_base, instance, started = sys.argv[1:]
+payload = {
+    "stintSourceSha": os.environ["STINT_SOURCE_SHA"],
+    "stintPr183Sha": os.environ["STINT_PR183_SHA"],
+    "sparkSourceSha": spark_source,
+    "sparkBaseSha": spark_base,
+    "providerId": int(instance),
+    "startedAt": started,
+}
+try:
+    hourly = float(os.environ.get("STINT_HOURLY_USD", ""))
+    if math.isfinite(hourly) and hourly > 0:
+        payload["hourlyUsd"] = hourly
+except ValueError:
+    pass
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
+    stream.write("\n")
+PY
+  [[ "$STINT_PR183_SHA" =~ ^[0-9a-f]{40}$ ]] || die "STINT_ONBOX_QUALIFICATION_PR183_SHA must be one full lowercase Git SHA"
+  git -C "$REPO_ROOT" cat-file -e "$STINT_PR183_SHA^{commit}" 2>/dev/null || die "pinned PR #183 commit is absent from the Stint source repository"
+  git -C "$REPO_ROOT" merge-base --is-ancestor "$STINT_PR183_SHA" "$STINT_SOURCE_SHA" || die "target Stint source does not descend from pinned PR #183"
+  retry_step "transfer qualification provenance" "${SCP[@]}" "$QUALIFICATION_CONTEXT_TMP" "root@$HOST:$ROOT/config/qualification-context.json"
+  retry_step "protect qualification provenance" "${SSH[@]}" "chmod 0600 '$ROOT/config/qualification-context.json'"
+fi
 # Register only the exact validated path for root-side Git commands.
 retry_step "register remote repository" "${SSH[@]}" "git config --global --add safe.directory '$REMOTE_REPO'"
 
@@ -406,16 +450,16 @@ if [ "$SKIP_GITHUB" != 1 ]; then
 fi
 retry_step "transfer Deep Work bootstrap" rsync -a -e "$RSYNC_SSH" \
   "$PROVISION_LOCAL" "$PHASE_PROXY_LOCAL" "$PHASE_SETUP_LOCAL" \
-  "$DEEP_OBSERVE_LOCAL" "$BOX_SMOKE_LOCAL" "$LANE_SMOKE_LOCAL" \
+  "$DEEP_OBSERVE_LOCAL" "$BOX_SMOKE_LOCAL" "$ADMISSION_CANARY_LOCAL" "$LANE_SMOKE_LOCAL" \
   "$AGENT_LOG_TAIL_LOCAL" "$NINFER_OBSERVER_LOCAL" \
   "root@$HOST:$REMOTE_BOOTSTRAP/"
 retry_step "protect Deep Work bootstrap" "${SSH[@]}" \
-  "chmod 0755 '$REMOTE_PROVISION' '$REMOTE_PHASE_PROXY' '$REMOTE_PHASE_SETUP' '$REMOTE_DEEP_OBSERVE' '$REMOTE_BOX_SMOKE' '$REMOTE_LANE_SMOKE' '$REMOTE_AGENT_LOG_TAIL' '$REMOTE_NINFER_OBSERVER'"
+  "chmod 0755 '$REMOTE_PROVISION' '$REMOTE_PHASE_PROXY' '$REMOTE_PHASE_SETUP' '$REMOTE_DEEP_OBSERVE' '$REMOTE_BOX_SMOKE' '$REMOTE_ADMISSION_CANARY' '$REMOTE_LANE_SMOKE' '$REMOTE_AGENT_LOG_TAIL' '$REMOTE_NINFER_OBSERVER'"
 
 # Production and the live smoke use this same fresh-box sequence. Do not start
 # the detached supervisor until runtime, model, phase providers, compression
 # configuration, verifier toolchain, and real Hermes route calls pass.
-remote_provision=(env "STINT_TARGET_REPO=$REMOTE_REPO" "STINT_MODEL_ID=$ONBOX_MODEL" \
+remote_provision=(env "STINT_TARGET_REPO=$REMOTE_REPO" "STINT_TARGET_MISSION=$REMOTE_MISSION" "STINT_MODEL_ID=$ONBOX_MODEL" \
   timeout "${STINT_BOOTSTRAP_TIMEOUT:-25m}" "$REMOTE_PROVISION")
 remote_provision_cmd="$(printf '%q ' "${remote_provision[@]}")"
 echo "qualifying runtime and the target repository verification environment"
@@ -434,6 +478,16 @@ remote_box_smoke=(env "STINT_PHASED=1" "HERMES_MODEL=$ONBOX_MODEL" \
 remote_box_smoke_cmd="$(printf '%q ' "${remote_box_smoke[@]}")"
 "${SSH[@]}" "$remote_box_smoke_cmd" || \
   die "Hermes phase routes or compression configuration failed qualification"
+remote_admission_canary=(env \
+  "STINT_ONBOX_BIN=$REMOTE_BIN" \
+  "STINT_INSTANCE_ID=$STINT_INSTANCE_ID" \
+  "STINT_DEADLINE=$STINT_DEADLINE" \
+  "HERMES_MODEL=$ONBOX_MODEL" \
+  "PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/root/.local/bin" \
+  timeout "${STINT_ONBOX_ADMISSION_CANARY_TIMEOUT:-12m}" "$REMOTE_ADMISSION_CANARY")
+remote_admission_canary_cmd="$(printf '%q ' "${remote_admission_canary[@]}")"
+"${SSH[@]}" "$remote_admission_canary_cmd" || \
+  die "journaled Deep Work admission canary failed before the detached supervisor could start"
 if [ "$CLIENTS" -eq 2 ]; then
   remote_lane_smoke=(env "HERMES_MODEL=$ONBOX_MODEL" "PHASING_DIR=$PHASING_DIR" \
     timeout "${STINT_LANE_SMOKE_TIMEOUT:-8m}" "$REMOTE_LANE_SMOKE")
@@ -501,6 +555,17 @@ remote_env=("STINT_ONBOX_BIN=$REMOTE_BIN" "STINT_ONBOX_ROOT=$ROOT" \
   "STINT_ONBOX_CLIENTS=$CLIENTS" \
   "STINT_ONBOX_NINFER_OBSERVER=$REMOTE_NINFER_OBSERVER" \
   "STINT_ONBOX_ORIGIN=gpu-instance")
+if [ "${STINT_ONBOX_QUALIFICATION_EXPORT:-0}" = 1 ]; then
+  remote_env+=("STINT_ONBOX_QUALIFICATION_EXPORT=1" \
+    "STINT_ONBOX_QUALIFICATION_CONTEXT=$ROOT/config/qualification-context.json")
+  case "${STINT_ONBOX_QUALIFICATION_FAULT:-}" in
+    "") ;;
+    after-receipt) remote_env+=("STINT_QUALIFICATION_FAULT_V1=after-receipt") ;;
+    *) die "STINT_ONBOX_QUALIFICATION_FAULT only accepts after-receipt" ;;
+  esac
+elif [ -n "${STINT_ONBOX_QUALIFICATION_FAULT:-}" ]; then
+  die "STINT_ONBOX_QUALIFICATION_FAULT requires STINT_ONBOX_QUALIFICATION_EXPORT=1"
+fi
 if [ "$SKIP_GITHUB" = 1 ]; then
   remote_env+=("STINT_ONBOX_SKIP_GITHUB=1")
 else

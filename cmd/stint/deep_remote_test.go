@@ -598,6 +598,23 @@ func TestHermesExecutorsQuiesceDelayedWriters(t *testing.T) {
 		}
 		assertNoDelayedMutationAfterReturn(t, marker, returnedAt)
 	})
+
+	t.Run("timed-out detached writer", func(t *testing.T) {
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "late-timeout-write")
+		hermes := filepath.Join(dir, "hermes")
+		script := "#!/bin/sh\n(trap '' TERM; sleep 2; printf late > " + shellQuote(marker) + ") &\nsleep 30\n"
+		if err := os.WriteFile(hermes, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		result, err := newLocalHermesExecutor(hermes).run(context.Background(), execInput{
+			workdir: dir, prompt: "finish", timeout: time.Second,
+		})
+		if err == nil || result.completed {
+			t.Fatalf("timed-out executor result = %+v, err=%v; want timeout", result, err)
+		}
+		assertNoDelayedMutationAfterReturn(t, marker, time.Now())
+	})
 }
 
 func assertNoDelayedMutationAfterReturn(t *testing.T, marker string, returnedAt time.Time) {
@@ -744,6 +761,38 @@ func TestRemoteHermesPersistsReceiptBeforeReturningExitFrame(t *testing.T) {
 	if err != nil || !found || !receipt.Completed || !receipt.ProcessQuiescent || receipt.RepositoryAfterHeadCommit == "" || receipt.RepositoryAfterTreeSHA == "" {
 		t.Fatalf("remote supervisor receipt=%+v found=%t err=%v", receipt, found, err)
 	}
+}
+
+func TestRemoteHermesTimeoutReceiptFollowsConfirmedQuiescence(t *testing.T) {
+	dir := t.TempDir()
+	hermes := filepath.Join(dir, "hermes")
+	marker := filepath.Join(dir, "late-timeout-write")
+	script := "#!/bin/sh\n(trap '' TERM; sleep 4.5; printf late > " + shellQuote(marker) + ") &\nsleep 30\n"
+	if err := os.WriteFile(hermes, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stateHome := filepath.Join(dir, "state-home")
+	worktree := newTestRepo(t)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	runID, err := deep.NewExecutorRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := func(ctx context.Context, command string) (string, error) {
+		out, err := exec.CommandContext(ctx, "sh", "-c", command).CombinedOutput()
+		return string(out), err
+	}
+	input := execInput{workdir: worktree, prompt: "continue", timeout: 10 * time.Second, sessionID: "20260927-timeout-receipt", executorRunID: runID}
+	result, runErr := newHermesExecutor(remote).run(context.Background(), input)
+	if runErr == nil || !result.timedOut || result.completed {
+		t.Fatalf("remote timed-out Hermes result=%+v err=%v", result, runErr)
+	}
+	receipt, found, err := newHermesExecutor(remote).loadExecutorReceipt(context.Background(), "", input.sessionID, runID)
+	if err != nil || !found || !receipt.TimedOut || !receipt.ProcessQuiescent {
+		t.Fatalf("timeout receipt=%+v found=%t err=%v; want a timeout receipt after confirmed quiescence", receipt, found, err)
+	}
+	assertNoDelayedMutationAfterReturn(t, marker, time.Now())
 }
 
 func indexOf(values []string, target string) int {

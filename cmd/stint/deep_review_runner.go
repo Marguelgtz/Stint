@@ -15,6 +15,8 @@ import (
 )
 
 func (c *deepCoordinator) runSemanticReview(ctx context.Context, taskID string) error {
+	reviewTotalStarted := time.Now()
+	defer func() { c.recordTiming("objective_review.total", taskID, 0, reviewTotalStarted) }()
 	task, ok := findCoordinatorTask(c.state.Tasks, taskID)
 	if !ok || !pendingSemanticReview(*task, *c.state) {
 		return fmt.Errorf("task %s has no pending semantic review", taskID)
@@ -58,7 +60,7 @@ func (c *deepCoordinator) runSemanticReview(ctx context.Context, taskID string) 
 		preflightErr = preflightCtx.Err()
 	}
 	if preflightErr == nil {
-		before, captureErr := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+		before, captureErr := c.captureVerificationSubject("objective_review.pre_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), taskID, task.Attempts)
 		if captureErr != nil {
 			preflightErr = fmt.Errorf("capture repository subject before semantic review: %w", captureErr)
 		} else if before.Subject.HeadCommit != checkpoint.Commit || before.Subject.TreeSHA != checkpoint.TreeSHA {
@@ -89,7 +91,7 @@ func (c *deepCoordinator) runSemanticReview(ctx context.Context, taskID string) 
 		contextSHA = hex.EncodeToString(contextHash[:])
 	}
 	if preflightErr == nil {
-		after, captureErr := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+		after, captureErr := c.captureVerificationSubject("objective_review.post_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), taskID, task.Attempts)
 		if captureErr != nil {
 			preflightErr = fmt.Errorf("re-capture repository subject before semantic review: %w", captureErr)
 		} else if after.Subject.HeadCommit != checkpoint.Commit || after.Subject.TreeSHA != checkpoint.TreeSHA {
@@ -192,7 +194,9 @@ func (c *deepCoordinator) runSemanticReview(ctx context.Context, taskID string) 
 	in.provider = provider
 	in.model = c.execCfg.model
 	in.reasoning = reasoning
+	reviewStarted := time.Now()
 	result, executionErr := c.executor.run(reviewCtx, in)
+	c.recordTimingWithPacket("objective_review.invocation", taskID, task.Attempts, reviewStarted, len(prompt))
 	if result.timedOut && executionErr == nil {
 		executionErr = context.DeadlineExceeded
 	}
@@ -225,7 +229,7 @@ func (c *deepCoordinator) runSemanticReview(ctx context.Context, taskID string) 
 		}
 	}
 	if !cycle.QuiescenceUnconfirmed {
-		after, captureErr := c.git.verificationSubject(c.state.WorktreePath, c.verificationBookkeepingPaths())
+		after, captureErr := c.captureVerificationSubject("objective_review.result_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), taskID, task.Attempts)
 		if captureErr != nil || after.Subject.HeadCommit != checkpoint.Commit || after.Subject.TreeSHA != checkpoint.TreeSHA {
 			cycle.Outcome = deep.ReviewOutcomeUnresolved
 			cycle.QuiescenceUnconfirmed = false

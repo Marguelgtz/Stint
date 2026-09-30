@@ -167,6 +167,17 @@ class PublisherAuthorityTests(unittest.TestCase):
                 "handoffPath": str(handoff_path),
             }
             self.assertEqual(PUBLISH.exact_landing_commit(state, str(repo)), head)
+            worktree_handoff = repo / "DEEP_WORK_HANDOFF.md"
+            worktree_handoff.write_text(handoff, encoding="utf-8")
+            self.assertEqual(PUBLISH.exact_landing_commit(state, str(repo)), head)
+            worktree_handoff.write_text("tampered\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "untracked worktree handoff differs"):
+                PUBLISH.exact_landing_commit(state, str(repo))
+            worktree_handoff.unlink()
+            (repo / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "uncommitted changes"):
+                PUBLISH.exact_landing_commit(state, str(repo))
+            (repo / "unexpected.txt").unlink()
             state["landingCommit"] = "b" * 40
             with self.assertRaisesRegex(RuntimeError, "differs from durable landingCommit"):
                 PUBLISH.exact_landing_commit(state, str(repo))
@@ -265,6 +276,120 @@ class PublisherAuthorityTests(unittest.TestCase):
             self.assertIn("Superseded by", close[2]["body"])
             self.assertEqual(len([call for call in api_calls if call[0] == "PATCH"]), 1)
             self.assertEqual(len(ensured), 2, "repeat sync must reuse the active versioned handoff PR")
+
+    def make_journal_publication_fixture(self, root):
+        repo = root / "repo"
+        repo.mkdir()
+
+        def git(*args):
+            return subprocess.run(["git", "-C", str(repo), *args], check=True, text=True, capture_output=True).stdout.strip()
+
+        git("init", "-q", "-b", "main")
+        git("config", "user.name", "Fixture")
+        git("config", "user.email", "fixture@example.test")
+        (repo / "base.txt").write_text("base\n", encoding="utf-8")
+        git("add", "base.txt")
+        git("commit", "-qm", "base")
+        base = git("rev-parse", "HEAD")
+        git("checkout", "-qb", "stint/deep-fixture")
+        (repo / "export-001.txt").write_text("export 1\n", encoding="utf-8")
+        git("add", "export-001.txt")
+        git("commit", "-qm", "export 001")
+        first = git("rev-parse", "HEAD")
+        first_tree = git("rev-parse", "HEAD^{tree}")
+        git("commit", "--allow-empty", "-qm", "repair evidence only")
+        repair = git("rev-parse", "HEAD")
+        repair_tree = git("rev-parse", "HEAD^{tree}")
+        (repo / "export-002.txt").write_text("export 2\n", encoding="utf-8")
+        git("add", "export-002.txt")
+        git("commit", "-qm", "export 002")
+        dependent = git("rev-parse", "HEAD")
+        dependent_tree = git("rev-parse", "HEAD^{tree}")
+
+        root.joinpath("run-events.jsonl").write_text("journal fixture\n", encoding="utf-8")
+        state = {
+            "sessionId": self.state["sessionId"],
+            "worktreePath": str(repo),
+            "phase": "executing",
+            "github": self.state["github"],
+            # Intentionally differs from checkpoint event chronology.
+            "tasks": [
+                {"id": "EXPORT-002", "objective": "dependent export", "status": "accepted"},
+                {"id": "REPAIR-001", "objective": "repair export", "status": "accepted", "source": "review_repair"},
+                {"id": "EXPORT-001", "objective": "first export", "status": "accepted"},
+            ],
+        }
+        root.joinpath("deep.json").write_text(json.dumps(state), encoding="utf-8")
+        plan = [
+            {"sequence": 10, "checkpointEventId": "cp-export-1", "taskId": "EXPORT-001", "attempt": 1,
+             "commit": first, "treeSha": first_tree, "acceptanceOutcome": "accepted", "acceptanceCheckOutcome": "passed",
+             "semanticReviewOutcome": "clear", "taskStatus": "accepted"},
+            {"sequence": 14, "checkpointEventId": "cp-repair-1", "taskId": "REPAIR-001", "attempt": 1,
+             "commit": repair, "treeSha": repair_tree, "acceptanceOutcome": "accepted", "acceptanceCheckOutcome": "passed",
+             "semanticReviewOutcome": "not_run", "taskStatus": "accepted"},
+            {"sequence": 19, "checkpointEventId": "cp-export-2", "taskId": "EXPORT-002", "attempt": 2,
+             "commit": dependent, "treeSha": dependent_tree, "acceptanceOutcome": "accepted", "acceptanceCheckOutcome": "passed",
+             "semanticReviewOutcome": "clear", "taskStatus": "accepted"},
+        ]
+        return repo, state, plan, base, first, repair, dependent
+
+    def test_journal_publication_uses_checkpoint_order_acceptance_and_evidence_only_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            repo, state, plan, base, first, repair, dependent = self.make_journal_publication_fixture(root)
+            cfg = {**self.cfg, "token": "fixture", "token_file": "/fixture"}
+            pushed = []
+            prs = []
+
+            def ensure(_cfg, *, session, branch, base, title, body, expected_head):
+                record = {"number": len(prs) + 20, "branch": branch, "base": base, "head": expected_head, "body": body}
+                prs.append(record)
+                return {"number": record["number"], "url": f"https://github.com/owner/repository/pull/{record['number']}"}
+
+            with mock.patch.object(PUBLISH, "config", return_value=cfg), \
+                 mock.patch.object(PUBLISH, "journal_publication_plan", return_value=plan), \
+                 mock.patch.object(PUBLISH, "push_commit", side_effect=lambda _cfg, _repo, commit, branch, _session: pushed.append((commit, branch))), \
+                 mock.patch.object(PUBLISH, "ensure_pr", side_effect=ensure), \
+                 mock.patch.object(PUBLISH, "validate_published_pr"):
+                PUBLISH.sync(str(root))
+                PUBLISH.sync(str(root))  # resume preserves the same event identities
+
+            publication = json.loads(root.joinpath("publication.json").read_text(encoding="utf-8"))
+            entries = publication["checkpoints"]
+            self.assertEqual([entry["checkpointEventId"] for entry in entries], ["cp-export-1", "cp-repair-1", "cp-export-2"])
+            self.assertEqual([entry["status"] for entry in entries], ["published", "evidence_only", "published"])
+            self.assertEqual(pushed, [
+                (first, f"stint/deep-{self.state['sessionId']}-000010-export-001"),
+                (dependent, f"stint/deep-{self.state['sessionId']}-000019-export-002"),
+            ])
+            self.assertEqual(len(prs), 2)
+            self.assertEqual(prs[1]["base"], entries[0]["branch"], "evidence-only checkpoint must not advance the PR base")
+            self.assertEqual(entries[1]["commit"], repair)
+            self.assertEqual(entries[1]["base"], entries[0]["branch"])
+            self.assertIn("Deterministic acceptance: `accepted`", prs[0]["body"])
+            self.assertIn("Semantic review: `clear`", prs[0]["body"])
+
+    def test_journal_publication_conflicting_recorded_branch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            _, _, plan, _, _, _, _ = self.make_journal_publication_fixture(root)
+            publication = {
+                "version": 2, "session": self.state["sessionId"], "repository": self.cfg["repository"], "base": self.cfg["base"],
+                "mode": self.cfg["mode"], "allowedAuthors": sorted(self.cfg["allowed_authors"], key=str.lower),
+                "approval": self.cfg["approval"], "checkpoints": [{
+                    "taskId": "EXPORT-001", "commit": plan[0]["commit"], "treeSha": plan[0]["treeSha"],
+                    "checkpointEventId": plan[0]["checkpointEventId"], "branch": "stint/deep-wrong-000010-export-001",
+                    "base": "main", "status": "evidence_only",
+                }],
+            }
+            root.joinpath("publication.json").write_text(json.dumps(publication), encoding="utf-8")
+            cfg = {**self.cfg, "token": "fixture", "token_file": "/fixture"}
+            with mock.patch.object(PUBLISH, "config", return_value=cfg), \
+                 mock.patch.object(PUBLISH, "journal_publication_plan", return_value=plan), \
+                 mock.patch.object(PUBLISH, "push_commit"), \
+                 mock.patch.object(PUBLISH, "ensure_pr"):
+                with self.assertRaisesRegex(PUBLISH.PermanentPublicationError, "branch identity"):
+                    PUBLISH.sync(str(root))
 
     def test_permanent_publication_error_returns_nonretryable_exit_code(self):
         with mock.patch.object(sys, "argv", ["publisher", "sync", "/unused"]), \

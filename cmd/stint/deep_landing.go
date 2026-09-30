@@ -18,7 +18,10 @@ import (
 // creation, checkpoint commits, and the state summaries folded into task
 // context. All operations are local-only (no push, no fetch).
 type gitRunner struct {
-	run func(dir string, args ...string) (string, error)
+	run           func(dir string, args ...string) (string, error)
+	timing        func(phase string, taskID string, attempt int, started time.Time)
+	timingTaskID  string
+	timingAttempt int
 }
 
 func newGitRunner() *gitRunner {
@@ -47,6 +50,12 @@ func (g *gitRunner) repoHead(dir string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+func (g *gitRunner) recordTiming(phase string, started time.Time) {
+	if g.timing != nil {
+		g.timing(phase, g.timingTaskID, g.timingAttempt, started)
+	}
 }
 
 // cleanTracked reports whether the repository has no tracked modifications
@@ -153,7 +162,7 @@ func runVerifyCmd(ctx context.Context, command, workdir string) verificationResu
 	if err := deep.ValidateVerifyCommand(command); err != nil {
 		return verificationResult{Command: command, Outcome: verificationInvalid, StartedAt: started, CompletedAt: time.Now().UTC(), Error: err.Error()}
 	}
-	vctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	vctx, cancel := context.WithTimeout(ctx, defaultMissionVerifyTime)
 	defer cancel()
 	cmd := exec.CommandContext(vctx, "sh", "-c", command)
 	cmd.Dir = workdir
@@ -321,7 +330,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	}
 
 	bookkeepingPaths := c.verificationBookkeepingPaths()
-	verificationSnapshot, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+	verificationSnapshot, err := c.captureVerificationSubject("landing.pre_verification_subject_capture", c.state.WorktreePath, bookkeepingPaths, "mission", 0)
 	if err != nil {
 		return fmt.Errorf("capture repository state before final verification: %w", err)
 	}
@@ -389,7 +398,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 					}
 					return fmt.Errorf("landing stopped because final verifier process quiescence is unconfirmed")
 				}
-				afterVerify, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+				afterVerify, err := c.captureVerificationSubject("landing.post_verification_subject_capture", c.state.WorktreePath, bookkeepingPaths, "mission", 0)
 				if err != nil {
 					return fmt.Errorf("capture repository state after final verification: %w", err)
 				}
@@ -457,7 +466,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	}
 
 	commitSubject := fmt.Sprintf("deep: %s handoff", c.state.SessionID)
-	checkpointSnapshot, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+	checkpointSnapshot, err := c.captureVerificationSubject("landing.checkpoint_pre_capture", c.state.WorktreePath, bookkeepingPaths, "mission", 0)
 	if err != nil {
 		return fmt.Errorf("capture repository state before landing checkpoint: %w", err)
 	}
@@ -476,6 +485,22 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	head = strings.TrimSpace(head)
 	if head == "" {
 		return fmt.Errorf("landing checkpoint SHA is empty")
+	}
+	if deep.MissionReviewRequiredAtLanding(*c.state, head, checkpointTree) {
+		if err := c.runMissionSemanticReview(ctx, head, checkpointTree, c.state.LandingVerificationRunID); err != nil {
+			return err
+		}
+		if c.state.ExecutionQuiescenceUnconfirmed {
+			return errors.New("landing stopped because mission-review process quiescence is unconfirmed")
+		}
+		afterReview, err := c.captureVerificationSubject("mission_review.post_subject_capture", c.state.WorktreePath, bookkeepingPaths, "mission", 0)
+		if err != nil {
+			return fmt.Errorf("confirm checkpoint subject after mission review: %w", err)
+		}
+		if afterReview.Subject.HeadCommit != head || afterReview.Subject.TreeSHA != checkpointTree {
+			return fmt.Errorf("repository changed after mission review; reviewed checkpoint %s/%s is no longer current (%s/%s)",
+				head, checkpointTree, afterReview.Subject.HeadCommit, afterReview.Subject.TreeSHA)
+		}
 	}
 
 	outcomeState := *c.state
@@ -530,6 +555,7 @@ func (c *deepCoordinator) refreshLandedSummary() error {
 		return nil
 	}
 	updated := updateHandoffLandingResult(c.state.LandingHandoff, c.state.MissionOutcome, c.state.LandingReason)
+	updated = updateHandoffMissionReview(updated, *c.state)
 	if updated != c.state.LandingHandoff {
 		previous := c.state.LandingHandoff
 		c.state.LandingHandoff = updated
@@ -544,7 +570,7 @@ func (c *deepCoordinator) refreshLandedSummary() error {
 		}
 	}
 	bookkeepingPaths := c.verificationBookkeepingPaths()
-	snapshot, err := c.git.verificationSubject(c.state.WorktreePath, bookkeepingPaths)
+	snapshot, err := c.captureVerificationSubject("landing.final_subject_capture", c.state.WorktreePath, bookkeepingPaths, "mission", 0)
 	if err != nil {
 		return nil // the durable state and state-dir handoff remain authoritative
 	}

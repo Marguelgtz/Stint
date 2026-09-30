@@ -219,7 +219,7 @@ func BeginReviewCycle(stateDir string, state *DeepState, cycle ReviewCycle) (Rev
 		return ReviewCycle{}, errors.New("review-cycle start requires an executing, quiescent run")
 	}
 	cycle.SchemaVersion = reviewCycleSchemaEvidenceOnly
-	if state.SemanticReviewContractVersion == SemanticReviewContractVersion {
+	if HasSemanticReviewContract(state.SemanticReviewContractVersion) {
 		cycle.SchemaVersion = reviewCycleSchemaGated
 	}
 	task, ok := findTask(state, cycle.TaskID)
@@ -565,7 +565,7 @@ func reviewProjectionMatches(task Task, cycle ReviewCycle) bool {
 }
 
 func reviewPolicyFactsMatch(state DeepState, cycle ReviewCycle) bool {
-	if state.SemanticReviewContractVersion == SemanticReviewContractVersion {
+	if HasSemanticReviewContract(state.SemanticReviewContractVersion) {
 		return cycle.SchemaVersion == reviewCycleSchemaGated && cycle.PolicySHA256 == state.SemanticReviewContractSHA256
 	}
 	// D1 allowed evidence-only cycles under deterministic acceptance v2. Keep

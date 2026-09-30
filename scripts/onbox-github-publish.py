@@ -232,6 +232,46 @@ def slug(value: str) -> str:
     return (out or "task")[:40]
 
 
+def journal_publication_plan(root: Path, state: dict):
+    if not (root / "run-events.jsonl").is_file():
+        return None
+    binary = os.environ.get("STINT_ONBOX_BIN", "/usr/local/bin/stint")
+    run_id = str(state.get("runId") or state.get("sessionId", ""))
+    if not run_id or not os.path.isfile(binary) or not os.access(binary, os.X_OK):
+        raise PermanentPublicationError("journaled publication requires the matching Stint binary")
+    state_dir = root.parent.parent
+    result = subprocess.run(
+        [binary, "deep", "qualification", "publication-plan", "--state-dir", str(state_dir), "--run-id", run_id],
+        check=False, text=True, capture_output=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise PermanentPublicationError(f"Stint rejected the journaled publication plan: {result.stderr[-2000:]}")
+    try:
+        plan = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise PermanentPublicationError(f"Stint returned an invalid publication plan: {exc}") from exc
+    if plan.get("runId") != run_id or not isinstance(plan.get("checkpoints"), list):
+        raise PermanentPublicationError("Stint publication plan identity is invalid")
+    return plan["checkpoints"]
+
+
+def commit_tree(worktree: str, commit: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise RuntimeError(f"invalid checkpoint commit: {commit!r}")
+    return git(worktree, "rev-parse", f"{commit}^{{tree}}")
+
+
+def configured_base_commit(worktree: str, base: str) -> str:
+    for ref in (base, f"origin/{base}", f"refs/remotes/origin/{base}"):
+        try:
+            commit = git(worktree, "rev-parse", f"{ref}^{{commit}}")
+            if re.fullmatch(r"[0-9a-f]{40}", commit):
+                return commit
+        except RuntimeError:
+            continue
+    raise RuntimeError(f"configured publication base {base!r} is not available as a local Git ref")
+
+
 def find_checkpoint_commit(worktree: str, session: str, task: dict) -> str:
     task_id = str(task.get("id", ""))
     recorded = str(task.get("checkpointCommit", "")).strip()
@@ -360,8 +400,17 @@ def exact_landing_commit(state: dict, worktree: str) -> str:
     if head != commit:
         raise PermanentPublicationError(f"worktree HEAD {head} differs from durable landingCommit {commit}")
     git(worktree, "cat-file", "-e", commit + "^{commit}")
-    if git(worktree, "status", "--porcelain"):
-        raise PermanentPublicationError("landed worktree has uncommitted changes")
+    status = git(worktree, "status", "--porcelain", "-z", "--untracked-files=all")
+    entries = [entry for entry in status.split("\0") if entry]
+    handoff_entry = "?? DEEP_WORK_HANDOFF.md"
+    handoff_worktree_path = Path(worktree) / "DEEP_WORK_HANDOFF.md"
+    if entries:
+        if entries != [handoff_entry]:
+            raise PermanentPublicationError("landed worktree has uncommitted changes")
+        if handoff_worktree_path.is_symlink() or not handoff_worktree_path.is_file():
+            raise PermanentPublicationError("untracked worktree handoff is not a regular file")
+        if handoff_worktree_path.read_text(encoding="utf-8") != state["landingHandoff"]:
+            raise PermanentPublicationError("untracked worktree handoff differs from persisted landingHandoff")
     handoff_path = str(state.get("handoffPath", ""))
     if not handoff_path or not os.path.isfile(handoff_path):
         raise PermanentPublicationError("durable handoff file is missing")
@@ -446,27 +495,129 @@ def sync(state_dir: str) -> None:
         raise RuntimeError("Deep Work worktree is unavailable")
     publication_path = root / "publication.json"
     publication = load_publication(publication_path, cfg, state)
-    existing = {entry.get("taskId"): entry for entry in publication.get("checkpoints", [])}
+    existing_entries = list(publication.get("checkpoints", []))
+    existing_by_task = {entry.get("taskId"): entry for entry in existing_entries if entry.get("taskId")}
+    existing_by_event = {entry.get("checkpointEventId"): entry for entry in existing_entries if entry.get("checkpointEventId")}
     task_ids = [str(task.get("id", "")) for task in state.get("tasks", [])]
     if any(not task_id for task_id in task_ids) or len(set(task_ids)) != len(task_ids):
         raise RuntimeError("durable task identity is empty or duplicated")
     previous_branch = cfg["base"]
     checkpoints = []
+    journal_plan = journal_publication_plan(root, state)
+    task_by_id = {str(task.get("id", "")): task for task in state.get("tasks", [])}
+    if journal_plan is None:
+        ordered = []
+        for index, task in enumerate(state.get("tasks", []), start=1):
+            if task.get("status") == "verified":
+                legacy_commit = find_checkpoint_commit(worktree, session, task)
+                ordered.append({
+                    "sequence": index, "taskId": str(task.get("id", "")),
+                    "commit": legacy_commit, "treeSha": commit_tree(worktree, legacy_commit),
+                    "checkpointEventId": "", "attempt": task.get("attempts", 0),
+                    "acceptanceOutcome": "legacy_verified", "acceptanceCheckOutcome": "not_applicable",
+                    "semanticReviewOutcome": "not_available", "taskStatus": "verified",
+                    "legacyBranch": f"stint/deep-{session}-{index:02d}-{slug(str(task.get('id', '')))}",
+                })
+    else:
+        ordered = sorted(journal_plan, key=lambda row: int(row.get("sequence", 0)))
+        sequences = [int(row.get("sequence", 0)) for row in ordered]
+        if any(sequence <= 0 for sequence in sequences) or sequences != sorted(set(sequences)):
+            raise PermanentPublicationError("journal publication checkpoint order is invalid")
 
-    for index, task in enumerate(state.get("tasks", []), start=1):
-        task_id = str(task.get("id", ""))
-        if task.get("status") != "verified":
-            continue
-        commit = find_checkpoint_commit(worktree, session, task)
-        branch = f"stint/deep-{session}-{index:02d}-{slug(task_id)}"
-        entry = existing.get(task_id)
-        if entry is not None:
-            if entry.get("commit") != commit or entry.get("branch") != branch or entry.get("base") != previous_branch:
-                raise PermanentPublicationError(f"published checkpoint identity changed for {task_id}")
-            validate_published_pr(cfg, entry, branch=branch, base=previous_branch, commit=commit)
+    selected_event_ids = {str(row.get("checkpointEventId", "")) for row in ordered if row.get("checkpointEventId")}
+    for old in existing_entries:
+        old_event = str(old.get("checkpointEventId", ""))
+        if old_event and old_event not in selected_event_ids:
+            raise PermanentPublicationError(f"published checkpoint event {old_event} is no longer selected by durable acceptance")
+
+    previous_commit = configured_base_commit(worktree, cfg["base"]) if ordered else ""
+    previous_tree = commit_tree(worktree, previous_commit) if previous_commit else ""
+    for row in ordered:
+        task_id = str(row.get("taskId", ""))
+        task = task_by_id.get(task_id)
+        if not task_id or task is None:
+            raise PermanentPublicationError(f"journal publication references unknown Work Unit {task_id!r}")
+        commit = str(row.get("commit", "")).strip()
+        tree = str(row.get("treeSha", "")).strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", commit) or not re.fullmatch(r"[0-9a-f]{40}", tree):
+            raise PermanentPublicationError(f"journal checkpoint identity is invalid for {task_id}")
+        git(worktree, "cat-file", "-e", commit + "^{commit}")
+        actual_tree = commit_tree(worktree, commit)
+        if actual_tree != tree:
+            raise PermanentPublicationError(f"checkpoint tree for {task_id} differs from its durable journal identity")
+        if previous_commit:
+            try:
+                git(worktree, "merge-base", "--is-ancestor", previous_commit, commit)
+            except RuntimeError as exc:
+                raise PermanentPublicationError(f"checkpoint {task_id}@{commit} does not descend from the preceding published layer {previous_commit}") from exc
+        existing = existing_by_event.get(str(row.get("checkpointEventId", "")))
+        if existing is None:
+            prior_task_entry = existing_by_task.get(task_id)
+            if prior_task_entry and prior_task_entry.get("commit") == commit:
+                # Preserve immutable PR identities recorded by an earlier
+                # publisher version while upgrading the journal ordering.
+                existing = prior_task_entry
+        branch = str(existing.get("branch", "")) if existing else ""
+        if not branch:
+            if journal_plan is None:
+                branch = row["legacyBranch"]
+            else:
+                branch = f"stint/deep-{session}-{int(row['sequence']):06d}-{slug(task_id)}"
+        if branch == cfg["base"] or not re.fullmatch(rf"stint/deep-{re.escape(session)}-(?:[0-9]{{2,}}-[a-z0-9._-]{{1,40}}|handoff(?:-[0-9a-f]{{12}})?)", branch):
+            raise PermanentPublicationError(f"checkpoint branch identity is invalid for {task_id}")
+        if existing and existing.get("base") != previous_branch:
+            raise PermanentPublicationError(f"published checkpoint base identity changed for {task_id}")
+        evidence_only = tree == previous_tree
+        acceptance = str(row.get("acceptanceOutcome", "unknown"))
+        acceptance_check = str(row.get("acceptanceCheckOutcome", "not_applicable"))
+        semantic_review = str(row.get("semanticReviewOutcome", "not_available"))
+        if acceptance == "legacy_verified":
+            acceptance_sentence = "Deterministic acceptance: not configured for this legacy session."
+        else:
+            acceptance_sentence = f"Deterministic acceptance: `{acceptance}` (check `{acceptance_check}`)."
+        if existing and existing.get("prNumber"):
+            if existing.get("commit") != commit:
+                raise PermanentPublicationError(f"published checkpoint commit identity changed for {task_id}")
+            validate_published_pr(cfg, existing, branch=branch, base=previous_branch, commit=commit)
+            entry = dict(existing)
+            entry.update({
+                "taskId": task_id, "commit": commit, "treeSha": tree,
+                "checkpointEventId": row.get("checkpointEventId", ""),
+                "checkpointSequence": int(row.get("sequence", 0)), "attempt": row.get("attempt", 0),
+                "acceptanceOutcome": acceptance, "acceptanceCheckOutcome": acceptance_check,
+                "semanticReviewOutcome": semantic_review, "status": "published",
+            })
+        elif existing and existing.get("status") == "evidence_only":
+            if existing.get("commit") != commit or existing.get("treeSha") != tree:
+                raise PermanentPublicationError(f"evidence-only checkpoint identity changed for {task_id}")
+            entry = dict(existing)
+            entry.update({
+                "checkpointEventId": row.get("checkpointEventId", ""),
+                "checkpointSequence": int(row.get("sequence", 0)), "attempt": row.get("attempt", 0),
+                "acceptanceOutcome": acceptance, "acceptanceCheckOutcome": acceptance_check,
+                "semanticReviewOutcome": semantic_review, "status": "evidence_only",
+            })
+        elif evidence_only:
+            entry = {
+                "taskId": task_id, "commit": commit, "treeSha": tree,
+                "checkpointEventId": row.get("checkpointEventId", ""),
+                "checkpointSequence": int(row.get("sequence", 0)), "attempt": row.get("attempt", 0),
+                "branch": branch, "base": previous_branch, "status": "evidence_only",
+                "acceptanceOutcome": acceptance, "acceptanceCheckOutcome": acceptance_check,
+                "semanticReviewOutcome": semantic_review, "prNumber": None, "prUrl": "",
+                "publishedAt": utc_now(),
+            }
+            publication["checkpoints"] = [item for item in publication.get("checkpoints", []) if item.get("taskId") != task_id]
+            publication["checkpoints"].append(entry)
+            publication["lastError"] = ""
+            publication["updatedAt"] = utc_now()
+            atomic_json(publication_path, publication)
         else:
             push_commit(cfg, worktree, commit, branch, session)
             objective = str(task.get("objective", "")).strip()
+            review_sentence = f"Semantic review: `{semantic_review}`."
+            if semantic_review == "not_required":
+                review_sentence = "Semantic review: not required by the persisted contract."
             pr = ensure_pr(
                 cfg,
                 session=session,
@@ -476,27 +627,32 @@ def sync(state_dir: str) -> None:
                 body=(
                     f"GPU-owned Deep Work checkpoint for `{task_id}`.\n\n"
                     f"Session: `{session}`\n\n"
-                    f"Verified commit: `{commit}`\n\n"
+                    f"Checkpoint commit: `{commit}` (tree `{tree}`)\n\n"
                     f"Objective: {objective}\n\n"
-                    "This PR was pushed and opened by the detached on-box supervisor after coordinator verification."
+                    f"{acceptance_sentence}\n\n"
+                    f"{review_sentence}\n\n"
+                    "This PR was pushed and opened by the detached on-box supervisor from the durable accepted checkpoint."
                 ),
                 expected_head=commit,
             )
             entry = {
-                "taskId": task_id,
-                "commit": commit,
-                "branch": branch,
-                "base": previous_branch,
-                "prNumber": pr["number"],
-                "prUrl": pr["url"],
-                "publishedAt": utc_now(),
+                "taskId": task_id, "commit": commit, "treeSha": tree,
+                "checkpointEventId": row.get("checkpointEventId", ""),
+                "checkpointSequence": int(row.get("sequence", 0)), "attempt": row.get("attempt", 0),
+                "branch": branch, "base": previous_branch, "status": "published",
+                "acceptanceOutcome": acceptance, "acceptanceCheckOutcome": acceptance_check,
+                "semanticReviewOutcome": semantic_review,
+                "prNumber": pr["number"], "prUrl": pr["url"], "publishedAt": utc_now(),
             }
-            publication.setdefault("checkpoints", []).append(entry)
+            publication["checkpoints"] = [item for item in publication.get("checkpoints", []) if item.get("taskId") != task_id]
+            publication["checkpoints"].append(entry)
             publication["lastError"] = ""
             publication["updatedAt"] = utc_now()
             atomic_json(publication_path, publication)
         checkpoints.append(entry)
-        previous_branch = branch
+        previous_commit, previous_tree = commit, tree
+        if entry.get("status") != "evidence_only":
+            previous_branch = branch
 
     publication["checkpoints"] = checkpoints
 

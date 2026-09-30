@@ -173,10 +173,14 @@ func ParseMission(content string) (Mission, error) {
 				return m, errors.New("semantic review contract version is declared more than once")
 			}
 			semanticReviewContractFields[key] = true
-			if value != "1" {
+			if value != "1" && value != "2" {
 				return m, fmt.Errorf("unsupported semantic review contract version %q", value)
 			}
-			m.SemanticReviewContractVersion = SemanticReviewContractVersion
+			if value == "1" {
+				m.SemanticReviewContractVersion = SemanticReviewContractVersion
+			} else {
+				m.SemanticReviewContractVersion = SemanticReviewMissionContractVersion
+			}
 		case "github":
 			key, value, ok := policyField(trimmed)
 			if !ok {

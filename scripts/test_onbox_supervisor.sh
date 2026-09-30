@@ -22,6 +22,14 @@ sleep "${FAKE_STINT_DELAY:-0}"
 EOF
 chmod 0700 "$TMP/stint"
 
+# The production supervisor now validates Hermes on its detached PATH before
+# starting Deep Work. The fixture only needs an executable stub for that gate.
+cat >"$TMP/hermes" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod 0700 "$TMP/hermes"
+
 cat >"$TMP/archive" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -45,6 +53,7 @@ run_supervisor() {
   : >"$TMP/$name-events"
   set +e
   env \
+    PATH="$TMP:$PATH" \
     STINT_ONBOX_BIN="$TMP/stint" \
     STINT_ONBOX_ROOT="$root" \
     STINT_ONBOX_INSTANCE_ID=4242 \
@@ -125,6 +134,7 @@ chmod 0700 "$TMP/permanent-publisher"
 printf 'fixture-token\n' >"$TMP/github-token"
 set +e
 env \
+  PATH="$TMP:$PATH" \
   STINT_ONBOX_BIN="$TMP/stint" \
   STINT_ONBOX_ROOT="$TMP/permanent-publish-root" \
   STINT_ONBOX_INSTANCE_ID=4242 \

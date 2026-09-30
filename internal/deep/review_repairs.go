@@ -214,8 +214,8 @@ func reviewFindingResolution(events []RunEvent, cycleID, findingID string) (Revi
 // contract and the immutable ReviewCycle result.
 func RecordReviewRepairWorkUnit(stateDir string, state *DeepState, cycleID, findingID string, at time.Time) error {
 	if state == nil || state.RunEventSchemaVersion != RunEventSchemaVersion || state.Phase != PhaseExecuting ||
-		state.ExecutionQuiescenceUnconfirmed || state.SemanticReviewContractVersion != SemanticReviewContractVersion {
-		return errors.New("review repair creation requires an executing, quiescent run with semantic review contract version 1")
+		state.ExecutionQuiescenceUnconfirmed || !HasSemanticReviewContract(state.SemanticReviewContractVersion) {
+		return errors.New("review repair creation requires an executing, quiescent run with an enabled semantic review contract")
 	}
 	if at.IsZero() {
 		return errors.New("review repair creation requires an event timestamp")
@@ -237,7 +237,7 @@ func RecordReviewRepairWorkUnit(stateDir string, state *DeepState, cycleID, find
 	}
 	cycle, found := reviewCycleByID(events, cycleID)
 	if !found || cycle.SchemaVersion != reviewCycleSchemaGated || cycle.Outcome != ReviewOutcomeFindings {
-		return errors.New("review repair source must be a canonical finding result under semantic review contract version 1")
+		return errors.New("review repair source must be a canonical finding result under an enabled semantic review contract")
 	}
 	if latest, ok := reviewCycleResultForTask(events, cycle.TaskID); !ok || latest.ID != cycle.ID {
 		return errors.New("review repair source is not the latest semantic review for its Objective")
@@ -284,8 +284,8 @@ func RecordReviewRepairWorkUnit(stateDir string, state *DeepState, cycleID, find
 // Work Unit has accepted evidence and a checkpoint-bound semantic review.
 func RecordReviewFindingResolved(stateDir string, state *DeepState, record ReviewFindingResolution, at time.Time) error {
 	if state == nil || state.RunEventSchemaVersion != RunEventSchemaVersion || state.Phase != PhaseExecuting ||
-		state.ExecutionQuiescenceUnconfirmed || state.SemanticReviewContractVersion != SemanticReviewContractVersion {
-		return errors.New("finding resolution requires an executing, quiescent run with semantic review contract version 1")
+		state.ExecutionQuiescenceUnconfirmed || !HasSemanticReviewContract(state.SemanticReviewContractVersion) {
+		return errors.New("finding resolution requires an executing, quiescent run with an enabled semantic review contract")
 	}
 	if at.IsZero() {
 		return errors.New("finding resolution requires an event timestamp")
@@ -334,7 +334,7 @@ func reviewFindingByID(findings []ReviewFinding, id string) (ReviewFinding, bool
 
 func applyReviewRepairCreated(state *DeepState, record ReviewRepairWorkUnit) error {
 	if state == nil || state.Phase != PhaseExecuting || state.ExecutionQuiescenceUnconfirmed ||
-		state.SemanticReviewContractVersion != SemanticReviewContractVersion {
+		!HasSemanticReviewContract(state.SemanticReviewContractVersion) {
 		return errors.New("review repair creation is not allowed in the current run state")
 	}
 	if err := validateReviewRepairRecord(record); err != nil {
@@ -373,7 +373,7 @@ func applyReviewRepairCreated(state *DeepState, record ReviewRepairWorkUnit) err
 
 func applyReviewFindingResolved(state *DeepState, record ReviewFindingResolution) error {
 	if state == nil || state.Phase != PhaseExecuting || state.ExecutionQuiescenceUnconfirmed ||
-		state.SemanticReviewContractVersion != SemanticReviewContractVersion {
+		!HasSemanticReviewContract(state.SemanticReviewContractVersion) {
 		return errors.New("finding resolution is not allowed in the current run state")
 	}
 	if err := validateReviewFindingResolution(record); err != nil {

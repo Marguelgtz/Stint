@@ -147,6 +147,47 @@ func TestSemanticReviewContractRequiresClearReviewBoundToAcceptedCheckpoint(t *t
 	}
 }
 
+func TestMissionReviewContractRequiresClearReviewOnLandingCheckpoint(t *testing.T) {
+	state := acceptedMissionOutcomeFixture(t)
+	mission := state.MissionDefinition()
+	mission.SemanticReviewContractVersion = SemanticReviewMissionContractVersion
+	identity, err := SemanticReviewContractIdentity(mission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.SemanticReviewContractVersion = SemanticReviewMissionContractVersion
+	state.SemanticReviewContractSHA256 = identity
+	task := &state.Tasks[0]
+	task.ReviewCycleID = strings.Repeat("c", 32)
+	task.ReviewOutcome = ReviewOutcomeClear
+	task.ReviewCheckpointEventID = task.AcceptanceCheckpointEventID
+	task.ReviewCheckpointCommit = task.AcceptanceCheckpointCommit
+	task.ReviewCheckpointTreeSHA = task.AcceptanceCheckpointTreeSHA
+	state.LandingCommit = "landing-commit"
+	state.LandingCheckpointTreeSHA = "landing-tree"
+
+	if got := DetermineMissionOutcome(state); got != MissionOutcomeUnresolved {
+		t.Fatalf("mission without whole-mission review = %q, want unresolved", got)
+	}
+	state.MissionReviewCycleID = strings.Repeat("d", 32)
+	state.MissionReviewOutcome = ReviewOutcomeClear
+	state.MissionReviewCheckpointCommit = state.LandingCommit
+	state.MissionReviewCheckpointTreeSHA = state.LandingCheckpointTreeSHA
+	state.MissionReviewSubject = &VerificationSubject{HeadCommit: state.LandingCommit, TreeSHA: state.LandingCheckpointTreeSHA}
+	if got := DetermineMissionOutcome(state); got != MissionOutcomeSucceeded {
+		t.Fatalf("clear checkpoint-bound mission review = %q, want succeeded", got)
+	}
+	state.MissionReviewCheckpointTreeSHA = "different-tree"
+	if got := DetermineMissionOutcome(state); got != MissionOutcomeUnresolved {
+		t.Fatalf("mission review for a different tree = %q, want unresolved", got)
+	}
+	state.MissionReviewCheckpointTreeSHA = state.LandingCheckpointTreeSHA
+	state.MissionReviewOutcome = ReviewOutcomeFindings
+	if got := DetermineMissionOutcome(state); got != MissionOutcomeUnresolved {
+		t.Fatalf("mission findings = %q, want unresolved", got)
+	}
+}
+
 func acceptedMissionOutcomeFixture(t *testing.T) DeepState {
 	t.Helper()
 	task := Task{
