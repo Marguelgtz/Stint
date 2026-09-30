@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -430,9 +431,15 @@ func (c *stdioClient) send(id json.RawMessage, method string, params any) (map[s
 // startStatusStdioServer builds the stint binary once and starts
 // `stint mcp serve --session <ID>` as a real subprocess with stdio wired to
 // pipes, isolating it in a fresh XDG state home (stateDir lives at
-// <stateHome>/stint, as config.DefaultPaths resolves it).
+// <stateHome>/stint, as config.DefaultPaths resolves it). Subprocess tests
+// share a mutex so a single `go build` and a single running server serve all
+// of them deterministically.
+var statusStdioMu sync.Mutex
+
 func startStatusStdioServer(t *testing.T, stateHome, sessionID string) *stdioClient {
 	t.Helper()
+	statusStdioMu.Lock()
+	defer statusStdioMu.Unlock()
 	binPath := filepath.Join(t.TempDir(), "stint")
 	build := exec.Command("go", "build", "-o", binPath, ".")
 	build.Dir = "."
@@ -581,4 +588,47 @@ func TestMCPStatusStdioSubprocessProtocol(t *testing.T) {
 	}
 	assertReplyKey(t, reply, "phase", `"landed"`)
 	assertReplyKey(t, reply, "missionOutcome", `"incomplete"`)
+}
+
+// TestMCPStatusStdioSubprocessCleanShutdown proves the stdio server exits
+// cleanly on its own when the MCP client closes the session (EOF on stdin):
+// after a normal handshake the process reaches exit code 0 without being
+// killed, so an MCP client launcher sees a clean session end.
+func TestMCPStatusStdioSubprocessCleanShutdown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess test skipped in -short mode")
+	}
+	stateHome, _, sessionID, _ := statusRunFixture(t)
+	client := startStatusStdioServer(t, stateHome, sessionID)
+
+	initParams := map[string]any{
+		"protocolVersion": "2025-06-18",
+		"clientInfo":      map[string]any{"name": "shutdown-probe", "version": "0.0.0"},
+	}
+	if _, err := client.send(json.RawMessage("1"), "initialize", initParams); err != nil {
+		t.Fatalf("initialize over stdio: %v", err)
+	}
+	if _, err := client.send(nil, "notifications/initialized", nil); err != nil {
+		t.Fatalf("initialized notification: %v", err)
+	}
+	if _, err := client.send(json.RawMessage("1"), "tools/list", nil); err != nil {
+		t.Fatalf("tools/list over stdio: %v", err)
+	}
+
+	// Client disconnect: close the stdin pipe. The server must terminate on
+	// its own (Run reports the clean EOF, runMCPCommand maps it to a nil
+	// error), not require a kill.
+	if err := client.stdin.Close(); err != nil {
+		t.Fatalf("close stdin: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- client.cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("stdio server exited with error after client disconnect: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("stdio server did not exit after the client closed the session")
+	}
 }

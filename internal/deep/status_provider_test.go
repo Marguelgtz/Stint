@@ -253,6 +253,48 @@ func TestBuildStatusReplySurvivesRestartAndEpochRecovery(t *testing.T) {
 	}
 }
 
+// oversizedStatusState builds a journaled run whose safe projection exceeds
+// the 64 KiB reply cap while staying under the task-row bound: the task list
+// is large (511 rows, one below statusMaxTaskRows) and every row carries the
+// maximum-length 128-byte checkpoint evidence fields, all legitimate
+// identity values (no secret prose, no paths). The projected JSON is far
+// larger than 64 KiB, so the byte cap must fire and fail clearly.
+func oversizedStatusState(t *testing.T) (string, DeepState) {
+	t.Helper()
+	now := time.Date(2026, 9, 30, 17, 13, 48, 0, time.UTC)
+	const rowCount = 511
+	long := strings.Repeat("a", 128)
+	tasks := make([]Task, 0, rowCount)
+	for i := 0; i < rowCount; i++ {
+		tasks = append(tasks, Task{ID: "T-" + itoa(i), Objective: "bound", Status: StatusQueued, Source: "mission",
+			CheckpointCommit:  long,
+			CheckpointTreeSHA: long,
+		})
+	}
+	mission := Mission{Name: "byte cap fixture", Objective: "projection exceeds the reply cap", Tasks: tasks}
+	state := NewState("status-oversized", mission, "/repo", "/repo/.stint-deep/status-oversized", now.Add(time.Hour), now.Add(50*time.Minute), 2, now)
+	stateDir := t.TempDir()
+	if err := BeginNewRun(stateDir, &state, now); err != nil {
+		t.Fatalf("BeginNewRun: %v", err)
+	}
+	return stateDir, state
+}
+
+// TestBuildStatusReplyByteCapFailsClearly proves the 64 KiB reply cap is
+// enforced on the marshalled projection itself (not only on the task-row
+// bound): a legitimate projection that overflows the cap fails clearly
+// instead of being silently truncated.
+func TestBuildStatusReplyByteCapFailsClearly(t *testing.T) {
+	stateDir, state := oversizedStatusState(t)
+	_, err := BuildStatusReply(stateDir, state.SessionID)
+	if err == nil {
+		t.Fatal("BuildStatusReply accepted a projection over the 64 KiB cap, want a clear failure")
+	}
+	if !containsString(err.Error(), "exceeds") {
+		t.Fatalf("error %q does not name the cap failure", err)
+	}
+}
+
 func TestBuildStatusReplyInvalidSelectionFailsClosed(t *testing.T) {
 	stateDir := t.TempDir()
 	for _, id := range []string{
