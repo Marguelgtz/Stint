@@ -41,6 +41,11 @@ Prove that the production on-box executor can make and verify one small change.
 - Work only in the supplied disposable repository.
 - Do not access the network or modify files outside the repository.
 
+## GitHub
+
+- mode: none
+- approval: internal
+
 ## Tasks
 
 - [ ] CANARY-001: Create `admission-canary.txt` containing exactly `STINT_ADMISSION_OK`.
@@ -70,6 +75,7 @@ PY
 
 export XDG_STATE_HOME="$TMP/state"
 export HOME="${HOME:-/root}"
+export STINT_ONBOX_SKIP_GITHUB=1
 timeout "${STINT_ONBOX_ADMISSION_CANARY_TIMEOUT:-12m}" \
   "$STINT_BIN" deep onbox \
   --mission "$TMP/mission.md" \
