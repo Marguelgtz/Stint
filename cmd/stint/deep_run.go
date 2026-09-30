@@ -45,13 +45,13 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 	// Remote Hermes uses SSH; on-box Hermes uses local subprocesses on the
 	// compute instance. Both share the same coordinator state machine.
 	var exec executor
-	verifyFn := func(ctx context.Context, command, workdir string) (string, bool, error) {
+	verifyFn := func(ctx context.Context, command, workdir string) verificationResult {
 		return runVerifyCmd(ctx, command, workdir)
 	}
 	switch cfg.worker {
 	case workerHermes:
 		exec = newHermesExecutor(cfg.remote)
-		verifyFn = func(ctx context.Context, command, workdir string) (string, bool, error) {
+		verifyFn = func(ctx context.Context, command, workdir string) verificationResult {
 			return runVerifyCmdRemote(ctx, cfg.remote, command, workdir)
 		}
 	case workerHermesOnBox:
@@ -79,11 +79,12 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 	}
 	if cfg.worker == workerHermes {
 		// The mission-level check at landing runs in the on-box worktree.
-		coord.finalVerify = func(ctx context.Context, command string) (string, bool, error) {
+		coord.finalVerify = func(ctx context.Context, command string) verificationResult {
 			return runVerifyCmdRemote(ctx, cfg.remote, command, state.WorktreePath)
 		}
-		// The worktree handoff file must be written on the box too, so the
-		// subsequent (remote) commitAll includes it in the branch.
+		// The worktree handoff file must be written on the box too. It is a
+		// generated summary and stays outside the product checkpoint unless it
+		// is already part of Git-visible repository state.
 		coord.worktreeWrite = func(path string, data []byte) error {
 			return writeRemoteFile(cfg.remote, path, data)
 		}
@@ -132,11 +133,15 @@ func deepRunSession(stateDir string, state *deep.DeepState, cfg *deepRunConfig, 
 	if err := coord.run(context.Background()); err != nil {
 		return err
 	}
-	fmt.Println("Deep Work session landed.")
+	outcome := deep.DisplayMissionOutcome(state.MissionOutcome, state.Phase)
+	fmt.Printf("Deep Work reached its landing boundary (mission outcome: %s).\n", outcome)
 	if state.HandoffPath != "" {
 		fmt.Printf("  handoff:  %s\n", state.HandoffPath)
 	}
 	fmt.Println("  inspect:  stint deep status")
+	if state.MissionOutcome == deep.MissionOutcomeFailed {
+		return fmt.Errorf("Deep Work mission failed its required final verification; see handoff: %s", state.HandoffPath)
+	}
 	return nil
 }
 

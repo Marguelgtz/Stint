@@ -99,6 +99,72 @@ func TestParseMissionFencedVerification(t *testing.T) {
 	}
 }
 
+func TestParseMissionShellFencedVerification(t *testing.T) {
+	m, err := ParseMission("# x\n\n## Objective\no\n\n## Verification\n```sh\nnpx pnpm test && git diff --check\n```\n\n## Tasks\n- [ ] T1: a\n")
+	if err != nil {
+		t.Fatalf("ParseMission: %v", err)
+	}
+	if want := "npx pnpm test && git diff --check"; m.Verify != want {
+		t.Errorf("verify = %q, want %q", m.Verify, want)
+	}
+}
+
+func TestParseMissionRejectsMarkdownWrappedVerification(t *testing.T) {
+	for _, command := range []string{"`npx pnpm test`", "``npx pnpm test``"} {
+		content := "# x\n\n## Objective\no\n\n## Verification\n" + command + "\n\n## Tasks\n- [ ] T1: a\n"
+		if _, err := ParseMission(content); err == nil || !strings.Contains(err.Error(), "Markdown wrapper") {
+			t.Errorf("ParseMission command %q error = %v, want Markdown-wrapper error", command, err)
+		}
+	}
+}
+
+func TestParseMissionRejectsMalformedVerificationFence(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{name: "unsupported language", command: "```python\nprint('not shell')\n```", want: "unsupported verification fence label"},
+		{name: "unterminated", command: "```sh\nnpx pnpm test", want: "unterminated"},
+		{name: "empty", command: "```\n```", want: "empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := "# x\n\n## Objective\no\n\n## Verification\n" + tc.command + "\n\n## Tasks\n- [ ] T1: a\n"
+			if _, err := ParseMission(content); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ParseMission error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseTaskVerifyFenceAndRejectsInlineMarkdown(t *testing.T) {
+	mission := "# x\n\n## Objective\no\n\n## Tasks\n- [ ] T1: a\n  - verify: ```test -f a.txt```\n"
+	m, err := ParseMission(mission)
+	if err != nil {
+		t.Fatalf("ParseMission fenced task command: %v", err)
+	}
+	if m.Tasks[0].Verify != "test -f a.txt" {
+		t.Fatalf("task verify = %q, want raw command", m.Tasks[0].Verify)
+	}
+
+	mission = "# x\n\n## Objective\no\n\n## Tasks\n- [ ] T1: a\n  - verify: `test -f a.txt`\n"
+	if _, err := ParseMission(mission); err == nil || !strings.Contains(err.Error(), "task T1 verify command") || !strings.Contains(err.Error(), "Markdown wrapper") {
+		t.Fatalf("ParseMission inline-wrapped task command error = %v", err)
+	}
+}
+
+func TestValidateVerifyCommandPreservesShellSubstitution(t *testing.T) {
+	if err := ValidateVerifyCommand("echo `date`"); err != nil {
+		t.Fatalf("valid shell substitution rejected: %v", err)
+	}
+	for _, command := range []string{"", "   ", "echo\x00", "`echo wrapped`"} {
+		if err := ValidateVerifyCommand(command); err == nil {
+			t.Errorf("ValidateVerifyCommand(%q) succeeded", command)
+		}
+	}
+}
+
 func TestCommandPolicySection(t *testing.T) {
 	if CommandPolicySection(nil) != "" {
 		t.Error("no allow-list: no policy section (legacy missions unchanged)")
@@ -411,6 +477,52 @@ func TestExecSettingsRoundTrip(t *testing.T) {
 	}
 	if got.Exec != nil {
 		t.Errorf("legacy state Exec = %+v, want nil (resume falls back to defaults)", got.Exec)
+	}
+}
+
+func TestVerificationSubjectPersistsAndLegacyTaskRemainsReadable(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC)
+	mission, err := ParseMission(sampleMission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := NewState(NewSessionID(now), mission, "/repo", "/worktree", now.Add(time.Hour), now.Add(50*time.Minute), 3, now)
+	state.Tasks[0].VerificationSubject = &VerificationSubject{HeadCommit: "head123", TreeSHA: "tree123"}
+	state.Tasks[0].VerificationBookkeeping = map[string]string{"deep-work/action-plan.md": "git-blob:plan123"}
+	state.Tasks[0].CheckpointCommit = "checkpoint123"
+	state.Tasks[0].CheckpointTreeSHA = "tree123"
+	if err := state.SaveDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadState(dir, state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := loaded.Tasks[0]
+	if task.VerificationSubject == nil || *task.VerificationSubject != *state.Tasks[0].VerificationSubject {
+		t.Fatalf("subject after state round trip = %+v", task.VerificationSubject)
+	}
+	if task.VerificationBookkeeping["deep-work/action-plan.md"] != "git-blob:plan123" || task.CheckpointTreeSHA != "tree123" {
+		t.Fatalf("separate bookkeeping/checkpoint identity after round trip = %+v", task)
+	}
+
+	legacyMission, err := ParseMission(sampleMission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := NewState(NewSessionID(now.Add(time.Minute)), legacyMission, "/repo", "/worktree", now.Add(2*time.Hour), now.Add(110*time.Minute), 3, now)
+	legacy.Tasks[0].Status = StatusVerified
+	legacy.Tasks[0].CheckpointCommit = "old-checkpoint"
+	if err := legacy.SaveDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	old, err := LoadState(dir, legacy.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Tasks[0].VerificationSubject != nil || len(old.Tasks[0].VerificationBookkeeping) != 0 || old.Tasks[0].CheckpointTreeSHA != "" {
+		t.Fatalf("legacy task acquired synthetic execution identity: %+v", old.Tasks[0])
 	}
 }
 

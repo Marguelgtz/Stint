@@ -22,12 +22,12 @@ import (
 //	- <constraint>
 //
 //	## Verification
-//	<shell command the coordinator runs to verify the workspace>
+//	<raw trusted shell command the coordinator runs to verify the workspace>
 //
 //	## Tasks
 //	- [ ] <ID>: <objective>
 //	  - acceptance: <what must be true for the task to count as done>
-//	  - verify: <shell command the coordinator runs to verify THIS task;
+//	  - verify: <raw trusted shell command the coordinator runs to verify THIS task;
 //	    overrides the mission-level ## Verification command for this task>
 //	  - depends-on: IMPLEMENT-001
 //
@@ -49,6 +49,8 @@ func ParseMission(content string) (Mission, error) {
 	var m Mission
 	var section string
 	var taskIdx = -1
+	var verifyFence string
+	var verifyFenceBody []string
 	var githubMode, githubRepository, githubBase, githubAuthors, githubApproval string
 	githubFields := make(map[string]bool)
 
@@ -57,6 +59,21 @@ func ParseMission(content string) (Mission, error) {
 	for _, raw := range strings.Split(content, "\n") {
 		line := strings.TrimRight(raw, "\r")
 		trimmed := strings.TrimSpace(line)
+
+		if verifyFence != "" {
+			if trimmed == verifyFence {
+				command := strings.TrimSpace(strings.Join(verifyFenceBody, "\n"))
+				if err := ValidateVerifyCommand(command); err != nil {
+					return m, fmt.Errorf("mission verification command: %w", err)
+				}
+				m.Verify = command
+				verifyFence = ""
+				verifyFenceBody = nil
+			} else {
+				verifyFenceBody = append(verifyFenceBody, line)
+			}
+			continue
+		}
 
 		if strings.HasPrefix(trimmed, "## ") {
 			section = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(trimmed, "## ")))
@@ -85,8 +102,20 @@ func ParseMission(content string) (Mission, error) {
 				m.Constraints = append(m.Constraints, b)
 			}
 		case "verification":
-			if v := stripCodeFence(trimmed); v != "" && m.Verify == "" {
-				m.Verify = v
+			if trimmed != "" && m.Verify == "" {
+				command, fence, fenced, err := parseVerificationFenceLine(trimmed)
+				if err != nil {
+					return m, fmt.Errorf("mission verification command: %w", err)
+				}
+				if fenced && fence != "" {
+					verifyFence = fence
+					verifyFenceBody = nil
+					continue
+				}
+				if err := ValidateVerifyCommand(command); err != nil {
+					return m, fmt.Errorf("mission verification command: %w", err)
+				}
+				m.Verify = command
 			}
 		case "github":
 			key, value, ok := policyField(trimmed)
@@ -139,7 +168,11 @@ func ParseMission(content string) (Mission, error) {
 			} else if strings.HasPrefix(body, "acceptance:") && taskIdx >= 0 {
 				m.Tasks[taskIdx].Acceptance = strings.TrimSpace(strings.TrimPrefix(body, "acceptance:"))
 			} else if strings.HasPrefix(body, "verify:") && taskIdx >= 0 {
-				m.Tasks[taskIdx].Verify = strings.TrimSpace(stripCodeFence(strings.TrimPrefix(body, "verify:")))
+				command, err := parseTaskVerifyCommand(strings.TrimSpace(strings.TrimPrefix(body, "verify:")))
+				if err != nil {
+					return m, fmt.Errorf("task %s verify command: %w", m.Tasks[taskIdx].ID, err)
+				}
+				m.Tasks[taskIdx].Verify = command
 			} else if strings.HasPrefix(body, "reasoning:") && taskIdx >= 0 {
 				level, err := NormalizeReasoning(strings.TrimSpace(strings.TrimPrefix(body, "reasoning:")))
 				if err != nil {
@@ -162,6 +195,9 @@ func ParseMission(content string) (Mission, error) {
 				taskIdx = len(m.Tasks) - 1
 			}
 		}
+	}
+	if verifyFence != "" {
+		return m, fmt.Errorf("mission verification command: unterminated %s fence", verifyFence)
 	}
 
 	if strings.TrimSpace(m.Objective) == "" {
@@ -251,21 +287,6 @@ func bullet(line string) string {
 		}
 	}
 	return ""
-}
-
-func stripCodeFence(line string) string {
-	line = strings.TrimSpace(line)
-	for _, f := range []string{"```", "~~~"} {
-		if strings.HasPrefix(line, f) {
-			line = strings.TrimSpace(strings.TrimPrefix(line, f))
-		}
-	}
-	for _, f := range []string{"```", "~~~"} {
-		if strings.HasSuffix(line, f) {
-			line = strings.TrimSpace(strings.TrimSuffix(line, f))
-		}
-	}
-	return line
 }
 
 // taskFields splits "ID: objective" from an already bullet-stripped line.

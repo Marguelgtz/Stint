@@ -1,18 +1,19 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/Marguelgtz/Stint/internal/config"
+	"github.com/Marguelgtz/Stint/internal/deep"
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
@@ -27,6 +28,8 @@ type gitOps interface {
 	logOneline(dir string, n int) (string, error)
 	statusShort(dir string) (string, error)
 	diffStat(dir, base string) (string, error)
+	verificationSubject(dir string, bookkeepingPaths []string) (verificationSnapshot, error)
+	checkpointSubject(dir, message string, snapshot verificationSnapshot) (string, string, error)
 	worktreeAdd(repo, worktree, branch string) error
 	branchExists(repo, branch string) bool
 	worktreeUsable(worktree string) bool
@@ -134,6 +137,156 @@ func (g *remoteGit) diffStat(dir, base string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// verificationSubject captures the worktree's Git-visible product tree using
+// a temporary index on the box. Stint-owned, untracked bookkeeping files are
+// hashed separately and excluded from that tree; tracked or staged versions
+// remain ordinary product inputs.
+func (g *remoteGit) verificationSubject(dir string, bookkeepingPaths []string) (verificationSnapshot, error) {
+	paths, err := cleanBookkeepingPaths(bookkeepingPaths)
+	if err != nil {
+		return verificationSnapshot{}, err
+	}
+	var script strings.Builder
+	script.WriteString("set -e\n")
+	script.WriteString("d=" + shellQuote(dir) + "\n")
+	script.WriteString("head=$(git -C \"$d\" rev-parse HEAD)\n")
+	script.WriteString("sub_status=$(git -C \"$d\" submodule status --recursive)\n")
+	script.WriteString("while IFS= read -r line; do case \"$line\" in -*) printf '%s\\n' 'verification subject contains an uninitialized submodule' >&2; exit 1;; esac; done <<EOF\n$sub_status\nEOF\n")
+	script.WriteString("git -C \"$d\" submodule foreach --quiet --recursive 'test -z \"$(git status --porcelain --untracked-files=all)\"' >/dev/null\n")
+	script.WriteString("set --\n")
+	for i, path := range paths {
+		pathspec := ":(literal)" + path
+		target := filepath.ToSlash(filepath.Join(dir, filepath.FromSlash(path)))
+		script.WriteString("idx=$(git -C \"$d\" ls-files -- " + shellQuote(pathspec) + ")\n")
+		script.WriteString("committed=$(git -C \"$d\" ls-tree -r --name-only HEAD -- " + shellQuote(pathspec) + ")\n")
+		script.WriteString("if [ -z \"$idx\" ] && [ -z \"$committed\" ]; then\n")
+		script.WriteString("  if [ -L " + shellQuote(target) + " ]; then printf '%s\\n' 'bookkeeping path is not a regular file' >&2; exit 1; else if [ -f " + shellQuote(target) + " ]; then oid=$(git -C \"$d\" hash-object --no-filters -- " + shellQuote(path) + "); else if [ -e " + shellQuote(target) + " ]; then printf '%s\\n' 'bookkeeping path is not a regular file' >&2; exit 1; else oid=absent; fi; fi; fi\n")
+		script.WriteString("  printf '%s=%s\\n' " + shellQuote(fmt.Sprintf("__STINT_META_%d__", i)) + " \"$oid\"\n")
+		script.WriteString("  set -- \"$@\" " + shellQuote(":(top,exclude,literal)"+path) + "\n")
+		script.WriteString("fi\n")
+	}
+	script.WriteString("tmp=$(mktemp -d \"${TMPDIR:-/tmp}/stint-deep-index.XXXXXX\")\n")
+	script.WriteString("trap 'rm -rf \"$tmp\"' EXIT HUP INT TERM\n")
+	script.WriteString("export GIT_INDEX_FILE=\"$tmp/index\"\n")
+	script.WriteString("git -C \"$d\" read-tree \"$head\"\n")
+	script.WriteString("git -C \"$d\" add -A -- . \"$@\"\n")
+	script.WriteString("tree=$(git -C \"$d\" write-tree)\n")
+	script.WriteString("head_after=$(git -C \"$d\" rev-parse HEAD)\n")
+	script.WriteString("[ \"$head\" = \"$head_after\" ] || { printf '%s\\n' 'repository HEAD changed while capturing verification subject' >&2; exit 1; }\n")
+	script.WriteString("printf '__STINT_SUBJECT__=%s %s\\n' \"$head_after\" \"$tree\"\n")
+	out, err := g.remote(context.Background(), script.String())
+	if err != nil {
+		msg := strings.TrimSpace(out)
+		if msg == "" {
+			msg = err.Error()
+		}
+		return verificationSnapshot{}, fmt.Errorf("capture remote verification subject: %s", msg)
+	}
+	var snapshot verificationSnapshot
+	metadata := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		for i, path := range paths {
+			marker := fmt.Sprintf("__STINT_META_%d__=", i)
+			if strings.HasPrefix(line, marker) {
+				identity := strings.TrimPrefix(line, marker)
+				if identity != "absent" {
+					identity = "git-blob:" + identity
+				}
+				metadata[path] = identity
+			}
+		}
+		if strings.HasPrefix(line, "__STINT_SUBJECT__=") {
+			fields := strings.Fields(strings.TrimPrefix(line, "__STINT_SUBJECT__="))
+			if len(fields) == 2 {
+				snapshot.Subject.HeadCommit, snapshot.Subject.TreeSHA = fields[0], fields[1]
+			}
+		}
+	}
+	if snapshot.Subject.HeadCommit == "" || snapshot.Subject.TreeSHA == "" {
+		return verificationSnapshot{}, fmt.Errorf("remote verification subject returned no valid tree identity")
+	}
+	if len(metadata) > 0 {
+		snapshot.Bookkeeping = metadata
+	}
+	return snapshot, nil
+}
+
+func (g *remoteGit) checkpointSubject(dir, message string, snapshot verificationSnapshot) (string, string, error) {
+	subject := snapshot.Subject
+	if subject.HeadCommit == "" || subject.TreeSHA == "" {
+		return "", "", fmt.Errorf("verification subject is incomplete")
+	}
+	excluded := bookkeepingPathsFromSnapshot(snapshot)
+	current, err := g.verificationSubject(dir, excluded)
+	if err != nil {
+		return "", "", err
+	}
+	if !sameVerificationSnapshot(snapshot, current) {
+		return "", "", fmt.Errorf("repository changed after verification; verified subject %s/%s no longer matches %s/%s", subject.HeadCommit, subject.TreeSHA, current.Subject.HeadCommit, current.Subject.TreeSHA)
+	}
+	args := []string{"add", "-A", "--", "."}
+	for _, path := range excluded {
+		args = append(args, ":(top,exclude,literal)"+path)
+	}
+	if _, err := g.run(dir, args...); err != nil {
+		return "", "", err
+	}
+	tree, err := g.run(dir, "write-tree")
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(tree) != subject.TreeSHA {
+		return "", "", fmt.Errorf("repository changed while preparing checkpoint tree; verified %s, staged %s", subject.TreeSHA, strings.TrimSpace(tree))
+	}
+	head, err := g.repoHead(dir)
+	if err != nil {
+		return "", "", err
+	}
+	head = strings.TrimSpace(head)
+	if head != subject.HeadCommit {
+		return "", "", fmt.Errorf("repository HEAD changed after verification; verified %s, found %s", subject.HeadCommit, head)
+	}
+	headTree, err := g.run(dir, "rev-parse", "HEAD^{tree}")
+	if err != nil {
+		return "", "", err
+	}
+	checkpoint := head
+	if strings.TrimSpace(headTree) != subject.TreeSHA {
+		if _, err := g.run(dir, "commit", "-m", message, "--author", "Stint Deep Work <deep@stint.local>"); err != nil {
+			return "", "", err
+		}
+		checkpoint, err = g.repoHead(dir)
+		if err != nil {
+			return "", "", err
+		}
+		checkpoint = strings.TrimSpace(checkpoint)
+		parent, err := g.run(dir, "rev-parse", "HEAD^")
+		if err != nil {
+			return "", "", fmt.Errorf("read semantic checkpoint parent: %w", err)
+		}
+		if strings.TrimSpace(parent) != subject.HeadCommit {
+			return "", "", fmt.Errorf("checkpoint parent changed after verification; verified HEAD %s, found parent %s", subject.HeadCommit, strings.TrimSpace(parent))
+		}
+	}
+	checkpointTree, err := g.run(dir, "rev-parse", "HEAD^{tree}")
+	if err != nil {
+		return "", "", err
+	}
+	checkpointTree = strings.TrimSpace(checkpointTree)
+	if checkpointTree != subject.TreeSHA {
+		return "", "", fmt.Errorf("checkpoint tree does not match verified tree: verified %s, checkpoint %s", subject.TreeSHA, checkpointTree)
+	}
+	after, err := g.verificationSubject(dir, excluded)
+	if err != nil {
+		return "", "", err
+	}
+	if after.Subject.HeadCommit != checkpoint || after.Subject.TreeSHA != subject.TreeSHA || !sameMetadata(snapshot.Bookkeeping, after.Bookkeeping) {
+		return "", "", fmt.Errorf("repository changed before checkpoint acceptance; verified tree %s, current HEAD/tree %s/%s", subject.TreeSHA, after.Subject.HeadCommit, after.Subject.TreeSHA)
+	}
+	return checkpoint, checkpointTree, nil
+}
+
 func (g *remoteGit) worktreeAdd(repo, worktree, branch string) error {
 	_, err := g.run(repo, "worktree", "add", worktree, "-b", branch, "HEAD")
 	return err
@@ -157,13 +310,14 @@ func (g *remoteGit) worktreeReattach(repo, worktree, branch string) error {
 	return err
 }
 
-// commitAll checkpoints the on-box worktree with a distinct coordinator
-// marker, including when the worker already committed its changes.
+// commitAll records actual staged/worktree changes. Callers that need a
+// checkpoint without a repository change must reuse the current HEAD instead
+// of manufacturing an empty marker commit.
 func (g *remoteGit) commitAll(dir, message string) (string, error) {
 	if _, err := g.run(dir, "add", "-A"); err != nil {
 		return "", err
 	}
-	out, err := g.run(dir, "commit", "--allow-empty", "-m", message,
+	out, err := g.run(dir, "commit", "-m", message,
 		"--author", "Stint Deep Work <deep@stint.local>")
 	if err != nil {
 		return strings.TrimSpace(out), err
@@ -171,25 +325,161 @@ func (g *remoteGit) commitAll(dir, message string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// runVerifyCmdRemote runs the verification command on the box in the on-box
-// worktree with the same 3-minute bound as the local variant and returns its
-// combined output tail and pass/fail (command exit 0).
-func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir string) (string, bool, error) {
-	vctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
-	line := fmt.Sprintf("cd %s && sh -c %s", shellQuote(workdir), shellQuote(command))
-	out, err := remote(vctx, line)
-	if len(out) > 4000 {
-		out = out[len(out)-4000:]
+const (
+	verifyExitMarker                     = "__STINT_VERIFY_EXIT__="
+	verifySetupMarker                    = "__STINT_VERIFY_SETUP__="
+	remoteVerifyTimeoutSeconds           = 170 // leave time for remote process-group cleanup before the 3-minute SSH deadline
+	remoteExecutionCleanupReserveSeconds = 5
+)
+
+// runVerifyCmdRemote executes the same validated raw shell command as the
+// local verifier and transports its exit status separately from SSH status.
+func runVerifyCmdRemote(ctx context.Context, remote remoteCmd, command, workdir string) verificationResult {
+	started := time.Now().UTC()
+	if err := deep.ValidateVerifyCommand(command); err != nil {
+		return verificationResult{Command: command, Outcome: verificationInvalid, StartedAt: started, CompletedAt: time.Now().UTC(), Error: err.Error()}
 	}
-	return out, err == nil, nil
+	vctx, cancel := context.WithTimeout(ctx, defaultMissionVerifyTime)
+	defer cancel()
+	line := remoteVerificationCommand(workdir, command)
+	out, err := remote(vctx, line)
+	result := verificationResult{Command: command, StartedAt: started, CompletedAt: time.Now().UTC()}
+	if err != nil {
+		result.Output = truncateVerifierOutput(out)
+		result.QuiescenceUnconfirmed = true
+		if errors.Is(vctx.Err(), context.DeadlineExceeded) {
+			result.Outcome = verificationTimedOut
+			result.Error = vctx.Err().Error()
+		} else if errors.Is(vctx.Err(), context.Canceled) {
+			result.Outcome = verificationCanceled
+			result.Error = vctx.Err().Error()
+		} else {
+			result.Outcome = verificationExecutionErr
+			result.Error = "remote verification transport failed: " + err.Error()
+		}
+		return result
+	}
+	if exitCode, body, ok := takeTrailingVerifierMarker(out, verifyExitMarker); ok {
+		result.Output = truncateVerifierOutput(body)
+		result.ExitCode = exitCode
+		result.HasExitCode = true
+		if result.ExitCode == 124 {
+			result.Outcome = verificationTimedOut
+			result.Error = "remote verifier exceeded its bounded execution window"
+		} else if result.ExitCode == 0 {
+			result.Outcome = verificationPassed
+		} else {
+			result.Outcome = verificationFailed
+		}
+		return result
+	}
+	if setupCode, body, ok := takeTrailingVerifierMarker(out, verifySetupMarker); ok {
+		result.Outcome = verificationExecutionErr
+		if setupCode == 127 {
+			result.Error = "could not confirm remote verifier process-group quiescence"
+			result.QuiescenceUnconfirmed = true
+		} else if setupCode == 126 {
+			result.Error = "remote verifier setup failed before invocation"
+		} else {
+			result.Error = fmt.Sprintf("could not enter verifier worktree (cd exit %d)", setupCode)
+		}
+		result.Output = truncateVerifierOutput(body)
+		return result
+	}
+	result.Output = truncateVerifierOutput(out)
+	if errors.Is(vctx.Err(), context.DeadlineExceeded) {
+		result.Outcome = verificationTimedOut
+		result.Error = vctx.Err().Error()
+		result.QuiescenceUnconfirmed = true
+	} else if errors.Is(vctx.Err(), context.Canceled) {
+		result.Outcome = verificationCanceled
+		result.Error = vctx.Err().Error()
+		result.QuiescenceUnconfirmed = true
+	} else {
+		result.Outcome = verificationExecutionErr
+		result.Error = "remote verification returned no trailing exit marker"
+		result.QuiescenceUnconfirmed = true
+	}
+	return result
+}
+
+func remoteVerificationCommand(workdir, command string) string {
+	statusFile := "$(mktemp /tmp/stint-verify-status.XXXXXX)"
+	groupFile := "$(mktemp /tmp/stint-verify-group.XXXXXX)"
+	inner := remoteProcessGroupInvocation(command, remoteVerifyTimeoutSeconds, "stint-verifier", "__STINT_STATUS_FILE__", "__STINT_GROUP_FILE__")
+	// The status file path is a positional argument to the setsid supervisor;
+	// substitute that one fixed shell variable after quoting the user command.
+	inner = strings.Replace(inner, shellQuote("__STINT_STATUS_FILE__"), `"$stint_status_file"`, 1)
+	inner = strings.Replace(inner, shellQuote("__STINT_GROUP_FILE__"), `"$stint_group_file"`, 1)
+	return fmt.Sprintf(
+		"cd %s || { status=$?; printf '\\n%s%%s\\n' \"$status\"; exit 0; }; "+
+			"for stint_tool in setsid ps awk sleep; do command -v \"$stint_tool\" >/dev/null 2>&1 || { printf '\\n%s126\\n'; exit 0; }; done; "+
+			"stint_status_file=%s || { printf '\\n%s126\\n'; exit 0; }; "+
+			"stint_group_file=%s || { rm -f \"$stint_status_file\"; printf '\\n%s126\\n'; exit 0; }; "+
+			"trap 'rm -f \"$stint_status_file\" \"$stint_group_file\"' EXIT; "+
+			"%s & stint_verifier_pid=$!; wait \"$stint_verifier_pid\" 2>/dev/null || true; "+
+			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || { printf '\\n%s127\\n'; exit 0; }; "+
+			"case \"$stint_group\" in ''|*[!0-9]*) printf '\\n%s127\\n'; exit 0;; esac; "+
+			"kill -KILL -\"$stint_group\" 2>/dev/null || true; "+
+			"stint_quiescent=0; for stint_wait in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do "+
+			"if ! ps -eo pgid=,stat= | awk -v pgid=\"$stint_group\" '$1 == pgid && $2 !~ /^Z/ { found=1 } END { exit !found }'; then stint_quiescent=1; break; fi; "+
+			"sleep 0.1 || { printf '\\n%s127\\n'; exit 0; }; done; [ \"$stint_quiescent\" = 1 ] || { printf '\\n%s127\\n'; exit 0; }; "+
+			"status=$(cat \"$stint_status_file\" 2>/dev/null) || { printf '\\n%s126\\n'; exit 0; }; "+
+			"case \"$status\" in ''|*[!0-9]*) printf '\\n%s126\\n'; exit 0;; esac; "+
+			"printf '\\n%s%%s\\n' \"$status\"; exit 0",
+		shellQuote(workdir), verifySetupMarker,
+		verifySetupMarker, statusFile, verifySetupMarker, groupFile, verifySetupMarker,
+		inner, verifySetupMarker, verifySetupMarker, verifySetupMarker, verifySetupMarker,
+		verifySetupMarker,
+		verifySetupMarker, verifyExitMarker,
+	)
+}
+
+// takeTrailingVerifierMarker accepts only the wrapper's final complete output
+// line. A verifier can print marker-like text earlier in its output without
+// overriding the wrapper's appended status; trailing background output fails
+// closed because it obscures the status boundary.
+func takeTrailingVerifierMarker(output, marker string) (code int, body string, found bool) {
+	trimmed := strings.TrimSuffix(output, "\n")
+	trimmed = strings.TrimSuffix(trimmed, "\r")
+	lineStart := strings.LastIndexByte(trimmed, '\n') + 1
+	line := strings.TrimSuffix(trimmed[lineStart:], "\r")
+	if !strings.HasPrefix(line, marker) {
+		return 0, output, false
+	}
+	rawCode := strings.TrimPrefix(line, marker)
+	if rawCode == "" {
+		return 0, output, false
+	}
+	for _, digit := range rawCode {
+		if digit < '0' || digit > '9' {
+			return 0, output, false
+		}
+	}
+	parsed, err := strconv.Atoi(rawCode)
+	if err != nil || parsed > 255 {
+		return 0, output, false
+	}
+	body = strings.TrimRight(output[:lineStart], "\r\n")
+	return parsed, body, true
+}
+
+func truncateVerifierOutput(out string) string {
+	if len(out) > 4000 {
+		return out[len(out)-4000:]
+	}
+	return out
 }
 
 // hermesExitMarker delimits the Hermes invocation's exit code in the remote
 // output: the box shell appends "<marker><code>" after the run so the exit
 // code survives the SSH channel (runSSH reports a non-zero remote exit as an
 // error, which would otherwise mask the real code).
-const hermesExitMarker = "__STINT_EXIT__="
+const (
+	hermesExitMarker            = "__STINT_EXIT__="
+	hermesSetupFailureMarker    = "__STINT_SETUP_FAILURE__="
+	hermesInvocationStartMarker = "__STINT_INVOCATION_STARTED__"
+)
 
 // writeRemoteFile writes data to a path on the box over the SSH seam,
 // base64-encoded so arbitrary content (the handoff's UTF-8 markdown)
@@ -224,7 +514,7 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 	start := time.Now()
 
 	b64 := base64.StdEncoding.EncodeToString([]byte(in.prompt))
-	secs := int(in.timeout.Seconds())
+	secs := int(in.timeout.Seconds()) - remoteExecutionCleanupReserveSeconds
 	hermesArgs := "hermes chat --query-file \"$stint_prompt_file\" --oneshot"
 	if in.model != "" {
 		provider := in.provider
@@ -246,38 +536,106 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 			hermesArgs += " --reasoning " + shellQuote(in.reasoning)
 		}
 	}
-	line := fmt.Sprintf(
-		"umask 077; stint_prompt_file=$(mktemp /tmp/stint-deep-prompt.XXXXXX) || exit $?; "+
-			"trap 'rm -f \"$stint_prompt_file\"' EXIT; printf %%s %s | base64 -d > \"$stint_prompt_file\" && "+
-			"cd %s && timeout %d %s 2>&1; ec=$?; echo %s$ec",
-		shellQuote(b64), shellQuote(in.workdir), secs, hermesArgs, hermesExitMarker)
+	line := remoteHermesCommand(in, b64, hermesArgs, secs)
 
 	out, err := e.remote(ctx, line)
 	res := execResult{duration: time.Since(start), stderrTail: tailLine(out, 5)}
 
-	// Recover the invocation's exit code from the marker. A missing marker
-	// (SSH failure, or the box line not reaching the marker) means the
-	// invocation did not complete.
-	if idx := strings.LastIndex(out, hermesExitMarker); idx >= 0 {
-		rest := strings.TrimSpace(out[idx+len(hermesExitMarker):])
-		if code, perr := strconv.Atoi(rest); perr == nil {
-			res.exitCode = code
-			res.completed = code == 0
-			if res.completed {
-				res.finishReason = "completed"
-			}
+	if err != nil {
+		res.exitCode = -1
+		return res, fmt.Errorf("%w: hermes invocation over SSH: %v", errExecutorQuiescenceUnconfirmed, err)
+	}
+	if code, body, ok := takeTrailingVerifierMarker(out, hermesExitMarker); ok {
+		res.exitCode = code
+		res.completed = code == 0
+		res.outputText = strings.TrimSpace(stripHermesInvocationStartMarker(body))
+		if res.completed {
+			res.finishReason = "completed"
+		} else {
+			res.finishReason = fmt.Sprintf("exit %d", code)
+		}
+		return res, nil
+	}
+	if code, ok := takeExactHermesSetupFailure(out); ok {
+		res.exitCode = code
+		res.finishReason = fmt.Sprintf("setup failed before invocation (exit %d)", code)
+		res.stderrTail = ""
+		return res, fmt.Errorf("remote Hermes setup failed before process launch (exit %d)", code)
+	}
+	res.exitCode = -1
+	return res, fmt.Errorf("%w: Hermes invocation over SSH returned no trailing exit marker", errExecutorQuiescenceUnconfirmed)
+}
+
+// takeExactHermesSetupFailure accepts only the wrapper's single-line
+// pre-launch failure response. A Hermes process can print the same text, but
+// its output follows the wrapper's invocation-start frame and therefore can
+// never be this complete response.
+func takeExactHermesSetupFailure(output string) (int, bool) {
+	line := strings.TrimSuffix(output, "\n")
+	line = strings.TrimSuffix(line, "\r")
+	if strings.ContainsAny(line, "\r\n") || !strings.HasPrefix(line, hermesSetupFailureMarker) {
+		return 0, false
+	}
+	rawCode := strings.TrimPrefix(line, hermesSetupFailureMarker)
+	if rawCode == "" {
+		return 0, false
+	}
+	for _, digit := range rawCode {
+		if digit < '0' || digit > '9' {
+			return 0, false
 		}
 	}
-	// The marker line is bookkeeping, not agent output: drop it from the
-	// report so the handoff carries only the worker's text.
-	if i := strings.LastIndex(out, hermesExitMarker); i >= 0 {
-		res.outputText = strings.TrimSpace(out[:i])
+	code, err := strconv.Atoi(rawCode)
+	if err != nil || code < 1 || code > 255 {
+		return 0, false
 	}
-	if err != nil && !strings.Contains(out, hermesExitMarker) {
-		res.exitCode = -1
-		return res, fmt.Errorf("hermes invocation over SSH: %w", err)
+	return code, true
+}
+
+func stripHermesInvocationStartMarker(output string) string {
+	line, rest, found := strings.Cut(output, "\n")
+	if !found {
+		if strings.TrimSuffix(line, "\r") == hermesInvocationStartMarker {
+			return ""
+		}
+		return output
 	}
-	return res, nil
+	if strings.TrimSuffix(line, "\r") != hermesInvocationStartMarker {
+		return output
+	}
+	return rest
+}
+
+func remoteHermesCommand(in execInput, b64, hermesArgs string, timeoutSeconds int) string {
+	statusFile := `"$stint_status_file"`
+	groupFile := `"$stint_group_file"`
+	inner := remoteProcessGroupInvocation(hermesArgs, timeoutSeconds, "stint-hermes", "__STINT_STATUS_FILE__", "__STINT_GROUP_FILE__")
+	inner = strings.Replace(inner, shellQuote("__STINT_STATUS_FILE__"), statusFile, 1)
+	inner = strings.Replace(inner, shellQuote("__STINT_GROUP_FILE__"), groupFile, 1)
+	setupFailure := "stint_setup_failure() { stint_setup_status=$1; printf " +
+		shellQuote(hermesSetupFailureMarker+"%%s\\n") + " \"$stint_setup_status\"; exit 0; }; "
+	return fmt.Sprintf(
+		setupFailure+"umask 077 || stint_setup_failure $?; "+
+			"for stint_tool in mktemp base64 setsid timeout cat rm ps awk sleep; do command -v \"$stint_tool\" >/dev/null 2>&1 || stint_setup_failure 127; done; "+
+			"stint_prompt_file=; stint_status_file=; stint_group_file=; "+
+			"trap 'for stint_tmp in \"$stint_prompt_file\" \"$stint_status_file\" \"$stint_group_file\"; do [ -z \"$stint_tmp\" ] || rm -f \"$stint_tmp\"; done' EXIT; "+
+			"stint_prompt_file=$(mktemp /tmp/stint-deep-prompt.XXXXXX 2>/dev/null) || stint_setup_failure $?; "+
+			"stint_status_file=$(mktemp /tmp/stint-hermes-status.XXXXXX 2>/dev/null) || stint_setup_failure $?; "+
+			"stint_group_file=$(mktemp /tmp/stint-hermes-group.XXXXXX 2>/dev/null) || stint_setup_failure $?; "+
+			"printf %%s %s | base64 -d > \"$stint_prompt_file\" 2>/dev/null || stint_setup_failure $?; "+
+			"cd %s >/dev/null 2>&1 || stint_setup_failure $?; export stint_prompt_file; "+
+			"printf '%%s\\n' "+shellQuote(hermesInvocationStartMarker)+"; "+
+			"%s & stint_hermes_pid=$!; wait \"$stint_hermes_pid\" 2>/dev/null || true; "+
+			"stint_group=$(cat \"$stint_group_file\" 2>/dev/null) || exit 125; "+
+			"case \"$stint_group\" in ''|*[!0-9]*) exit 125;; esac; "+
+			"kill -KILL -\"$stint_group\" 2>/dev/null || true; "+
+			"stint_quiescent=0; for stint_wait in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do "+
+			"if ! ps -eo pgid=,stat= | awk -v pgid=\"$stint_group\" '$1 == pgid && $2 !~ /^Z/ { found=1 } END { exit !found }'; then stint_quiescent=1; break; fi; "+
+			"sleep 0.1 || exit 125; done; [ \"$stint_quiescent\" = 1 ] || exit 125; "+
+			"ec=$(cat \"$stint_status_file\" 2>/dev/null) || exit 125; "+
+			"case \"$ec\" in ''|*[!0-9]*) exit 125;; esac; printf '\\n%s%%s\\n' \"$ec\"; exit 0",
+		shellQuote(b64), shellQuote(in.workdir), inner, hermesExitMarker,
+	)
 }
 
 // localHermesExecutor runs Hermes in the same instance as the coordinator. It
@@ -336,18 +694,37 @@ func (e *localHermesExecutor) run(ctx context.Context, in execInput) (execResult
 
 	cmd := exec.CommandContext(ctx, e.binary, argv...)
 	cmd.Dir = in.workdir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	err = cmd.Run()
+	outFile, err := newPrivateOutputFile("stint-hermes-output-*")
+	if err != nil {
+		return execResult{exitCode: -1, duration: time.Since(start)}, fmt.Errorf("create local Hermes output file: %w", err)
+	}
+	errFile, err := newPrivateOutputFile("stint-hermes-stderr-*")
+	if err != nil {
+		_ = outFile.Close()
+		_ = os.Remove(outFile.Name())
+		return execResult{exitCode: -1, duration: time.Since(start)}, fmt.Errorf("create local Hermes stderr file: %w", err)
+	}
+	cmd.Stdout, cmd.Stderr = outFile, errFile
+	runErr, quiesceErr := runQuiescedProcessGroup(cmd)
+	out, outReadErr := readAndRemoveOutputFile(outFile)
+	errOutput, errReadErr := readAndRemoveOutputFile(errFile)
 	res := execResult{
 		duration:   time.Since(start),
 		exitCode:   processExitCode(cmd),
-		outputText: strings.TrimSpace(out.String()),
-		stderrTail: tailLine(errb.String(), 5),
+		outputText: strings.TrimSpace(string(out)),
+		stderrTail: tailLine(string(errOutput), 5),
 	}
-	if err == nil {
+	if outReadErr != nil || errReadErr != nil {
+		res.exitCode = -1
+		return res, fmt.Errorf("read local Hermes output (stdout: %v, stderr: %v)", outReadErr, errReadErr)
+	}
+	if quiesceErr != nil {
+		res.exitCode = -1
+		res.completed = false
+		res.finishReason = "quiescence_error"
+		return res, fmt.Errorf("%w: local Hermes invocation could not quiesce its process group: %v", errExecutorQuiescenceUnconfirmed, quiesceErr)
+	}
+	if runErr == nil {
 		res.completed = true
 		res.finishReason = "completed"
 		return res, nil
@@ -355,5 +732,5 @@ func (e *localHermesExecutor) run(ctx context.Context, in execInput) (execResult
 	if ctx.Err() != nil {
 		res.finishReason = ctx.Err().Error()
 	}
-	return res, fmt.Errorf("local hermes invocation: %w", err)
+	return res, fmt.Errorf("local hermes invocation: %w", runErr)
 }
