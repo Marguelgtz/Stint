@@ -37,6 +37,8 @@ REBIND_REASON="${STINT_ONBOX_REBIND_REASON:-}"
 ONBOX_MODEL="${STINT_ONBOX_MODEL:-}"
 ONBOX_MODEL_SET="${STINT_ONBOX_MODEL+x}"
 if [ "$RESUME" != 1 ] && [ -z "$ONBOX_MODEL" ]; then ONBOX_MODEL="qwen3.8-27b"; fi
+ONBOX_PROVIDER="${STINT_ONBOX_PROVIDER:-}"
+[ -n "$ONBOX_PROVIDER" ] || ONBOX_PROVIDER='custom:qwen-stint-{reasoning}'
 PHASING_DIR="${STINT_PHASING_DIR:-/root/stint-phasing}"
 SKIP_GITHUB="${STINT_ONBOX_SKIP_GITHUB:-0}"
 SKIP_WATCHDOG="${STINT_ONBOX_SKIP_WATCHDOG:-0}"
@@ -75,6 +77,10 @@ TRANSFER_ATTEMPTS="${STINT_ONBOX_TRANSFER_ATTEMPTS:-5}"
 TRANSFER_RETRY_SECONDS="${STINT_ONBOX_TRANSFER_RETRY_SECONDS:-3}"
 
 die() { echo "ONBOX_LAUNCH_FAIL $*" >&2; exit 1; }
+provider_probe="${ONBOX_PROVIDER//\{reasoning\}/medium}"
+case "$provider_probe" in
+  *'{'*|*'}'*) die "Hermes provider template contains an unmatched brace: $ONBOX_PROVIDER" ;;
+esac
 retry_step() {
   local label="$1"
   shift
@@ -535,7 +541,7 @@ if [ "$RESUME" = 1 ]; then
   fi
 else
   args=(--mission "$REMOTE_MISSION" --repo "$REMOTE_REPO" --deadline "$STINT_DEADLINE" \
-    --provider "${STINT_ONBOX_PROVIDER:-custom:qwen-stint-{reasoning}}" \
+    --provider "$ONBOX_PROVIDER" \
     --model "$ONBOX_MODEL" \
     --reasoning "${STINT_ONBOX_REASONING:-medium}" \
     --task-timeout "${STINT_ONBOX_TASK_TIMEOUT:-15m}" \
