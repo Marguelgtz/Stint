@@ -132,9 +132,10 @@ done
 if [ -f "$TARGET_REPO/go.mod" ]; then
   go version || fail "Go is unavailable for the target repository"
   if grep -Eq '^module[[:space:]]+github\.com/Marguelgtz/Stint([[:space:]]|$)' "$TARGET_REPO/go.mod"; then
-    RPT "running Stint verification surface before Deep Work RUNNING"
-    (cd "$TARGET_REPO" && timeout "${STINT_BOOTSTRAP_TEST_TIMEOUT:-20m}" go test ./...) \
-      || fail "Stint go test ./... failed before Deep Work startup"
+    RPT "running the Stint generic verifier before Deep Work RUNNING"
+    (cd "$TARGET_REPO" && timeout "${STINT_BOOTSTRAP_TEST_TIMEOUT:-10m}" \
+      bash -o pipefail -c 'go test ./... && go vet ./... && git diff --check') \
+      || fail "Stint generic verifier exceeded its budget or failed before Deep Work startup"
   fi
 fi
 
