@@ -116,7 +116,11 @@ types = [event.get("type") for event in events]
 for required in ("executor.started", "executor.result", "verification.result", "task.checkpoint_created", "run.landed"):
     if required not in types:
         raise SystemExit(f"ADMISSION_CANARY_FAIL journal is missing {required}")
-tree = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"], text=True).strip()
+worktree = pathlib.Path(state.get("worktreePath", "")).resolve()
+repo = repo.resolve()
+if not worktree.is_relative_to(repo) or not worktree.is_dir():
+    raise SystemExit("ADMISSION_CANARY_FAIL persisted Deep Work tree is not a repository worktree")
+tree = subprocess.check_output(["git", "-C", str(worktree), "rev-parse", "HEAD^{tree}"], text=True).strip()
 if state.get("landingCheckpointTreeSha") != tree or tasks[0].get("checkpointTreeSha") != tree:
     raise SystemExit("ADMISSION_CANARY_FAIL verified, task, and landing trees do not match")
 if not (repo / "admission-canary.txt").is_file() or (repo / "admission-canary.txt").read_text(encoding="utf-8") != "STINT_ADMISSION_OK\n":
