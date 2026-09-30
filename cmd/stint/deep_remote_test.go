@@ -598,6 +598,23 @@ func TestHermesExecutorsQuiesceDelayedWriters(t *testing.T) {
 		}
 		assertNoDelayedMutationAfterReturn(t, marker, returnedAt)
 	})
+
+	t.Run("timed-out detached writer", func(t *testing.T) {
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "late-timeout-write")
+		hermes := filepath.Join(dir, "hermes")
+		script := "#!/bin/sh\n(trap '' TERM; sleep 2; printf late > " + shellQuote(marker) + ") &\nsleep 30\n"
+		if err := os.WriteFile(hermes, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		result, err := newLocalHermesExecutor(hermes).run(context.Background(), execInput{
+			workdir: dir, prompt: "finish", timeout: time.Second,
+		})
+		if err == nil || result.completed {
+			t.Fatalf("timed-out executor result = %+v, err=%v; want timeout", result, err)
+		}
+		assertNoDelayedMutationAfterReturn(t, marker, time.Now())
+	})
 }
 
 func assertNoDelayedMutationAfterReturn(t *testing.T, marker string, returnedAt time.Time) {

@@ -162,7 +162,7 @@ func runVerifyCmd(ctx context.Context, command, workdir string) verificationResu
 	if err := deep.ValidateVerifyCommand(command); err != nil {
 		return verificationResult{Command: command, Outcome: verificationInvalid, StartedAt: started, CompletedAt: time.Now().UTC(), Error: err.Error()}
 	}
-	vctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	vctx, cancel := context.WithTimeout(ctx, defaultMissionVerifyTime)
 	defer cancel()
 	cmd := exec.CommandContext(vctx, "sh", "-c", command)
 	cmd.Dir = workdir
