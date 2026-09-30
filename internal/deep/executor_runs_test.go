@@ -47,7 +47,7 @@ func TestExecutorRunStartAndResultAreCanonicalFacts(t *testing.T) {
 	run.DurationMilliseconds = 14_000
 	run.ResultSummary = "exit=0 finish=completed in 14s"
 	run.RepositoryAfter = &VerificationSubject{HeadCommit: "head-after", TreeSHA: "tree-after"}
-	if err := CompleteExecutorRun(stateDir, &state, run); err != nil {
+	if err := CompleteExecutorRun(stateDir, &state, run, run.EndedAt); err != nil {
 		t.Fatalf("complete executor run: %v", err)
 	}
 	if state.RunEventWatermark != 3 || state.Tasks[0].ExecutorRunID != run.ID || state.Tasks[0].LastResult != run.ResultSummary || state.Tasks[0].ExecutorRunProcessed {
@@ -200,7 +200,7 @@ func TestCompleteExecutorRunRequiresObservedEndTime(t *testing.T) {
 	run.Outcome = ExecutorOutcomeSucceeded
 	run.ExitCode = 0
 	run.Completed = true
-	if err := CompleteExecutorRun(stateDir, &state, run); err == nil || !strings.Contains(err.Error(), "end timestamp") {
+	if err := CompleteExecutorRun(stateDir, &state, run, now.Add(2*time.Second)); err == nil || !strings.Contains(err.Error(), "end timestamp") {
 		t.Fatalf("executor result without observed end time = %v, want rejection", err)
 	}
 	events, err := ReadRunEvents(stateDir, state.SessionID)
@@ -226,7 +226,7 @@ func TestExecutorAttemptsKeepIndependentJournalHistory(t *testing.T) {
 	first.Error = "first attempt failed"
 	first.ResultSummary = "exit=1"
 	first.DurationMilliseconds = 9_000
-	if err := CompleteExecutorRun(stateDir, &state, first); err != nil {
+	if err := CompleteExecutorRun(stateDir, &state, first, first.EndedAt); err != nil {
 		t.Fatalf("complete first executor attempt: %v", err)
 	}
 	state.Tasks[0].ExecutorRunProcessed = true
@@ -247,7 +247,7 @@ func TestExecutorAttemptsKeepIndependentJournalHistory(t *testing.T) {
 	second.FinishReason = "completed"
 	second.ResultSummary = "exit=0"
 	second.DurationMilliseconds = 10_000
-	if err := CompleteExecutorRun(stateDir, &state, second); err != nil {
+	if err := CompleteExecutorRun(stateDir, &state, second, second.EndedAt); err != nil {
 		t.Fatalf("complete second executor attempt: %v", err)
 	}
 
@@ -352,7 +352,7 @@ func TestExecutorFactsRejectOversizedAndStructurallyInvalidFields(t *testing.T) 
 		run.Outcome = ExecutorOutcomeFailed
 		run.EndedAt = now.Add(2 * time.Second)
 		run.ArtifactRefs = []string{strings.Repeat("a", 257)}
-		if err := CompleteExecutorRun(stateDir, &state, run); err == nil || !strings.Contains(err.Error(), "artifact reference") {
+		if err := CompleteExecutorRun(stateDir, &state, run, run.EndedAt); err == nil || !strings.Contains(err.Error(), "artifact reference") {
 			t.Fatalf("oversized artifact reference = %v, want rejection", err)
 		}
 	})
@@ -370,7 +370,7 @@ func TestExecutorFactsRejectOversizedAndStructurallyInvalidFields(t *testing.T) 
 		run.Outcome = ExecutorOutcomeFailed
 		run.EndedAt = now.Add(2 * time.Second)
 		run.ResultSummary = strings.Repeat("x", maxExecutorRunSummaryBytes+1)
-		if err := CompleteExecutorRun(stateDir, &state, run); err == nil || !strings.Contains(err.Error(), "result facts exceed limits") {
+		if err := CompleteExecutorRun(stateDir, &state, run, run.EndedAt); err == nil || !strings.Contains(err.Error(), "result facts exceed limits") {
 			t.Fatalf("oversized result summary = %v, want rejection", err)
 		}
 	})

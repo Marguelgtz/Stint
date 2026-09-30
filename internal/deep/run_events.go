@@ -37,6 +37,7 @@ const (
 	RunEventExecutorStarted          RunEventType = "executor.started"
 	RunEventExecutorResult           RunEventType = "executor.result"
 	RunEventExecutorRecoveryRequired RunEventType = "executor.recovery_required"
+	RunEventExecutorReconciled       RunEventType = "executor.reconciled"
 	RunEventVerificationStarted      RunEventType = "verification.started"
 	RunEventVerificationResult       RunEventType = "verification.result"
 	RunEventVerificationRecovery     RunEventType = "verification.recovery_required"
@@ -584,7 +585,7 @@ func validateRunEvent(event RunEvent) error {
 		if err := validateExecutorRun(*event.ExecutorRun, true); err != nil {
 			return fmt.Errorf("invalid executor-start record: %w", err)
 		}
-	case RunEventExecutorResult:
+	case RunEventExecutorResult, RunEventExecutorReconciled:
 		if event.FromPhase != event.ToPhase || (event.FromPhase != PhaseExecuting && event.FromPhase != PhaseLanding) || event.ExecutorRun == nil {
 			return errors.New("executor-result event has invalid phase or missing run record")
 		}
@@ -595,6 +596,19 @@ func validateRunEvent(event RunEvent) error {
 		}
 		if err := validateExecutorRun(*event.ExecutorRun, false); err != nil {
 			return fmt.Errorf("invalid executor-result record: %w", err)
+		}
+		if event.OccurredAt.Before(event.ExecutorRun.StartedAt) {
+			return errors.New("executor result observation precedes its durable start")
+		}
+		if event.Type == RunEventExecutorReconciled && event.ExecutorRun.Outcome == ExecutorOutcomeQuiescenceUnconfirmed {
+			return errors.New("reconciled executor result cannot claim unconfirmed process quiescence")
+		}
+		if event.Type == RunEventExecutorReconciled && event.ExecutorRun.RepositoryAtRecoveryAt.IsZero() {
+			return errors.New("executor reconciliation must record the repository state observed during recovery")
+		}
+		if event.Type == RunEventExecutorResult && (!event.ExecutorRun.RepositoryAtRecoveryAt.IsZero() ||
+			event.ExecutorRun.RepositoryAtRecovery != nil || event.ExecutorRun.RepositoryAtRecoveryError != "") {
+			return errors.New("ordinary executor result contains recovery-only repository facts")
 		}
 	case RunEventExecutorRecoveryRequired:
 		if event.FromPhase != event.ToPhase || (event.FromPhase != PhaseExecuting && event.FromPhase != PhaseLanding) ||
@@ -644,7 +658,8 @@ func validateRunEvent(event RunEvent) error {
 	if event.Type != RunEventLanded && (event.CheckpointCommit != "" || event.CheckpointTree != "") {
 		return errors.New("non-landed event contains checkpoint identity")
 	}
-	if event.Type != RunEventExecutorStarted && event.Type != RunEventExecutorResult && event.Type != RunEventExecutorRecoveryRequired && event.ExecutorRun != nil {
+	if event.Type != RunEventExecutorStarted && event.Type != RunEventExecutorResult && event.Type != RunEventExecutorRecoveryRequired &&
+		event.Type != RunEventExecutorReconciled && event.ExecutorRun != nil {
 		return errors.New("non-executor event contains an executor run record")
 	}
 	if event.Type != RunEventVerificationStarted && event.Type != RunEventVerificationResult && event.Type != RunEventVerificationRecovery && event.VerificationRun != nil {
@@ -723,7 +738,7 @@ func validateEventTransition(prior []RunEvent, event RunEvent, sessionID string)
 	if last.Type == RunEventLanded {
 		return errors.New("event follows terminal landing without a new epoch")
 	}
-	if event.EpochID != last.EpochID && event.Type != RunEventExecutorRecoveryRequired && event.Type != RunEventVerificationRecovery {
+	if event.EpochID != last.EpochID && event.Type != RunEventExecutorRecoveryRequired && event.Type != RunEventExecutorReconciled && event.Type != RunEventVerificationRecovery {
 		return errors.New("event epoch does not match the current run epoch")
 	}
 	if event.FromPhase != phase {
@@ -859,6 +874,15 @@ func validateExecutorEventTransition(prior []RunEvent, event RunEvent) error {
 		if _, closed := executorRunClosed(prior, event.ExecutorRun.ID); closed {
 			return errors.New("executor result follows an already closed invocation")
 		}
+	case RunEventExecutorReconciled:
+		start, ok := executorStart(prior, event.ExecutorRun.ID)
+		if !ok || event.EpochID != prior[len(prior)-1].EpochID || event.EpochID == start.EpochID ||
+			!sameExecutorStart(*start.ExecutorRun, *event.ExecutorRun) {
+			return errors.New("executor reconciliation does not match a start from an earlier epoch")
+		}
+		if _, closed := executorRunClosed(prior, event.ExecutorRun.ID); closed {
+			return errors.New("executor reconciliation follows an already completed invocation")
+		}
 	case RunEventExecutorRecoveryRequired:
 		start, ok := executorStart(prior, event.ExecutorRun.ID)
 		if !ok || !sameExecutorStart(*start.ExecutorRun, *event.ExecutorRun) {
@@ -882,8 +906,11 @@ func executorStart(events []RunEvent, id string) (*RunEvent, bool) {
 
 func executorRunClosed(events []RunEvent, id string) (RunEvent, bool) {
 	for _, event := range events {
-		if (event.Type == RunEventExecutorResult || event.Type == RunEventExecutorRecoveryRequired) &&
-			event.ExecutorRun != nil && event.ExecutorRun.ID == id {
+		if event.ExecutorRun == nil || event.ExecutorRun.ID != id {
+			continue
+		}
+		if event.Type == RunEventExecutorReconciled ||
+			(event.Type == RunEventExecutorResult && event.ExecutorRun.Outcome != ExecutorOutcomeQuiescenceUnconfirmed) {
 			return event, true
 		}
 	}
@@ -1104,6 +1131,10 @@ func validateProjectionAtWatermark(dir string, state DeepState, event RunEvent) 
 			(!state.ExecutionQuiescenceUnconfirmed || state.ExecutionQuiescenceTaskID != task.ID || task.Status != StatusNeedsHuman) {
 			return errors.New("deep.json quiescence block disagrees with its executor-result watermark event")
 		}
+	case RunEventExecutorReconciled:
+		if event.ExecutorRun == nil || !executorReconciliationProjectionMatches(state, *event.ExecutorRun) {
+			return errors.New("deep.json executor reconciliation disagrees with its watermark event")
+		}
 	case RunEventExecutorRecoveryRequired:
 		if event.ExecutorRun == nil {
 			return errors.New("executor-recovery watermark event has no run record")
@@ -1192,6 +1223,26 @@ func executorProjectedLastResult(run ExecutorRun) string {
 	return result
 }
 
+func executorReconciliationProjectionMatches(state DeepState, run ExecutorRun) bool {
+	task, ok := findTask(&state, run.TaskID)
+	if !ok || state.ExecutionQuiescenceUnconfirmed || state.ExecutionQuiescenceTaskID != "" ||
+		task.ExecutorRunID != run.ID || task.Attempts != run.Attempt || task.LastResult != executorProjectedLastResult(run) ||
+		task.ExecutionError != run.Error {
+		return false
+	}
+	if !executorReceiptRepositoryStateMatches(run) {
+		return task.Status == StatusNeedsHuman && task.Blocker == executorReceiptRepositoryConflictBlocker && task.ExecutorRunProcessed
+	}
+	switch state.Phase {
+	case PhaseExecuting:
+		return task.Status == StatusActive && task.Blocker == "" && !task.ExecutorRunProcessed
+	case PhaseLanding:
+		return task.Status == StatusIncomplete && task.Blocker == "executor completed during interrupted landing; task verification was deferred" && task.ExecutorRunProcessed
+	default:
+		return false
+	}
+}
+
 func applyRunEvent(state *DeepState, event RunEvent) error {
 	if event.RunID != state.SessionID || event.Sequence != state.RunEventWatermark+1 {
 		return errors.New("run event identity or sequence does not follow projection")
@@ -1254,6 +1305,13 @@ func applyRunEvent(state *DeepState, event RunEvent) error {
 			return errors.New("executor-result event does not belong to the current epoch")
 		}
 		if err := applyExecutorResult(state, *event.ExecutorRun); err != nil {
+			return err
+		}
+	case RunEventExecutorReconciled:
+		if event.EpochID != state.ExecutionEpochID || event.ExecutorRun == nil {
+			return errors.New("executor reconciliation event does not belong to the current epoch")
+		}
+		if err := applyExecutorReconciled(state, *event.ExecutorRun); err != nil {
 			return err
 		}
 	case RunEventExecutorRecoveryRequired:

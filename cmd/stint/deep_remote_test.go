@@ -298,6 +298,93 @@ func TestHermesExecutorSetupFailureBeforeLaunchIsQuiescent(t *testing.T) {
 	}
 }
 
+func TestLocalPrelaunchFailureReceiptReconcilesWithoutQuiescenceBlock(t *testing.T) {
+	env := newTestEnv(t, nil, 3)
+	beginJournaledTestRun(t, env)
+	now := env.clock.now.UTC()
+	before, err := env.coord.git.verificationSubject(env.wt, env.coord.verificationBookkeepingPaths())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, err := deep.NewExecutorRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := deep.BeginExecutorRun(env.coord.stateDir, env.state, deep.ExecutorRun{
+		ID: runID, TaskID: env.state.Tasks[0].ID, Attempt: 1, StartedAt: now,
+		ConfiguredTimeoutSeconds: 60, EffectiveTimeoutSeconds: 60, RemainingDeadlineSeconds: 900,
+		Runtime: env.coord.executorRuntimeFor(env.state.Tasks[0]), RepositoryBefore: &before.Subject,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hermesDir := t.TempDir()
+	hermes := filepath.Join(hermesDir, "hermes")
+	invocationMarker := filepath.Join(hermesDir, "invoked")
+	if err := os.WriteFile(hermes, []byte("#!/bin/sh\nprintf invoked > "+shellQuote(invocationMarker)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pathDir := t.TempDir()
+	seenTools := map[string]bool{}
+	for _, dir := range strings.Split(os.Getenv("PATH"), string(os.PathListSeparator)) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if name == "setsid" || seenTools[name] {
+				continue
+			}
+			tool := filepath.Join(dir, name)
+			info, err := os.Stat(tool)
+			if err != nil || info.IsDir() || info.Mode().Perm()&0o111 == 0 {
+				continue
+			}
+			if err := os.Symlink(tool, filepath.Join(pathDir, name)); err == nil {
+				seenTools[name] = true
+			}
+		}
+	}
+	t.Setenv("PATH", pathDir) // Deliberately omit setsid.
+	if _, err := env.coord.git.verificationSubject(env.wt, env.coord.verificationBookkeepingPaths()); err != nil {
+		t.Fatalf("capture test repository subject with setup tool missing: %v", err)
+	}
+	executor := newLocalHermesExecutor(hermes)
+	input := env.coord.execInputFor(env.state.Tasks[0], time.Minute)
+	input.stateDir, input.sessionID, input.executorRunID = env.coord.stateDir, env.state.SessionID, started.ID
+	result, runErr := executor.run(context.Background(), input)
+	if runErr == nil || errors.Is(runErr, errExecutorQuiescenceUnconfirmed) || result.exitCode != 127 || result.completed {
+		t.Fatalf("missing setsid result=%+v err=%v; want a known pre-launch failure", result, runErr)
+	}
+	if _, err := os.Stat(invocationMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Hermes ran despite missing process-group tooling: stat err=%v", err)
+	}
+	receipt, found, err := deep.LoadExecutorReceipt(env.coord.stateDir, env.state.SessionID, started.ID)
+	if err != nil || !found || receipt.Launched || receipt.ExitCode != 127 || receipt.RepositoryAfterTreeSHA == "" {
+		t.Fatalf("pre-launch receipt=%+v found=%t err=%v", receipt, found, err)
+	}
+	if err := deep.BeginResumeEpoch(env.coord.stateDir, env.state, deep.PhaseExecuting, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	recoverySnapshot, err := env.coord.git.verificationSubject(env.wt, env.coord.verificationBookkeepingPaths())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoverySubject := recoverySnapshot.Subject
+	reconciled, err := deep.ReconcileExecutorRunReceipt(env.coord.stateDir, env.state, receipt, &recoverySubject, "", now.Add(time.Minute+time.Second))
+	if err != nil {
+		t.Fatalf("reconcile pre-launch failure receipt: %v", err)
+	}
+	if reconciled.Outcome != deep.ExecutorOutcomeFailed || reconciled.Completed || reconciled.ExitCode != 127 ||
+		env.state.ExecutionQuiescenceUnconfirmed || env.state.Tasks[0].Status != deep.StatusActive || env.state.Tasks[0].ExecutorRunProcessed {
+		t.Fatalf("known pre-launch failure was not safely reconciled for retry: run=%+v state=%+v", reconciled, env.state)
+	}
+	if unmatched, err := deep.LoadUnmatchedExecutorRun(env.coord.stateDir, env.state.SessionID); err != nil || unmatched != nil {
+		t.Fatalf("pre-launch receipt remained unmatched: run=%+v err=%v", unmatched, err)
+	}
+}
+
 func TestHermesSetupFailureCannotBeSpoofedByInvocationOutput(t *testing.T) {
 	t.Run("ordinary output followed by real exit marker", func(t *testing.T) {
 		output := hermesInvocationStartMarker + "\n" + hermesSetupFailureMarker + "127\nworker output\n" + hermesExitMarker + "0\n"
@@ -491,6 +578,106 @@ func TestLocalHermesExecutorSuccess(t *testing.T) {
 			t.Fatalf("temporary prompt was captured in the target worktree: %s", entry.Name())
 		}
 	}
+}
+
+func TestJournaledLocalHermesWritesReceiptFromSupervisor(t *testing.T) {
+	dir := t.TempDir()
+	hermes := filepath.Join(dir, "hermes")
+	worktree := newTestRepo(t)
+	if err := os.WriteFile(filepath.Join(worktree, "PLAN.md"), []byte("Stint-only mission bookkeeping\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hermes, []byte("#!/bin/sh\nprintf 'feature\\n' > feature.txt\nprintf 'worker output\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runID, err := deep.NewExecutorRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := execInput{
+		workdir: worktree, prompt: "continue", timeout: 5 * time.Second,
+		stateDir: filepath.Join(dir, "state"), sessionID: "20260927-local-receipt", executorRunID: runID, actionPlan: "PLAN.md",
+	}
+	result, err := newLocalHermesExecutor(hermes).run(context.Background(), input)
+	if err != nil || !result.completed || result.endedAt.IsZero() {
+		t.Fatalf("journaled local Hermes result=%+v err=%v", result, err)
+	}
+	if body, err := os.ReadFile(filepath.Join(worktree, "feature.txt")); err != nil || string(body) != "feature\n" {
+		t.Fatalf("local Hermes side effect=%q err=%v", body, err)
+	}
+	receipt, found, err := deep.LoadExecutorReceipt(input.stateDir, input.sessionID, runID)
+	if err != nil || !found || !receipt.Launched || !receipt.Completed || !receipt.ProcessQuiescent || receipt.ExitCode != 0 ||
+		receipt.RepositoryAfterHeadCommit == "" || receipt.RepositoryAfterTreeSHA == "" || receipt.RepositoryAfterObservedAtUnixNano == 0 {
+		t.Fatalf("local supervisor receipt=%+v found=%t err=%v", receipt, found, err)
+	}
+	snapshot, err := newGitRunner().verificationSubject(worktree, []string{deepWorktreeHandoff, "PLAN.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.RepositoryAfterHeadCommit != snapshot.Subject.HeadCommit || receipt.RepositoryAfterTreeSHA != snapshot.Subject.TreeSHA || snapshot.Bookkeeping["PLAN.md"] == "" {
+		t.Fatalf("supervisor receipt tree does not match the Git-visible product subject: receipt=%+v snapshot=%+v", receipt, snapshot)
+	}
+}
+
+func TestRemoteHermesPersistsReceiptBeforeReturningExitFrame(t *testing.T) {
+	dir := t.TempDir()
+	hermes := filepath.Join(dir, "hermes")
+	if err := os.WriteFile(hermes, []byte("#!/bin/sh\nprintf 'remote worker output\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stateHome := filepath.Join(dir, "state-home")
+	worktree := newTestRepo(t)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	runID, err := deep.NewExecutorRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := func(ctx context.Context, command string) (string, error) {
+		out, err := exec.CommandContext(ctx, "sh", "-c", command).CombinedOutput()
+		return string(out), err
+	}
+	input := execInput{workdir: worktree, prompt: "continue", timeout: 5 * time.Second, sessionID: "20260927-remote-receipt", executorRunID: runID}
+	result, err := newHermesExecutor(remote).run(context.Background(), input)
+	if err != nil || !result.completed {
+		t.Fatalf("remote Hermes result=%+v err=%v", result, err)
+	}
+	receipt, found, err := newHermesExecutor(remote).loadExecutorReceipt(context.Background(), "", input.sessionID, runID)
+	if err != nil || !found || !receipt.Completed || !receipt.ProcessQuiescent || receipt.RepositoryAfterHeadCommit == "" || receipt.RepositoryAfterTreeSHA == "" {
+		t.Fatalf("remote supervisor receipt=%+v found=%t err=%v", receipt, found, err)
+	}
+}
+
+func TestRemoteHermesTimeoutReceiptFollowsConfirmedQuiescence(t *testing.T) {
+	dir := t.TempDir()
+	hermes := filepath.Join(dir, "hermes")
+	marker := filepath.Join(dir, "late-timeout-write")
+	script := "#!/bin/sh\n(trap '' TERM; sleep 4.5; printf late > " + shellQuote(marker) + ") &\nsleep 30\n"
+	if err := os.WriteFile(hermes, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stateHome := filepath.Join(dir, "state-home")
+	worktree := newTestRepo(t)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	runID, err := deep.NewExecutorRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := func(ctx context.Context, command string) (string, error) {
+		out, err := exec.CommandContext(ctx, "sh", "-c", command).CombinedOutput()
+		return string(out), err
+	}
+	input := execInput{workdir: worktree, prompt: "continue", timeout: 10 * time.Second, sessionID: "20260927-timeout-receipt", executorRunID: runID}
+	result, runErr := newHermesExecutor(remote).run(context.Background(), input)
+	if runErr == nil || !result.timedOut || result.completed {
+		t.Fatalf("remote timed-out Hermes result=%+v err=%v", result, runErr)
+	}
+	receipt, found, err := newHermesExecutor(remote).loadExecutorReceipt(context.Background(), "", input.sessionID, runID)
+	if err != nil || !found || !receipt.TimedOut || !receipt.ProcessQuiescent {
+		t.Fatalf("timeout receipt=%+v found=%t err=%v; want a timeout receipt after confirmed quiescence", receipt, found, err)
+	}
+	assertNoDelayedMutationAfterReturn(t, marker, time.Now())
 }
 
 func indexOf(values []string, target string) int {

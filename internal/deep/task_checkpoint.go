@@ -142,7 +142,7 @@ func validateTaskCheckpointEventTransition(prior []RunEvent, event RunEvent) err
 	var executor *ExecutorRun
 	var verification *VerificationRun
 	for _, old := range prior {
-		if old.ExecutorRun != nil && old.Type == RunEventExecutorResult && old.ExecutorRun.ID == checkpoint.ExecutorRunID {
+		if old.ExecutorRun != nil && (old.Type == RunEventExecutorResult || old.Type == RunEventExecutorReconciled) && old.ExecutorRun.ID == checkpoint.ExecutorRunID {
 			value := *old.ExecutorRun
 			executor = &value
 		}

@@ -9,15 +9,20 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Marguelgtz/Stint/internal/deep"
 )
 
 var errExecutorQuiescenceUnconfirmed = errors.New("executor process-group quiescence is unconfirmed")
 
 // execInput is one bounded coding-agent invocation.
 type execInput struct {
-	workdir string
-	prompt  string
-	timeout time.Duration
+	workdir       string
+	prompt        string
+	timeout       time.Duration
+	stateDir      string
+	sessionID     string
+	executorRunID string
 	// allowedCommands is advisory guidance included in the Hermes prompt.
 	allowedCommands []string
 	provider        string
@@ -30,13 +35,18 @@ type execInput struct {
 // finishing (process exit) is NOT the same as the task being accepted; the
 // coordinator decides acceptance from repository evidence.
 type execResult struct {
-	exitCode     int
-	completed    bool // Hermes process exited successfully; task acceptance is separate
-	timedOut     bool
-	finishReason string
-	outputText   string // final worker report text
-	duration     time.Duration
-	stderrTail   string
+	exitCode                  int
+	completed                 bool // Hermes process exited successfully; task acceptance is separate
+	timedOut                  bool
+	finishReason              string
+	outputText                string // final worker report text
+	duration                  time.Duration
+	endedAt                   time.Time
+	endedAtSource             deep.ExecutorEndTimeSource
+	repositoryAfter           *deep.VerificationSubject
+	repositoryAfterObservedAt time.Time
+	repositoryAfterError      string
+	stderrTail                string
 }
 
 func (r execResult) summary() string {
@@ -60,6 +70,10 @@ func firstLines(s string, n int) string {
 // tests substitute a fake without spending compute.
 type executor interface {
 	run(ctx context.Context, in execInput) (execResult, error)
+}
+
+type executorReceiptReader interface {
+	loadExecutorReceipt(ctx context.Context, stateDir, sessionID, runID string) (deep.ExecutorReceipt, bool, error)
 }
 
 func processExitCode(cmd *exec.Cmd) int {
