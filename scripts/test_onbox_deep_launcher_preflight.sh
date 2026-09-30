@@ -17,7 +17,14 @@ case "$remote_command" in
     exit 0
     ;;
   *onbox-deep-supervisor.sh*status*)
+    if [ "${STINT_TEST_SUPERVISOR_STOPPED:-0}" = 1 ]; then
+      printf '%s\n' 'ONBOX_SUPERVISOR_STOPPED'
+      exit 1
+    fi
     printf '%s\n' 'ONBOX_SUPERVISOR_RUNNING pid=42'
+    exit 0
+    ;;
+  mkdir\ -p*)
     exit 0
     ;;
   *)
@@ -27,6 +34,12 @@ case "$remote_command" in
 esac
 MOCK
 chmod 0700 "$TMP/fake-bin/ssh"
+cat >"$TMP/fake-bin/scp" <<'MOCK'
+#!/usr/bin/env bash
+echo "TEST_SCP_REACHED $*" >>"$STINT_TEST_SSH_LOG"
+exit 99
+MOCK
+chmod 0700 "$TMP/fake-bin/scp"
 
 git -C "$TMP/repo" init -q
 git -C "$TMP/repo" config user.email fixture@example.invalid
@@ -119,4 +132,24 @@ fi
 grep -Fq 'repository HEAD changed after the run contract was prepared' <<<"$output"
 test ! -s "$STINT_TEST_SSH_LOG"
 
-echo "on-box launcher active-supervisor and pinned-source preflight passed"
+rm -f "$STINT_TEST_SSH_LOG"
+unset STINT_SOURCE_HEAD
+export STINT_TEST_SUPERVISOR_STOPPED=1
+export STINT_ONBOX_TRANSFER_ATTEMPTS=1
+set +e
+output="$(bash "$REPO_ROOT/scripts/launch-onbox-deep.sh" 2>&1)"
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  printf '%s\n' "$output" >&2
+  echo "launcher did not stop at the expected fake transfer failure" >&2
+  exit 1
+fi
+if grep -Fq 'could not verify the existing on-box supervisor state' <<<"$output"; then
+  printf '%s\n' "$output" >&2
+  echo "launcher rejected a confirmed stopped supervisor" >&2
+  exit 1
+fi
+grep -Fq 'TEST_SCP_REACHED' "$STINT_TEST_SSH_LOG"
+
+echo "on-box launcher active-supervisor, stopped-supervisor, and pinned-source preflight passed"

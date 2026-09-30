@@ -266,8 +266,11 @@ supervisor_script_status=$?
 set -e
 case "$supervisor_script_status" in
   0)
-    existing_status="$("${SSH[@]}" "env STINT_ONBOX_ROOT='$ROOT' STINT_ONBOX_BIN='$ROOT/bin/stint' '$ROOT/onbox-deep-supervisor.sh' status")" || \
+    if existing_status="$("${SSH[@]}" "env STINT_ONBOX_ROOT='$ROOT' STINT_ONBOX_BIN='$ROOT/bin/stint' '$ROOT/onbox-deep-supervisor.sh' status")"; then
+      :
+    elif ! printf '%s\n' "$existing_status" | grep -qx 'ONBOX_SUPERVISOR_STOPPED'; then
       die "could not verify the existing on-box supervisor state; refusing to stage over it"
+    fi
     if printf '%s\n' "$existing_status" | grep -q '^ONBOX_SUPERVISOR_RUNNING'; then
       die "an on-box supervisor is already running at $ROOT; inspect it with 'stint deep dash' before launching another mission"
     fi
