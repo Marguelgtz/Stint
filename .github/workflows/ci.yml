@@ -64,6 +64,8 @@ jobs:
         run: bash scripts/test_onbox_supervisor.sh
       - name: Test mission Verification extraction for fresh-box preflight
         run: python3 scripts/test_provision_box_mission_verification.py
+      - name: Test target Node runtime pin for fresh-box preflight
+        run: python3 scripts/test_provision_box_node_runtime.py
       - name: Test detached Deep Work launcher identity and active-run preflight
         run: bash scripts/test_onbox_deep_launcher_preflight.sh
       - name: Test Deep Work observer pinning and log redaction
@@ -94,6 +96,7 @@ jobs:
           python3 scripts/test_onbox_github_publish.py
           bash scripts/test_onbox_supervisor.sh
           python3 scripts/test_provision_box_mission_verification.py
+          python3 scripts/test_provision_box_node_runtime.py
           bash scripts/test_onbox_deep_launcher_preflight.sh
           python3 scripts/test_onbox_ninfer_observe.py
           python3 scripts/test_deep_agent_log_tail.py

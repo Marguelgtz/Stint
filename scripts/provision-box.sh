@@ -32,13 +32,39 @@ command -v timeout >/dev/null 2>&1 || fail "timeout is required"
 
 RPT "os: $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown}") user=$(id -un)"
 
-if ! command -v node >/dev/null 2>&1; then
-  command -v apt-get >/dev/null 2>&1 || fail "node is missing and apt-get is unavailable; provision Node.js 22+ before launching Deep Work"
-  RPT "installing Node.js 22.x from NodeSource"
-  curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/stint-nodesource-setup.sh
+install_target_node() {
+  local requested_major="" installed_major="" version="" target_major=""
+  if [ -f "$TARGET_REPO/.node-version" ]; then
+    version="$(tr -d '[:space:]' <"$TARGET_REPO/.node-version")"
+    if [[ "$version" =~ ^v?([0-9]+)(\.[0-9]+(\.[0-9]+)?)?$ ]]; then
+      requested_major="${BASH_REMATCH[1]}"
+    else
+      fail "target repository .node-version must contain a Node major or version; got: $version"
+    fi
+  fi
+
+  if command -v node >/dev/null 2>&1; then
+    version="$(node --version)"
+    [[ "$version" =~ ^v?([0-9]+)\. ]] || fail "could not read installed Node.js version: $version"
+    installed_major="${BASH_REMATCH[1]}"
+  fi
+
+  if { [ -z "$requested_major" ] && [ -n "$installed_major" ]; } || \
+     { [ -n "$requested_major" ] && [ "$requested_major" = "$installed_major" ]; }; then
+    RPT "node_runtime: existing Node.js $installed_major satisfies target repository"
+    return 0
+  fi
+
+  target_major="${requested_major:-22}"
+  command -v apt-get >/dev/null 2>&1 || fail "Node.js $target_major is required and apt-get is unavailable"
+  RPT "installing Node.js ${target_major}.x from NodeSource"
+  curl -fsSL "https://deb.nodesource.com/setup_${target_major}.x" -o /tmp/stint-nodesource-setup.sh
   bash /tmp/stint-nodesource-setup.sh >/tmp/stint-nodesource.log 2>&1 || fail "NodeSource setup failed: $(tail -5 /tmp/stint-nodesource.log)"
   DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs >>/tmp/stint-nodesource.log 2>&1 || fail "Node.js install failed: $(tail -5 /tmp/stint-nodesource.log)"
-fi
+  version="$(node --version 2>/dev/null || true)"
+  [[ "$version" =~ ^v?([0-9]+)\. ]] && [ "${BASH_REMATCH[1]}" = "$target_major" ] || fail "installed Node.js $version does not match required major $target_major"
+}
+install_target_node
 
 if ! command -v hermes >/dev/null 2>&1; then
   RPT "installing Hermes"
