@@ -159,6 +159,8 @@ for line in lines:
         continue
     if inside and line.lstrip().startswith("## "):
         break
+    if inside and line.strip().startswith("```"):
+        continue
     if inside and line.strip():
         commands.append(line.strip())
 print("\n".join(commands))
