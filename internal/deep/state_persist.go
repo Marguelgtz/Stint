@@ -1,6 +1,7 @@
 package deep
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,20 +10,38 @@ import (
 )
 
 // SaveDir persists the session state and the latest-session pointer.
-func (s DeepState) SaveDir(stateDir string) error {
-	dir := DeepDir(stateDir, s.SessionID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create deep state dir: %w", err)
+func (s *DeepState) SaveDir(stateDir string) error {
+	if s == nil || s.SessionID == "" {
+		return fmt.Errorf("deep state session id is empty")
 	}
-	s.UpdatedAt = time.Now().UTC()
-	data, err := marshalIndent(s)
-	if err != nil {
-		return err
-	}
-	if err := writeAtomic(filepath.Join(dir, "deep.json"), data); err != nil {
-		return err
-	}
-	return writeAtomic(LatestFile(stateDir), []byte(s.SessionID+"\n"))
+	return withRunStateLock(stateDir, s.SessionID, func(dir string) error {
+		current, err := readStateFileIfPresent(dir, s.SessionID)
+		if err != nil {
+			return err
+		}
+		if current != nil {
+			recovered, _, err := recoverProjectionLocked(stateDir, dir, *current, true)
+			if err != nil {
+				return err
+			}
+			if s.ProjectionRevision != recovered.ProjectionRevision {
+				return fmt.Errorf("stale Deep Work projection revision %d; durable revision is %d; reload before saving", s.ProjectionRevision, recovered.ProjectionRevision)
+			}
+			if recovered.RunEventSchemaVersion != 0 || recovered.RunEventWatermark != 0 {
+				if !missionOutcomeProjectionValid(*s) {
+					return fmt.Errorf("journal-backed mission outcome must match its current deterministic evidence")
+				}
+				if s.RunEventSchemaVersion != recovered.RunEventSchemaVersion || s.RunEventWatermark != recovered.RunEventWatermark ||
+					s.RunID != recovered.RunID || s.ExecutionEpochID != recovered.ExecutionEpochID ||
+					!sameLifecycleProjection(*s, recovered) {
+					return fmt.Errorf("journal-backed lifecycle state must be changed through a RunEvent transition")
+				}
+			}
+		} else if s.ProjectionRevision != 0 {
+			return fmt.Errorf("stale Deep Work projection revision %d; no durable projection exists", s.ProjectionRevision)
+		}
+		return writeProjectionLocked(stateDir, s)
+	})
 }
 
 // SaveMissionCopy keeps the original mission text next to the state.
@@ -36,18 +55,68 @@ func SaveMissionCopy(stateDir, sessionID, missionPath string) error {
 
 // LoadState reads a session's state by ID.
 func LoadState(stateDir, sessionID string) (DeepState, error) {
-	data, err := os.ReadFile(filepath.Join(DeepDir(stateDir, sessionID), "deep.json"))
+	var state DeepState
+	err := withRunStateLock(stateDir, sessionID, func(dir string) error {
+		loaded, err := readStateFile(dir, sessionID)
+		if err != nil {
+			return err
+		}
+		state, _, err = recoverProjectionLocked(stateDir, dir, loaded, true)
+		return err
+	})
 	if err != nil {
-		return DeepState{}, fmt.Errorf("read deep state %s: %w", sessionID, err)
+		return DeepState{}, err
+	}
+	return state, nil
+}
+
+func readStateFileIfPresent(dir, sessionID string) (*DeepState, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "deep.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read deep state %s: %w", sessionID, err)
 	}
 	var state DeepState
 	if err := unmarshal(data, &state); err != nil {
-		return DeepState{}, err
+		return nil, err
 	}
 	if state.SessionID != sessionID {
-		return DeepState{}, fmt.Errorf("deep state session id mismatch")
+		return nil, fmt.Errorf("deep state session id mismatch")
 	}
-	return state, nil
+	return &state, nil
+}
+
+// writeProjectionLocked persists deep.json and the latest-session pointer.
+// Callers hold the session's run-event lock. Journal transitions invoke it
+// only after the event file has been synced.
+func writeProjectionLocked(stateDir string, s *DeepState) error {
+	if s == nil {
+		return errors.New("cannot persist a nil Deep Work projection")
+	}
+	if s.ProjectionRevision == ^uint64(0) {
+		return errors.New("Deep Work projection revision is exhausted")
+	}
+	dir := DeepDir(stateDir, s.SessionID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create deep state dir: %w", err)
+	}
+	projected := *s
+	projected.UpdatedAt = time.Now().UTC()
+	projected.ProjectionRevision++
+	data, err := marshalIndent(&projected)
+	if err != nil {
+		return err
+	}
+	if err := writeAtomic(filepath.Join(dir, "deep.json"), data); err != nil {
+		return err
+	}
+	if err := writeAtomic(LatestFile(stateDir), []byte(projected.SessionID+"\n")); err != nil {
+		return err
+	}
+	*s = projected
+	return nil
 }
 
 // LoadLatestState resolves the latest session pointer and loads its state.
@@ -95,11 +164,43 @@ func writeAtomic(path string, data []byte) error {
 		tmp.Close()
 		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync %s: %w", filepath.Base(path), err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", filepath.Base(path), err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("install %s: %w", filepath.Base(path), err)
 	}
-	return os.Chmod(path, 0o600)
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("secure %s: %w", filepath.Base(path), err)
+	}
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("sync %s directory: %w", filepath.Base(path), err)
+	}
+	return nil
+}
+
+func syncDirectory(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
+
+func missionOutcomeProjectionValid(state DeepState) bool {
+	if state.RunEventSchemaVersion == 0 {
+		return true
+	}
+	if state.Phase == PhaseLanded {
+		return state.MissionOutcome == DetermineMissionOutcome(state)
+	}
+	if state.Phase == PhaseInitializing || state.Phase == PhaseExecuting || state.Phase == PhaseLanding {
+		return state.MissionOutcome == MissionOutcomePending
+	}
+	return true
 }

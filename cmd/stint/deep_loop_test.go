@@ -924,7 +924,7 @@ func TestDeepLandingDoesNotRewriteGitVisibleHandoffInput(t *testing.T) {
 
 func TestDeepLandingReusesCheckpointAfterFinalStateSaveFailure(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
-	env.coord.persist = func(dir string, state deep.DeepState) error {
+	env.coord.persist = func(dir string, state *deep.DeepState) error {
 		if state.Phase == deep.PhaseLanded {
 			return errors.New("state disk unavailable")
 		}
@@ -962,7 +962,7 @@ func TestDeepLandingReusesCheckpointAfterFinalStateSaveFailure(t *testing.T) {
 
 func TestDeepLoopDoesNotInvokeWorkerWhenActiveStateCannotPersist(t *testing.T) {
 	env := newTestEnv(t, nil, 3)
-	env.coord.persist = func(string, deep.DeepState) error { return errors.New("disk full") }
+	env.coord.persist = func(string, *deep.DeepState) error { return errors.New("disk full") }
 	if err := env.coord.runTask(context.Background(), 0, env.clock.now); err == nil {
 		t.Fatal("runTask succeeded after active state persistence failed")
 	}

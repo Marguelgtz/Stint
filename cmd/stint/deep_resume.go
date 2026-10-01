@@ -82,6 +82,7 @@ func runDeepResume(args []string) error {
 	if err != nil {
 		return err
 	}
+	resumeFromPhase := state.Phase
 	if state.Exec == nil || state.Exec.Worker == "" {
 		return errors.New("this Deep Work session has no persisted Hermes worker identity; it cannot be resumed safely")
 	}
@@ -197,22 +198,19 @@ func runDeepResume(args []string) error {
 	// 9. Revive: the coordinator loop only runs executing sessions. A
 	//    landed or stopped session is continued in the same worktree and
 	//    branch — a deadline landing is a pause, not a verdict.
-	if state.Phase == deep.PhaseLanding {
+	if resumeFromPhase == deep.PhaseLanding {
 		deep.AppendLog(paths.StateDir, state, "resuming interrupted landing")
-	} else if state.Phase == deep.PhaseLanded {
-		state.ReopenAfterLanding(now)
+	} else if resumeFromPhase == deep.PhaseLanded {
 		deep.AppendLog(paths.StateDir, state, "resuming after a recorded landing outcome")
-	} else if state.Phase != deep.PhaseExecuting {
-		deep.AppendLog(paths.StateDir, state, "resuming from %s", state.Phase)
-		state.Phase = deep.PhaseExecuting
-		state.LandedAt = nil
+	} else if resumeFromPhase != deep.PhaseExecuting && resumeFromPhase != deep.PhaseInitializing {
+		deep.AppendLog(paths.StateDir, state, "resuming from %s", resumeFromPhase)
 	}
 	state.Exec = exec
 	stateNote := "deadline re-anchored to the compute session"
 	if !reset {
 		stateNote = "deadline re-anchored to min(session, compute)"
 	}
-	if err := state.SaveDir(paths.StateDir); err != nil {
+	if err := deep.BeginResumeEpoch(paths.StateDir, &state, resumeFromPhase, now); err != nil {
 		return err
 	}
 	deep.AppendLog(paths.StateDir, state, "resumed: %s (deadline %s, lands from %s)",

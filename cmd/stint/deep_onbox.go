@@ -265,7 +265,7 @@ func runDeepOnBox(args []string) error {
 	if err := deep.SaveMissionCopy(paths.StateDir, sessionID, f.missionPath); err != nil {
 		return err
 	}
-	if err := state.SaveDir(paths.StateDir); err != nil {
+	if err := deep.BeginNewRun(paths.StateDir, &state, now); err != nil {
 		return err
 	}
 	if err := writeOnBoxReady(f.readyFile, state); err != nil {
@@ -489,12 +489,6 @@ func prepareDeepOnBoxResume(state *deep.DeepState, compute sessionstate.State, f
 	if err != nil {
 		return false, err
 	}
-	if state.Phase == deep.PhaseLanded {
-		state.ReopenAfterLanding(now)
-	} else if state.Phase != deep.PhaseLanding && state.Phase != deep.PhaseExecuting {
-		state.Phase = deep.PhaseExecuting
-		state.LandedAt = nil
-	}
 	if err := applyDeepOnBoxOverrides(state, f); err != nil {
 		return false, err
 	}
@@ -541,6 +535,7 @@ func onBoxEndpointModelIDs() ([]string, error) {
 
 func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags, state deep.DeepState) error {
 	var err error
+	resumeFromPhase := state.Phase
 	if state.Exec == nil || state.Exec.Worker != workerHermesOnBox {
 		return errors.New("latest Deep Work session is not an on-box Hermes session")
 	}
@@ -564,7 +559,7 @@ func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags, state deep.DeepState
 	if err != nil {
 		return err
 	}
-	if state.Phase == deep.PhaseLanding {
+	if resumeFromPhase == deep.PhaseLanding {
 		deep.AppendLog(paths.StateDir, state, "resuming interrupted landing")
 	}
 	modelIDs, err := onBoxEndpointModelIDs()
@@ -582,7 +577,7 @@ func resumeDeepOnBox(paths config.Paths, f *deepOnBoxFlags, state deep.DeepState
 		return fmt.Errorf("model %q is not served by the on-box endpoint (available: %s)", model, strings.Join(modelIDs, ", "))
 	}
 	state.Exec.Model = model
-	if err := state.SaveDir(paths.StateDir); err != nil {
+	if err := deep.BeginResumeEpoch(paths.StateDir, &state, resumeFromPhase, now); err != nil {
 		return err
 	}
 	resumeNote := "deadline re-anchored to min(saved Deep Work, compute)"

@@ -9,10 +9,11 @@ import (
 type Phase string
 
 const (
-	PhaseExecuting Phase = "executing"
-	PhaseLanding   Phase = "landing"
-	PhaseLanded    Phase = "landed" // operational stopping/handoff boundary; see MissionOutcome
-	PhaseStopped   Phase = "stopped"
+	PhaseInitializing Phase = "initializing"
+	PhaseExecuting    Phase = "executing"
+	PhaseLanding      Phase = "landing"
+	PhaseLanded       Phase = "landed" // operational stopping/handoff boundary; see MissionOutcome
+	PhaseStopped      Phase = "stopped"
 )
 
 // DeepState is the durable truth of one Deep Work session. It lives in
@@ -20,7 +21,18 @@ const (
 // on every transition, following the session.json convention. All essential
 // state is local: compute may die, this file and the git worktree do not.
 type DeepState struct {
-	SessionID                      string               `json:"sessionId"`
+	SessionID string `json:"sessionId"`
+	// RunID remains stable for the lifetime of this Deep Work session. For
+	// journaled sessions it is initialized from SessionID, preserving the
+	// existing session directory as the run identity.
+	RunID                 string `json:"runId,omitempty"`
+	ExecutionEpochID      string `json:"executionEpochId,omitempty"`
+	RunEventSchemaVersion int    `json:"runEventSchemaVersion,omitempty"`
+	RunEventWatermark     uint64 `json:"runEventWatermark,omitempty"`
+	// ProjectionRevision advances on every durable deep.json write. Writers
+	// must present the revision they loaded, preventing stale task/runtime
+	// snapshots from replacing newer durable state.
+	ProjectionRevision             uint64               `json:"projectionRevision,omitempty"`
 	MissionName                    string               `json:"missionName"`
 	Objective                      string               `json:"objective"`
 	Success                        []string             `json:"success,omitempty"`

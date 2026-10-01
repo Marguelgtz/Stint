@@ -26,7 +26,7 @@ func DisplayMissionOutcome(outcome MissionOutcome, phase Phase) MissionOutcome {
 		MissionOutcomeIncomplete, MissionOutcomeUnresolved, MissionOutcomeUnknown:
 		return outcome
 	}
-	if phase == PhaseExecuting || phase == PhaseLanding {
+	if phase == PhaseInitializing || phase == PhaseExecuting || phase == PhaseLanding {
 		return MissionOutcomePending
 	}
 	return MissionOutcomeUnknown
