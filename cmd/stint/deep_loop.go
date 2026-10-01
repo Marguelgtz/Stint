@@ -18,11 +18,12 @@ const (
 	minimumUsefulTaskWindow  = 5 * time.Minute
 )
 
-// deepCoordinator is the Slice-1 Deep Work loop: select a task, invoke the
-// coding-agent executor in the isolated worktree, decide acceptance from
-// repository evidence, persist state, repeat until landing. The coordinator
-// is a plain foreground process: the machine must stay awake (D-3), and the
-// existing compute watchdog remains the hard-deadline authority.
+// deepCoordinator selects a bounded work unit, invokes the coding-agent
+// executor in the isolated worktree, records verifier/checkpoint evidence,
+// and repeats until landing. These operational facts do not define Objective
+// C acceptance. The coordinator is a plain foreground process: the machine
+// must stay awake (D-3), and the existing compute watchdog remains the
+// hard-deadline authority.
 type deepCoordinator struct {
 	stateDir    string
 	state       *deep.DeepState

@@ -16,20 +16,23 @@ func readAll(path string) (string, error) {
 	return string(data), nil
 }
 
-// Status is a task's lifecycle state.
+// Status is a work unit's lifecycle state in the legacy coordinator model.
 type Status string
 
 const (
 	StatusQueued     Status = "queued"
 	StatusActive     Status = "active"
-	StatusVerified   Status = "verified"
+	StatusVerified   Status = "verified" // legacy terminal state; not Objective C acceptance
 	StatusIncomplete Status = "incomplete"
 	StatusBlocked    Status = "blocked"
 	StatusNeedsHuman Status = "needs_human"
 	StatusDropped    Status = "dropped"
 )
 
-// Terminal reports whether a status will not be selected for execution again.
+// Terminal reports the legacy coordinator scheduling rule: terminal statuses
+// are not selected for execution again. Objective C must preserve this behavior
+// for legacy missions; the new contract must model acceptance and execution
+// eligibility separately instead of inferring either from this predicate.
 // Blocked and needs_human tasks stay parked; they surface in the handoff.
 func (s Status) Terminal() bool {
 	switch s {
@@ -41,14 +44,20 @@ func (s Status) Terminal() bool {
 
 func (s Status) String() string { return string(s) }
 
-// Task is one unit of Deep Work. IDs come from the mission (or from
-// coordinator discovery, marked via Source). Verify is the task's own
-// acceptance command (a per-task precision step over the mission-level
-// command): when set, the coordinator runs it — instead of the mission's
-// ## Verification command — after each attempt of this task.
+// Task is the current compatibility model for one bounded Deep Work work unit
+// (called an Objective in product discussions). A work unit may involve many
+// actions; it is not an atomic action. Current mission IDs come from the
+// mission, with coordinator-added entries identified by Source. Verify is a
+// deterministic evidence command for this work unit: when set, the coordinator
+// runs it instead of the mission-level ## Verification command after each
+// attempt. Passing it does not by itself establish Objective C acceptance.
 type Task struct {
-	ID         string `json:"id"`
-	Objective  string `json:"objective"`
+	// ID is the stable Objective / Work Unit identity used by the current run
+	// records. A future action layer can add finer attribution without changing it.
+	ID        string `json:"id"`
+	Objective string `json:"objective"`
+	// Acceptance is narrative intent included in the executor prompt. It is not
+	// a deterministic acceptance outcome or evidence record.
 	Acceptance string `json:"acceptance,omitempty"`
 	Verify     string `json:"verify,omitempty"`
 	Reasoning  string `json:"reasoning,omitempty"`

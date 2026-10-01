@@ -26,9 +26,9 @@ import (
 //
 //	## Tasks
 //	- [ ] <ID>: <objective>
-//	  - acceptance: <what must be true for the task to count as done>
-//	  - verify: <raw trusted shell command the coordinator runs to verify THIS task;
-//	    overrides the mission-level ## Verification command for this task>
+//	  - acceptance: <narrative objective intent included in the executor prompt>
+//	  - verify: <raw trusted shell command producing evidence for THIS work unit;
+//	    overrides the mission-level ## Verification command for this work unit>
 //	  - depends-on: IMPLEMENT-001
 //
 // Unknown sections are ignored so the format can grow. Objective and a
