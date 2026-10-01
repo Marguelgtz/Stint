@@ -78,6 +78,30 @@ TRANSFER_ATTEMPTS="${STINT_ONBOX_TRANSFER_ATTEMPTS:-5}"
 TRANSFER_RETRY_SECONDS="${STINT_ONBOX_TRANSFER_RETRY_SECONDS:-3}"
 
 die() { echo "ONBOX_LAUNCH_FAIL $*" >&2; exit 1; }
+MIN_REMAINING_SECONDS="${STINT_ONBOX_MIN_REMAINING_SECONDS:-0}"
+[[ "$MIN_REMAINING_SECONDS" =~ ^[0-9]+$ ]] || die "STINT_ONBOX_MIN_REMAINING_SECONDS must be a non-negative integer"
+check_minimum_remaining() {
+  local phase="$1" report
+  if ! report="$(python3 - "$STINT_DEADLINE" "$MIN_REMAINING_SECONDS" 2>&1 <<'PY'
+import datetime, sys
+deadline_text, required_text = sys.argv[1:]
+try:
+    deadline = datetime.datetime.fromisoformat(deadline_text.replace("Z", "+00:00"))
+    required = int(required_text)
+except (TypeError, ValueError) as exc:
+    raise SystemExit(f"invalid deadline or minimum remaining time: {exc}")
+if deadline.tzinfo is None:
+    raise SystemExit("compute deadline must include a timezone")
+remaining = (deadline - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+if remaining < required:
+    raise SystemExit(f"{max(0, int(remaining))}s remain; {required}s required")
+print(f"{max(0, int(remaining))}s remain; {required}s required")
+PY
+  )"; then
+    die "minimum remaining-time gate failed $phase: $report"
+  fi
+  echo "ONBOX_REMAINING_TIME_OK phase=$phase $report"
+}
 provider_probe="${ONBOX_PROVIDER//\{reasoning\}/medium}"
 case "$provider_probe" in
   *'{'*|*'}'*) die "Hermes provider template contains an unmatched brace: $ONBOX_PROVIDER" ;;
@@ -265,6 +289,7 @@ PY
 fi
 [ -n "${STINT_INSTANCE_ID:-}" ] && [ -n "${STINT_DEADLINE:-}" ] || \
   die "set STINT_INSTANCE_ID and STINT_DEADLINE or provide a READY session file at $session_json"
+check_minimum_remaining "before remote staging"
 
 # Refuse to replace a remote run before the staging/provisioning steps below.
 set +e
@@ -559,6 +584,7 @@ else
   fi
 fi
 
+check_minimum_remaining "before starting the detached supervisor"
 echo "starting detached on-box supervisor"
 remote_env=("STINT_ONBOX_BIN=$REMOTE_BIN" "STINT_ONBOX_ROOT=$ROOT" \
   "STINT_ONBOX_READY_FILE=$REMOTE_READY" "STINT_ONBOX_INSTANCE_ID=$STINT_INSTANCE_ID" \

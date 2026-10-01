@@ -249,7 +249,7 @@ var (
 		name:    "deep",
 		section: "deepwork",
 		summary: "run a bounded Hermes engineering mission",
-		detail: `Deep Work runs bounded repository tasks through Hermes. ` + "`stint deep start --hours ... --repo ... --mission ...`" + ` can rent and qualify compute through Stint's existing interactive lifecycle when no session exists, then invoke the production launcher and return only after the detached on-box supervisor reports its durable RUNNING handshake. If a READY Stint session already exists, omit compute-provisioning flags and Deep Work reuses it. Hermes, verification, checkpoints, and landing then continue on the box.
+		detail: `Deep Work runs bounded repository tasks through Hermes. ` + "`stint deep start --hours ... --minimum-remaining ... --repo ... --mission ...`" + ` can rent and qualify compute through Stint's existing interactive lifecycle when no session exists, then invoke the production launcher and return only after the detached on-box supervisor reports its durable RUNNING handshake. ` + "`--minimum-remaining`" + ` is required and prevents a stale READY session from starting work without enough time before its GPU deadline. If a READY Stint session already exists, omit compute-provisioning flags and Deep Work reuses it. Hermes, verification, checkpoints, and landing then continue on the box.
 
 Use ` + "`stint deep dash`" + ` to inspect a production run. ` + "`stint deep status`" + ` and ` + "`stint deep resume`" + ` operate on the state directory selected by the current Stint process. ` + "`stint deep onbox`" + ` is the box-side coordinator entry point; it is not a replacement for the launcher bootstrap.
 
@@ -266,6 +266,7 @@ Subcommands:
 			{name: "--mission", argument: "<file>", purpose: "mission Markdown file"},
 			{name: "--repo", argument: "<path>", purpose: "target git repository"},
 			{name: "--hours", argument: "<float>", purpose: "paid compute duration; when no session exists, explicitly authorizes Deep Work to rent one"},
+			{name: "--minimum-remaining", argument: "<duration>", purpose: "required minimum time left before the GPU deadline when the supervisor starts"},
 			{name: "--runtime", argument: "<auto|ninfer|llama.cpp>", defaultVal: "ninfer", purpose: "new-session runtime; production Deep Work requires NInfer"},
 			{name: "--ninfer-deployment", argument: "<source-build|release-bundle>", purpose: "new-session NInfer deployment"},
 			{name: "--ninfer-config", argument: "<coding|precision|native>", defaultVal: "native", purpose: "new-session NInfer configuration; production Deep Work requires native"},
@@ -288,8 +289,8 @@ Subcommands:
 			{name: "--resume", defaultVal: "false", purpose: "onbox: resume persisted execution settings"},
 		},
 		examples: []string{
-			"stint deep start --hours 3 --runtime ninfer --ninfer-deployment release-bundle --ninfer-config native --clients 2 --max-hourly-usd 0.45 --max-cost-usd 1.35 --repo ~/Documents/projects/spark --mission docs/missions/spark-mcp-graduation.md",
-			"stint deep start --repo ~/Documents/projects/spark --mission docs/missions/spark-mcp-graduation.md  # reuse an existing READY session",
+			"stint deep start --hours 3 --minimum-remaining 2h --runtime ninfer --ninfer-deployment release-bundle --ninfer-config native --clients 2 --max-hourly-usd 0.45 --max-cost-usd 1.35 --repo ~/Documents/projects/spark --mission docs/missions/spark-mcp-graduation.md",
+			"stint deep start --minimum-remaining 2h --repo ~/Documents/projects/spark --mission docs/missions/spark-mcp-graduation.md  # reuse an existing READY session",
 			"stint deep dash",
 			"stint deep status --json",
 		},

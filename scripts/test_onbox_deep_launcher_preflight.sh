@@ -99,6 +99,7 @@ export STINT_VAST_CREDENTIALS="$TMP/credentials.json"
 export STINT_BIN="$TMP/stint"
 export STINT_TEST_SSH_LOG="$TMP/ssh.log"
 export STINT_SESSION_JSON="$TMP/state/stint/session.json"
+export STINT_ONBOX_MIN_REMAINING_SECONDS=3600
 
 set +e
 output="$(bash "$REPO_ROOT/scripts/launch-onbox-deep.sh" 2>&1)"
@@ -117,6 +118,37 @@ if grep -Eq 'mkdir|scp|rsync|provision|starting detached' "$STINT_TEST_SSH_LOG";
   echo "launcher mutated the box before checking the active supervisor" >&2
   exit 1
 fi
+
+rm -f "$STINT_TEST_SSH_LOG"
+python3 - "$STINT_SESSION_JSON" <<'PY'
+import datetime, json, sys
+path = sys.argv[1]
+state = json.load(open(path, encoding="utf-8"))
+state["deadline"] = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=30)).isoformat()
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(state, stream)
+PY
+set +e
+output="$(bash "$REPO_ROOT/scripts/launch-onbox-deep.sh" 2>&1)"
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  printf '%s\n' "$output" >&2
+  echo "launcher accepted a session below the required remaining-time budget" >&2
+  exit 1
+fi
+grep -Fq 'minimum remaining-time gate failed before remote staging' <<<"$output"
+grep -Fq '3600s required' <<<"$output"
+test ! -s "$STINT_TEST_SSH_LOG"
+
+python3 - "$STINT_SESSION_JSON" <<'PY'
+import datetime, json, sys
+path = sys.argv[1]
+state = json.load(open(path, encoding="utf-8"))
+state["deadline"] = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=2)).isoformat()
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(state, stream)
+PY
 
 rm -f "$STINT_TEST_SSH_LOG"
 export STINT_SOURCE_HEAD=not-the-repository-head
@@ -166,4 +198,4 @@ fi
 grep -Fq 'Hermes provider template contains an unmatched brace' <<<"$output"
 test ! -s "$STINT_TEST_SSH_LOG"
 
-echo "on-box launcher active-supervisor, stopped-supervisor, provider-template, and pinned-source preflight passed"
+echo "on-box launcher active-supervisor, remaining-time, stopped-supervisor, provider-template, and pinned-source preflight passed"

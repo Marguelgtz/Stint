@@ -34,6 +34,7 @@ var errDeepProductionSessionMissing = errors.New("no active Stint compute sessio
 type deepProductionStartFlags struct {
 	missionPath   string
 	repoPath      string
+	minRemaining  time.Duration
 	taskTimeout   time.Duration
 	maxAttempts   int
 	allowCommands stringSlice
@@ -173,6 +174,7 @@ type deepProductionLaunchPlan struct {
 	StintBinary   string
 	RemoteRoot    string
 	TaskTimeout   time.Duration
+	MinRemaining  time.Duration
 	MaxAttempts   int
 	Provider      string
 	Model         string
@@ -227,6 +229,7 @@ func runDeepStartWithProvisioner(args []string, paths config.Paths, launcher, st
 	f := &deepProductionStartFlags{}
 	fs.StringVar(&f.missionPath, "mission", "", "mission Markdown file (required)")
 	fs.StringVar(&f.repoPath, "repo", "", "target git repository (required; must be clean)")
+	fs.DurationVar(&f.minRemaining, "minimum-remaining", 0, "minimum time that must remain before the GPU deadline when the supervisor starts (required)")
 	fs.DurationVar(&f.taskTimeout, "task-timeout", 0, "maximum wall time per Hermes task (default: 15m)")
 	fs.IntVar(&f.maxAttempts, "max-attempts", 0, "maximum attempts per task (default: 2)")
 	fs.Var(&f.allowCommands, "allow-command", "advisory command prefix for Hermes (repeatable)")
@@ -254,6 +257,9 @@ func runDeepStartWithProvisioner(args []string, paths config.Paths, launcher, st
 	}
 	if f.missionPath == "" || f.repoPath == "" {
 		return errors.New("deep start requires --mission <file> and --repo <path>")
+	}
+	if f.minRemaining < time.Second {
+		return errors.New("deep start requires --minimum-remaining <duration> of at least 1s; choose enough time for the mission, final verification, and evidence export")
 	}
 	var taskTimeoutSet, maxAttemptsSet bool
 	fs.Visit(func(item *flag.Flag) {
@@ -541,6 +547,9 @@ func prepareDeepProductionLaunch(f *deepProductionStartFlags, paths config.Paths
 	if !session.Deadline.After(now) {
 		return nil, errors.New("READY Stint compute session has expired")
 	}
+	if remaining := session.Deadline.Sub(now); remaining < f.minRemaining {
+		return nil, insufficientDeepTimeError(remaining, f.minRemaining)
+	}
 	if !validSSHHost(session.SSHHost) || session.SSHPort < 1 || session.SSHPort > 65535 {
 		return nil, errors.New("READY Stint session is missing a valid SSH host or port; run `stint resume` to refresh its connection details")
 	}
@@ -563,11 +572,18 @@ func prepareDeepProductionLaunch(f *deepProductionStartFlags, paths config.Paths
 		Paths: paths, Session: session, Mission: mission, MissionBytes: missionBytes,
 		MissionPath: missionPath, RepoPath: repoPath, SourceHead: head, SourceOrigin: origin,
 		Launcher: launcher, StintBinary: stintBinary, RemoteRoot: deepProductionRemoteRoot,
-		TaskTimeout: f.taskTimeout, MaxAttempts: f.maxAttempts, Provider: provider,
+		TaskTimeout: f.taskTimeout, MinRemaining: f.minRemaining, MaxAttempts: f.maxAttempts, Provider: provider,
 		Model: model, Reasoning: f.reasoning, ActionPlan: actionPlan,
 		AllowCommands: append([]string(nil), f.allowCommands...), GitHubToken: githubToken,
 		R2Env: r2Env, Clients: clients, ClientsKnown: clientsKnown, CreatedAt: now,
 	}, nil
+}
+
+func insufficientDeepTimeError(remaining, required time.Duration) error {
+	if remaining < 0 {
+		remaining = 0
+	}
+	return fmt.Errorf("READY Stint compute session has %s remaining, below the required --minimum-remaining %s; Deep Work was not launched", remaining.Round(time.Second), required)
 }
 
 func runLocalGit(repo string, args ...string) (string, error) {
@@ -762,6 +778,7 @@ func deepProductionEnvironment(plan *deepProductionLaunchPlan, missionSnapshot s
 	values["STINT_ONBOX_REASONING"] = plan.Reasoning
 	values["STINT_ONBOX_TASK_TIMEOUT"] = plan.TaskTimeout.String()
 	values["STINT_ONBOX_MAX_ATTEMPTS"] = fmt.Sprint(plan.MaxAttempts)
+	values["STINT_ONBOX_MIN_REMAINING_SECONDS"] = fmt.Sprint(int64(plan.MinRemaining / time.Second))
 	values["STINT_ONBOX_SKIP_GITHUB"] = "0"
 	values["STINT_ONBOX_SKIP_WATCHDOG"] = "0"
 	if plan.ActionPlan != "" {
@@ -839,6 +856,7 @@ func printDeepRunContract(out io.Writer, plan *deepProductionLaunchPlan) error {
 	fmt.Fprintf(out, "  Compute          Vast instance %d\n", plan.Session.InstanceID)
 	fmt.Fprintf(out, "  GPU / runtime    %s / %s\n", valueOr(plan.Session.GPUModel, "unknown"), deepRuntimeDescription(plan.Session))
 	fmt.Fprintf(out, "  Remaining        %s\n", remaining)
+	fmt.Fprintf(out, "  Minimum at launch %s\n", plan.MinRemaining)
 	fmt.Fprintf(out, "  Deadline         %s\n", plan.Session.Deadline.Format(time.RFC3339))
 	fmt.Fprintf(out, "  Clients          %s\n", clients)
 	fmt.Fprintf(out, "  Model            %s\n", plan.Model)

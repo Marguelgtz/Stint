@@ -55,6 +55,7 @@ func TestDeepStartCanProvisionComputeThenLaunchDetachedRun(t *testing.T) {
 		"--repo", fixture.repo,
 		"--mission", fixture.mission,
 		"--github-token-file", fixture.tokenPath,
+		"--minimum-remaining", "1h",
 		"--hours", "3",
 		"--runtime", "ninfer",
 		"--ninfer-deployment", "release-bundle",
@@ -107,7 +108,7 @@ func TestDeepStartDefaultsProvisioningToProductionNInferProfile(t *testing.T) {
 			`"status":"RUNNING","session":"deep-self-provision","deadline":"` + fixture.deadline.Format(time.RFC3339) + `"}` + "\n"), nil
 	}
 	err := runDeepStartWithProvisioner(
-		[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--hours", "3"},
+		[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--minimum-remaining", "1h", "--hours", "3"},
 		fixture.paths, fixture.launcherPath, fixture.stintBinary, runner, provisioner,
 		io.Discard, io.Discard, time.Now().UTC(),
 	)
@@ -139,7 +140,7 @@ func TestDeepStartRejectsIncompatibleRuntimeBeforeProvisioning(t *testing.T) {
 			if err := sessionstate.Clear(fixture.paths); err != nil {
 				t.Fatal(err)
 			}
-			args := []string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--hours", "3"}
+			args := []string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--minimum-remaining", "1h", "--hours", "3"}
 			args = append(args, test.flags...)
 			provisionCalls := 0
 			err := runDeepStartWithProvisioner(
@@ -179,7 +180,7 @@ func TestDeepStartRequiresExplicitHoursBeforeRenting(t *testing.T) {
 		return nil, nil
 	}
 	err := runDeepStartWithProvisioner(
-		[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--runtime", "ninfer"},
+		[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--minimum-remaining", "1h", "--runtime", "ninfer"},
 		fixture.paths, fixture.launcherPath, fixture.stintBinary, runner, provisioner,
 		io.Discard, io.Discard, time.Now().UTC(),
 	)
@@ -188,6 +189,33 @@ func TestDeepStartRequiresExplicitHoursBeforeRenting(t *testing.T) {
 	}
 	if provisionCalled {
 		t.Fatal("compute provisioner ran without an explicit paid-duration cap")
+	}
+}
+
+func TestDeepStartRequiresMinimumRemainingBeforeProvisioning(t *testing.T) {
+	fixture := newDeepProductionFixture(t)
+	if err := sessionstate.Clear(fixture.paths); err != nil {
+		t.Fatal(err)
+	}
+	provisionCalled := false
+	err := runDeepStartWithProvisioner(
+		[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--hours", "3"},
+		fixture.paths, fixture.launcherPath, fixture.stintBinary,
+		func(context.Context, string, []string, io.Writer, io.Writer) ([]byte, error) {
+			t.Fatal("launcher ran without a minimum time budget")
+			return nil, nil
+		},
+		func(context.Context, string, []string, io.Writer, io.Writer) error {
+			provisionCalled = true
+			return nil
+		},
+		io.Discard, io.Discard, time.Now().UTC(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "requires --minimum-remaining") {
+		t.Fatalf("error = %v, want required minimum remaining-time error", err)
+	}
+	if provisionCalled {
+		t.Fatal("provider provisioning ran before minimum remaining-time validation")
 	}
 }
 
@@ -205,7 +233,7 @@ func TestDeepStartValidatesMissionBeforeProvisioning(t *testing.T) {
 		return nil
 	}
 	err := runDeepStartWithProvisioner(
-		[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--hours", "3"},
+		[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--minimum-remaining", "1h", "--hours", "3"},
 		fixture.paths, fixture.launcherPath, fixture.stintBinary,
 		func(context.Context, string, []string, io.Writer, io.Writer) ([]byte, error) {
 			t.Fatal("launcher must not run")
@@ -242,6 +270,7 @@ func TestDeepStartDoesNotProvisionWhenLaunchPreflightInputIsMissing(t *testing.T
 				"--repo", fixture.repo,
 				"--mission", fixture.mission,
 				"--github-token-file", fixture.tokenPath,
+				"--minimum-remaining", "1h",
 				"--hours", "3",
 				test.flag, test.value,
 			}
@@ -279,7 +308,7 @@ func TestDeepStartDoesNotSilentlyIgnoreProvisionFlagsOnReadySession(t *testing.T
 		return nil, nil
 	}
 	err := runDeepStartWithProvisioner(
-		[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--hours", "3"},
+		[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--minimum-remaining", "1h", "--hours", "3"},
 		fixture.paths, fixture.launcherPath, fixture.stintBinary, runner, provisioner,
 		io.Discard, io.Discard, time.Now().UTC(),
 	)
@@ -296,7 +325,7 @@ func TestDeepStartProvisionFailureDoesNotLaunchMission(t *testing.T) {
 	provisionErr := errors.New("no qualifying offers remain")
 	launcherCalled := false
 	err := runDeepStartWithProvisioner(
-		[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--hours", "3"},
+		[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--minimum-remaining", "1h", "--hours", "3"},
 		fixture.paths, fixture.launcherPath, fixture.stintBinary,
 		func(context.Context, string, []string, io.Writer, io.Writer) ([]byte, error) {
 			launcherCalled = true
