@@ -141,6 +141,45 @@ class PublisherAuthorityTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "base"):
                 PUBLISH.ensure_pr(self.cfg, session="s", branch=pr["head"]["ref"], base="release", title="t", body="b", expected_head="a" * 40)
 
+    def test_configured_base_commit_fetches_missing_base_ref(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            repo = root / "worktree"
+            remote = root / "remote.git"
+            repo.mkdir()
+
+            def git(*args):
+                return subprocess.run(["git", "-C", str(repo), *args], check=True, text=True, capture_output=True).stdout.strip()
+
+            git("init", "-q", "-b", "stint/deep-fixture")
+            git("config", "user.name", "Fixture")
+            git("config", "user.email", "fixture@example.test")
+            (repo / "base.txt").write_text("base\n", encoding="utf-8")
+            git("add", "base.txt")
+            git("commit", "-qm", "fixture base")
+            expected = git("rev-parse", "HEAD")
+
+            subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+            git("push", str(remote), "HEAD:refs/heads/main")
+            local_base = subprocess.run(
+                ["git", "-C", str(repo), "show-ref", "--verify", "--quiet", "refs/heads/main"],
+                check=False,
+            )
+            self.assertNotEqual(local_base.returncode, 0, "fixture unexpectedly has the base branch locally")
+
+            askpass = root / "askpass"
+            askpass.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            askpass.chmod(0o700)
+            env = os.environ.copy()
+            env.update({"GIT_ASKPASS": str(askpass), "GIT_TERMINAL_PROMPT": "0"})
+            cfg = {"git_url": str(remote)}
+            with mock.patch.object(PUBLISH, "askpass_env", return_value=(env, str(askpass))):
+                got = PUBLISH.configured_base_commit(str(repo), "main", cfg)
+
+            self.assertEqual(got, expected)
+            self.assertEqual(git("rev-parse", "refs/remotes/origin/main"), expected)
+            self.assertFalse(askpass.exists(), "private askpass helper should be removed after fetch")
+
     def test_landing_publication_requires_exact_durable_sha_and_handoff(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = pathlib.Path(directory, "repo")
