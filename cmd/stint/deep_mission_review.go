@@ -107,6 +107,7 @@ func (c *deepCoordinator) runMissionSemanticReview(ctx context.Context, checkpoi
 		return fmt.Errorf("repository subject %s/%s differs from landing checkpoint %s/%s before mission review",
 			current.Subject.HeadCommit, current.Subject.TreeSHA, checkpointCommit, checkpointTree)
 	}
+	formatRetry := false
 	if previous, found, loadErr := deep.LatestMissionReviewForCheckpoint(c.stateDir, c.state.SessionID,
 		c.state.SemanticReviewContractSHA256, checkpointCommit, checkpointTree); loadErr != nil {
 		return fmt.Errorf("load prior mission review for landing checkpoint: %w", loadErr)
@@ -122,9 +123,15 @@ func (c *deepCoordinator) runMissionSemanticReview(ctx context.Context, checkpoi
 				run.Subject.TreeSHA == checkpointTree
 		}
 		if verificationStillValid && previous.Outcome != deep.ReviewOutcomeStarted {
-			return nil
+			if previous.Outcome == deep.ReviewOutcomeUnresolved && previous.Reason == missionReviewProtocolFailureReason {
+				formatRetry = true
+			} else {
+				return nil
+			}
 		}
-		return errors.New("mission review checkpoint identity has no matching durable final-verification evidence")
+		if !verificationStillValid || previous.Outcome == deep.ReviewOutcomeStarted {
+			return errors.New("mission review checkpoint identity has no matching durable final-verification evidence")
+		}
 	}
 
 	timeout := c.effectiveReviewTimeout(c.now())
@@ -172,6 +179,9 @@ func (c *deepCoordinator) runMissionSemanticReview(ctx context.Context, checkpoi
 			preflightErr = fmt.Errorf("mission diff exceeds the %d-byte semantic review limit", semanticReviewDiffLimit)
 		} else {
 			prompt, contextSHA, preflightErr = missionSemanticReviewPrompt(*c.state, reviewSubject, prompt)
+			if preflightErr == nil && formatRetry {
+				prompt += "\nFORMAT RETRY: the prior independent review response did not satisfy the result-frame protocol. Re-evaluate this same evidence in this fresh context and return exactly one complete result frame using the required start marker, JSON object, and end marker. Do not add fields or prose inside the frame."
+			}
 		}
 	}
 	if contextSHA == "" {
@@ -245,6 +255,7 @@ func (c *deepCoordinator) runMissionSemanticReview(ctx context.Context, checkpoi
 	if result.timedOut && executionErr == nil {
 		executionErr = context.DeadlineExceeded
 	}
+	retryProtocol := false
 	switch {
 	case errors.Is(executionErr, errExecutorQuiescenceUnconfirmed):
 		if err := finish(deep.ReviewOutcomeUnknown, "mission reviewer process quiescence could not be confirmed", nil, true); err != nil {
@@ -270,7 +281,13 @@ func (c *deepCoordinator) runMissionSemanticReview(ctx context.Context, checkpoi
 	default:
 		outcome, reason, findings, parseErr := parseSemanticReviewResponse(result.outputText)
 		if parseErr != nil {
-			if err := finish(deep.ReviewOutcomeUnresolved, "mission reviewer output did not match the strict structured-result protocol", nil, false); err != nil {
+			reason := missionReviewProtocolFailureReason
+			if formatRetry {
+				reason = missionReviewProtocolRetryExhaustedReason
+			} else {
+				retryProtocol = true
+			}
+			if err := finish(deep.ReviewOutcomeUnresolved, reason, nil, false); err != nil {
 				return err
 			}
 		} else if err := finish(outcome, reason, findings, false); err != nil {
@@ -284,6 +301,10 @@ func (c *deepCoordinator) runMissionSemanticReview(ctx context.Context, checkpoi
 			// but it cannot accept a different current tree.
 			return fmt.Errorf("repository subject changed or became unavailable during mission review of %s/%s", checkpointCommit, checkpointTree)
 		}
+	}
+	if retryProtocol && ctx.Err() == nil {
+		c.logf("mission reviewer returned an invalid result frame; retrying once in a fresh no-tools context")
+		return c.runMissionSemanticReview(ctx, checkpointCommit, checkpointTree, finalVerificationRunID)
 	}
 	return nil
 }

@@ -14,11 +14,15 @@ import (
 )
 
 const (
-	semanticReviewDiffLimit   = 128 * 1024
-	semanticReviewPacketLimit = 192 * 1024
-	semanticReviewOutputLimit = 32 * 1024
-	semanticReviewBeginMarker = "STINT_REVIEW_RESULT_V1_BEGIN"
-	semanticReviewEndMarker   = "STINT_REVIEW_RESULT_V1_END"
+	semanticReviewDiffLimit                    = 128 * 1024
+	semanticReviewPacketLimit                  = 192 * 1024
+	semanticReviewOutputLimit                  = 32 * 1024
+	semanticReviewBeginMarker                  = "STINT_REVIEW_RESULT_V1_BEGIN"
+	semanticReviewEndMarker                    = "STINT_REVIEW_RESULT_V1_END"
+	semanticReviewProtocolFailureReason        = "semantic reviewer output did not match the strict structured-result protocol"
+	semanticReviewProtocolRetryExhaustedReason = "semantic reviewer output did not match the strict structured-result protocol after one format retry"
+	missionReviewProtocolFailureReason         = "mission reviewer output did not match the strict structured-result protocol"
+	missionReviewProtocolRetryExhaustedReason  = "mission reviewer output did not match the strict structured-result protocol after one format retry"
 )
 
 type semanticReviewPacket struct {

@@ -80,6 +80,40 @@ func TestMissionSemanticReviewGatesCompletionOnExactLandingCheckpoint(t *testing
 	}
 }
 
+func TestMalformedMissionReviewGetsOneFreshFormatRetry(t *testing.T) {
+	env := newMissionSemanticReviewEnv(t, "")
+	env.fake.script = map[int]execResult{
+		2: clearReviewResult(),
+		3: {exitCode: 0, completed: true, finishReason: "completed", outputText: `{"outcome":"clear","findings":[]}`},
+		4: clearReviewResult(),
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run with a malformed first mission-review frame: %v", err)
+	}
+	if env.fake.calls != 4 || env.state.Phase != deep.PhaseLanded || env.state.MissionOutcome != deep.MissionOutcomeSucceeded ||
+		env.state.MissionReviewOutcome != deep.ReviewOutcomeClear {
+		t.Fatalf("bounded mission-review retry did not recover: calls=%d phase=%s outcome=%s review=%s",
+			env.fake.calls, env.state.Phase, env.state.MissionOutcome, env.state.MissionReviewOutcome)
+	}
+	if !strings.Contains(env.fake.inputs[3].prompt, "FORMAT RETRY") || !env.fake.inputs[3].semanticReviewer ||
+		env.fake.inputs[3].allowedCommands != nil || env.fake.inputs[3].executorRunID != "" {
+		t.Fatalf("mission format retry did not use a fresh no-tools reviewer context: %+v", env.fake.inputs[3])
+	}
+	events, err := deep.ReadRunEvents(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcomes []deep.ReviewOutcome
+	for _, event := range events {
+		if event.Type == deep.RunEventMissionReviewResult && event.MissionReview != nil {
+			outcomes = append(outcomes, event.MissionReview.Outcome)
+		}
+	}
+	if len(outcomes) != 2 || outcomes[0] != deep.ReviewOutcomeUnresolved || outcomes[1] != deep.ReviewOutcomeClear {
+		t.Fatalf("mission protocol retry history = %v, want unresolved then clear", outcomes)
+	}
+}
+
 func TestMissionSemanticFindingsLeaveMissionUnresolvedWithoutChangingTaskAcceptance(t *testing.T) {
 	env := newMissionSemanticReviewEnv(t, "")
 	finding := framedReviewOutput(`{"outcome":"findings","findings":[{"id":"M-1","severity":"high","summary":"A required public behavior is absent.","evidence":"The complete checkpoint diff does not define the requested exported entrypoint.","locations":["api.go:10"]}]}`)
@@ -139,6 +173,7 @@ func TestFailedFinalVerifierSkipsMissionReviewAndCannotCompleteMission(t *testin
 
 func TestTimedOutFinalVerifierSkipsMissionReviewAndLeavesOutcomeUnresolved(t *testing.T) {
 	env := newMissionSemanticReviewEnv(t, "required-final-check")
+	env.fake.script = map[int]execResult{2: clearReviewResult()}
 	env.coord.finalVerify = func(_ context.Context, command string) verificationResult {
 		return verificationResult{Command: command, Outcome: verificationTimedOut,
 			Error: "context deadline exceeded", Output: "final mission verifier timed out"}
