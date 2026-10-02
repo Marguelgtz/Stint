@@ -3,10 +3,47 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Marguelgtz/Stint/internal/config"
+	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
+
+func TestTunnelStartsInIndependentSession(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("session ownership is verified on Linux")
+	}
+	dir := t.TempDir()
+	ssh := filepath.Join(dir, "ssh")
+	if err := os.WriteFile(ssh, []byte("#!/bin/sh\nexec sleep 60\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	log, err := os.Create(filepath.Join(dir, "tunnel.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	cmd, err := startTunnelProcess(config.Paths{StateDir: dir, SSHPrivateKey: filepath.Join(dir, "key")}, sessionstate.State{SSHHost: "example.invalid", SSHPort: 22}, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	group, err := syscall.Getpgid(cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if group != cmd.Process.Pid {
+		t.Fatalf("tunnel process group %d, want independent group %d", group, cmd.Process.Pid)
+	}
+}
 
 func TestSessionProcessIdentityHelper(t *testing.T) {
 	if os.Getenv("STINT_PROCESS_IDENTITY_HELPER") != "1" {
