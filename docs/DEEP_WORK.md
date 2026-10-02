@@ -213,6 +213,15 @@ the declared deterministic acceptance check passes against the bound
 checkpoint and repository-change expectation. A successful generic verifier
 does not establish the Objective by itself.
 
+Worker prompts include both the task verifier and its separate acceptance-check
+command. On retry, Stint reconstructs the prompt before starting the new attempt
+clears projected results, preserving the previous executor, verification, and
+acceptance diagnostics. Those prior results guide repair; they never count as
+evidence for the new attempt. Run the configured probes from the exact prepared
+checkout before renting: distinguish an expected failing product assertion from
+an absent probe, missing executable, or broken fixture. A living-plan entry is an
+evidence pointer and strategy record, rather than a substitute for a task check.
+
 The append-only journal can also record a bounded semantic `ReviewCycle` for
 an exact task checkpoint. Each cycle carries its mission-contract and review
 context identities, reviewer/runtime identity, typed outcome, structured

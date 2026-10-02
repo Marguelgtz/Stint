@@ -394,6 +394,12 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 			return fmt.Errorf("task %s has no useful executor window: %s", t.ID, timeoutDecision)
 		}
 		attempt := t.Attempts + 1
+		// Build retry context before BeginExecutorRun clears the current
+		// attempt's projected results. The previous verification and acceptance
+		// failures are diagnostics for the fresh worker, not current evidence.
+		promptTask := *t
+		promptTask.Attempts = attempt
+		input := c.execInputFor(promptTask, effectiveTimeout)
 		if journaled {
 			before, err := c.captureVerificationSubject("executor.pre_subject_capture", c.state.WorktreePath, c.verificationBookkeepingPaths(), t.ID, attempt)
 			if err != nil {
@@ -440,7 +446,6 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		defer cancel()
 		c.incident(deep.IncidentExecutorInvoke, t.ID,
 			fmt.Sprintf("attempt %d %s (configured maximum %s; effective timeout %s; %s)", t.Attempts, policySummary(c.execCfg), c.taskTimeout, effectiveTimeout, timeoutDecision))
-		input := c.execInputFor(*t, effectiveTimeout)
 		if journaled {
 			input.stateDir = c.stateDir
 			input.sessionID = c.state.SessionID

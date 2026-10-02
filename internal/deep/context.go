@@ -63,6 +63,10 @@ func BuildTaskPromptWithActionPlan(m Mission, t Task, attempt int, repo RepoSumm
 	if t.Verify != "" {
 		fmt.Fprintf(&b, "VERIFY COMMAND (the coordinator runs this in the worktree to check your work; make it pass): %s\n", t.Verify)
 	}
+	if t.AcceptanceCheck != "" {
+		fmt.Fprintf(&b, "ACCEPTANCE CHECK COMMAND (the coordinator runs this separately to prove this task's outcome; make it pass): %s\n", t.AcceptanceCheck)
+		b.WriteString("Run both configured checks before claiming completion. General verification alone does not satisfy the acceptance check. If a required probe is missing, supply it with meaningful assertions for this task; do not weaken the configured gate.\n")
+	}
 	if t.LastResult != "" {
 		fmt.Fprintf(&b, "PREVIOUS EXECUTOR RESULT (attempt %d):\n%s\n", attempt-1, t.LastResult)
 	}
@@ -70,6 +74,12 @@ func BuildTaskPromptWithActionPlan(m Mission, t Task, attempt int, repo RepoSumm
 		fmt.Fprintf(&b, "PREVIOUS REPOSITORY VERIFICATION (diagnostic evidence only): command=%q result=%s\n", t.VerificationCommand, t.VerificationResult)
 		if t.VerificationOutput != "" {
 			fmt.Fprintf(&b, "verification output tail: %s\n", t.VerificationOutput)
+		}
+	}
+	if t.AcceptanceReason != "" || t.AcceptanceOutput != "" {
+		fmt.Fprintf(&b, "PREVIOUS ACCEPTANCE CHECK (diagnostic evidence only): command=%q decision=%s check=%s reason=%s\n", t.AcceptanceCheck, t.AcceptanceOutcome, t.AcceptanceCheckOutcome, t.AcceptanceReason)
+		if t.AcceptanceOutput != "" {
+			fmt.Fprintf(&b, "acceptance output tail: %s\n", t.AcceptanceOutput)
 		}
 	}
 	if len(t.Findings) > 0 {
