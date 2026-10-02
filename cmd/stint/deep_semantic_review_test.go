@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Marguelgtz/Stint/internal/deep"
 )
@@ -94,6 +95,51 @@ func TestMalformedSemanticReviewGetsOneFreshFormatRetry(t *testing.T) {
 	}
 	if len(outcomes) != 2 || outcomes[0] != deep.ReviewOutcomeUnresolved || outcomes[1] != deep.ReviewOutcomeClear {
 		t.Fatalf("protocol retry history = %v, want unresolved then clear", outcomes)
+	}
+}
+
+func TestResumeRetriesProtocolFailureWithoutRepeatingAcceptedWork(t *testing.T) {
+	env := newSemanticReviewEnv(t, "", "", deep.RepositoryChangeOptional, "test -e work-1.txt")
+	env.fake.script = map[int]execResult{
+		2: {exitCode: 0, completed: true, finishReason: "completed", outputText: "decorated response"},
+		3: {exitCode: 0, completed: true, finishReason: "completed", outputText: "decorated response"},
+		4: clearReviewResult(),
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	task := env.state.Tasks[0]
+	if env.fake.calls != 3 || task.ReviewReason != semanticReviewProtocolRetryExhaustedReason || env.state.Phase != deep.PhaseLanded {
+		t.Fatalf("first epoch did not stop after one format retry: calls=%d task=%+v phase=%s", env.fake.calls, task, env.state.Phase)
+	}
+	checkpoint := task.AcceptanceCheckpointEventID
+	env.clock.now = env.clock.now.Add(time.Second)
+	if err := deep.BeginResumeEpoch(env.coord.stateDir, env.state, deep.PhaseLanded, env.clock.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	task = env.state.Tasks[0]
+	if env.fake.calls != 4 || !env.fake.inputs[3].semanticReviewer || task.Attempts != 1 || task.AcceptanceCheckpointEventID != checkpoint ||
+		task.ReviewOutcome != deep.ReviewOutcomeClear || env.state.MissionOutcome != deep.MissionOutcomeSucceeded {
+		t.Fatalf("resume failed to preserve accepted work: calls=%d task=%+v mission=%s", env.fake.calls, task, env.state.MissionOutcome)
+	}
+	events, err := deep.ReadRunEvents(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts, reviews := 0, 0
+	for _, event := range events {
+		if event.Type == deep.RunEventExecutorStarted {
+			starts++
+		}
+		if event.Type == deep.RunEventReviewResult {
+			reviews++
+		}
+	}
+	if starts != 1 || reviews != 3 {
+		t.Fatalf("resume lost history or repeated execution: executor starts=%d reviews=%d", starts, reviews)
 	}
 }
 

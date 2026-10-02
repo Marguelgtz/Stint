@@ -576,7 +576,7 @@ func (e *hermesExecutor) run(ctx context.Context, in execInput) (execResult, err
 		hermesArgs += " --reasoning " + shellQuote(in.reasoning)
 	}
 	if in.semanticReviewer {
-		hermesArgs += " --safe-mode --ignore-user-config --ignore-rules --toolsets " + shellQuote(semanticReviewNoToolsToolset)
+		hermesArgs += " --quiet --safe-mode --ignore-user-config --ignore-rules --toolsets " + shellQuote(semanticReviewNoToolsToolset)
 	}
 	line := remoteHermesCommand(in, b64, hermesArgs, secs)
 
@@ -972,7 +972,7 @@ func (e *localHermesExecutor) runJournaled(ctx context.Context, in execInput, st
 		hermesArgs += " --reasoning " + shellQuote(in.reasoning)
 	}
 	if in.semanticReviewer {
-		hermesArgs += " --safe-mode --ignore-user-config --ignore-rules --toolsets " + shellQuote(semanticReviewNoToolsToolset)
+		hermesArgs += " --quiet --safe-mode --ignore-user-config --ignore-rules --toolsets " + shellQuote(semanticReviewNoToolsToolset)
 	}
 	timeoutSeconds := int(in.timeout.Seconds())
 	if timeoutSeconds < 1 {

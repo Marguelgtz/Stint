@@ -147,6 +147,11 @@ gate is satisfied. Repairs may themselves produce findings, creating a chain
 of journaled Work Units; unresolved work never promotes mission success.
 Malformed review output, reviewer failure, stale evidence, or an uncertain
 repository subject cannot produce a clear result.
+Reviewers use Hermes quiet output so the strict result frame is read from the
+final answer rather than the terminal renderer. A malformed frame gets one
+fresh format retry per execution epoch. After repairing the runtime, an explicit
+resume may review the same accepted checkpoint again without repeating its
+executor work; earlier failures remain in the journal.
 
 Semantic Review Contract version 2 keeps all version 1 Objective-review
 behavior and adds a final fresh-context review of the whole mission:

@@ -259,7 +259,7 @@ func TestSemanticReviewerHermesInvocationIsFreshAndHasNoTools(t *testing.T) {
 	if err != nil || !result.completed {
 		t.Fatalf("semantic review executor result = %+v, err=%v", result, err)
 	}
-	for _, flag := range []string{"--oneshot", "--safe-mode", "--ignore-user-config", "--ignore-rules", "--toolsets", semanticReviewNoToolsToolset} {
+	for _, flag := range []string{"--oneshot", "--quiet", "--safe-mode", "--ignore-user-config", "--ignore-rules", "--toolsets", semanticReviewNoToolsToolset} {
 		if !strings.Contains(command, flag) {
 			t.Fatalf("semantic reviewer command missing isolation flag %q: %s", flag, command)
 		}
@@ -269,8 +269,33 @@ func TestSemanticReviewerHermesInvocationIsFreshAndHasNoTools(t *testing.T) {
 	}
 	args := addSemanticReviewIsolationArgs([]string{"chat", "--oneshot"}, execInput{semanticReviewer: true})
 	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--safe-mode") || !strings.Contains(joined, semanticReviewNoToolsToolset) {
+	if !strings.Contains(joined, "--quiet") || !strings.Contains(joined, "--safe-mode") || !strings.Contains(joined, semanticReviewNoToolsToolset) {
 		t.Fatalf("local Hermes reviewer arguments are not isolated: %v", args)
+	}
+}
+
+func TestLocalSemanticReviewerReturnsMachineFrameWithoutTerminalDecoration(t *testing.T) {
+	dir := t.TempDir()
+	hermes := filepath.Join(dir, "hermes")
+	// Model the observed Hermes CLI boundary: ordinary output decorates the
+	// valid model answer; quiet output leaves its strict frame intact and sends
+	// session diagnostics to stderr.
+	script := "#!/bin/sh\nquiet=0\nfor arg in \"$@\"; do [ \"$arg\" != --quiet ] || quiet=1; done\n" +
+		"if [ \"$quiet\" = 0 ]; then printf '│ STINT_REVIEW_RESULT_V1_BEGIN │\\n│ answer │\\n'; exit 0; fi\n" +
+		"printf '%s\\n' 'STINT_REVIEW_RESULT_V1_BEGIN' '{\"outcome\":\"clear\",\"findings\":[]}' 'STINT_REVIEW_RESULT_V1_END'\n" +
+		"printf 'session_id: fixture\\n' >&2\n"
+	if err := os.WriteFile(hermes, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	result, err := newLocalHermesExecutor(hermes).run(context.Background(), execInput{
+		workdir: dir, prompt: "review packet", timeout: time.Minute, semanticReviewer: true,
+	})
+	if err != nil || !result.completed {
+		t.Fatalf("review invocation: result=%+v err=%v", result, err)
+	}
+	outcome, _, _, err := parseSemanticReviewResponse(result.outputText)
+	if err != nil || outcome != deep.ReviewOutcomeClear || strings.Contains(result.outputText, "session_id") {
+		t.Fatalf("final answer did not survive CLI boundary: outcome=%s err=%v output=%q", outcome, err, result.outputText)
 	}
 }
 

@@ -38,7 +38,11 @@ func addSemanticReviewIsolationArgs(args []string, in execInput) []string {
 	if !in.semanticReviewer {
 		return args
 	}
-	return append(args, "--safe-mode", "--ignore-user-config", "--ignore-rules", "--toolsets", semanticReviewNoToolsToolset)
+	// Review frames are a machine protocol. Hermes' default terminal renderer
+	// decorates the answer and echoes the query; quiet mode emits only the final
+	// answer on stdout and puts session diagnostics on stderr. Coding workers
+	// keep their ordinary tool-enabled invocation.
+	return append(args, "--quiet", "--safe-mode", "--ignore-user-config", "--ignore-rules", "--toolsets", semanticReviewNoToolsToolset)
 }
 
 // execResult is the observable outcome of an invocation. The invocation

@@ -289,7 +289,7 @@ func (c *deepCoordinator) runTask(ctx context.Context, idx int, now time.Time) e
 		return nil
 	}
 	journaled := c.state.RunEventSchemaVersion == deep.RunEventSchemaVersion
-	if pendingSemanticReview(*t, *c.state) {
+	if c.pendingSemanticReview(*t) {
 		return c.runSemanticReview(ctx, t.ID)
 	}
 	if journaled && c.state.AcceptanceContractVersion == deep.DeterministicAcceptanceContractVersion &&
@@ -1030,7 +1030,7 @@ func (c *deepCoordinator) hasUsefulTaskWindow(now time.Time, task deep.Task) boo
 func (c *deepCoordinator) selectTask() (int, bool) {
 	for i := range c.state.Tasks {
 		task := c.state.Tasks[i]
-		pendingReview := pendingSemanticReview(task, *c.state)
+		pendingReview := c.pendingSemanticReview(task)
 		if task.TerminalInContract(c.state.AcceptanceContractVersion) && !pendingReview {
 			continue
 		}
@@ -1050,7 +1050,8 @@ func (c *deepCoordinator) selectTask() (int, bool) {
 	return 0, false
 }
 
-func pendingSemanticReview(task deep.Task, state deep.DeepState) bool {
+func (c *deepCoordinator) pendingSemanticReview(task deep.Task) bool {
+	state := *c.state
 	if !deep.HasSemanticReviewContract(state.SemanticReviewContractVersion) ||
 		state.AcceptanceContractVersion != deep.DeterministicAcceptanceContractVersion || !task.IsAcceptanceContractTask() ||
 		task.Status != deep.StatusAccepted || task.AcceptanceOutcome != deep.AcceptanceAccepted ||
@@ -1060,7 +1061,21 @@ func pendingSemanticReview(task deep.Task, state deep.DeepState) bool {
 	if task.ReviewCycleID == "" || task.ReviewCheckpointEventID != task.AcceptanceCheckpointEventID {
 		return true
 	}
-	return task.ReviewOutcome == deep.ReviewOutcomeUnresolved && task.ReviewReason == semanticReviewProtocolFailureReason
+	if task.ReviewOutcome != deep.ReviewOutcomeUnresolved {
+		return false
+	}
+	if task.ReviewReason == semanticReviewProtocolFailureReason {
+		return true
+	}
+	// A deliberate resume can retry a transport failure after runtime repair,
+	// while retaining the accepted checkpoint and all failed review facts.
+	// The format retry stays bounded within each execution epoch.
+	if task.ReviewReason != semanticReviewProtocolRetryExhaustedReason {
+		return false
+	}
+	cycle, found, err := deep.LoadReviewCycle(c.stateDir, state.SessionID, task.ReviewCycleID)
+	return err == nil && found && cycle.CheckpointEventID == task.AcceptanceCheckpointEventID &&
+		cycle.StartedInEpochID != state.ExecutionEpochID
 }
 
 func taskHasPendingAcceptanceProjection(task deep.Task, contractVersion int) bool {
@@ -1178,7 +1193,7 @@ func (c *deepCoordinator) run(ctx context.Context) error {
 			return c.land(ctx, "no safe useful work remaining")
 		}
 		task := c.state.Tasks[idx]
-		if pendingSemanticReview(task, *c.state) {
+		if c.pendingSemanticReview(task) {
 			if c.effectiveReviewTimeout(now) <= 0 {
 				return c.land(ctx, "insufficient semantic review window before landing cutoff")
 			}
