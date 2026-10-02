@@ -157,6 +157,7 @@ func runDeepStop(args []string) error {
 		logf: func(format string, args ...any) { deep.AppendLog(paths.StateDir, state, format, args...) },
 		out:  os.Stdout,
 		git:  newGitRunner(),
+		now:  time.Now,
 	}
 	return coord.land(context.Background(), "stopped by user")
 }

@@ -430,6 +430,60 @@ class PublisherAuthorityTests(unittest.TestCase):
                 with self.assertRaisesRegex(PUBLISH.PermanentPublicationError, "branch identity"):
                     PUBLISH.sync(str(root))
 
+    def test_landing_at_last_checkpoint_preserves_evidence_without_empty_pr(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            repo, state, plan, _, _, _, dependent = self.make_journal_publication_fixture(root)
+            handoff_path = root / "handoff.md"
+            handoff_path.write_text("Final checked evidence\n", encoding="utf-8")
+            state.update({"phase": "landed", "landingVerifyDone": True, "landingCommit": dependent,
+                          "landingHandoff": "Final checked evidence\n", "handoffPath": str(handoff_path)})
+            root.joinpath("deep.json").write_text(json.dumps(state), encoding="utf-8")
+            cfg = {**self.cfg, "token": "fixture", "token_file": "/fixture"}
+            prs = []
+
+            def ensure(_cfg, **kwargs):
+                # Reproduce GitHub's real rejection of an empty final layer.
+                if "-handoff" in kwargs["branch"] and kwargs["expected_head"] == dependent:
+                    raise AssertionError("attempted an empty handoff PR")
+                prs.append(kwargs)
+                return {"number": len(prs) + 20, "url": f"https://github.com/owner/repository/pull/{len(prs) + 20}"}
+
+            with mock.patch.object(PUBLISH, "config", return_value=cfg), \
+                 mock.patch.object(PUBLISH, "journal_publication_plan", return_value=plan), \
+                 mock.patch.object(PUBLISH, "push_commit"), \
+                 mock.patch.object(PUBLISH, "ensure_pr", side_effect=ensure), \
+                 mock.patch.object(PUBLISH, "validate_published_pr"), \
+                 mock.patch.object(PUBLISH, "supersede_pr") as supersede:
+                PUBLISH.sync(str(root))
+                PUBLISH.sync(str(root))
+                publication = json.loads(root.joinpath("publication.json").read_text())
+                self.assertEqual(len(prs), 2)
+                self.assertEqual(publication["lastError"], "")
+                self.assertEqual(publication["handoff"]["commit"], dependent)
+                self.assertEqual(publication["handoff"]["status"], "evidence_only")
+                self.assertIsNone(publication["handoff"]["prNumber"])
+                self.assertEqual(publication["handoff"]["checkpointPrUrl"], publication["checkpoints"][-1]["prUrl"])
+                supersede.assert_not_called()
+
+                # A later landing with a real Git delta receives its own PR,
+                # preserving the earlier evidence boundary without trying to
+                # close a nonexistent PR or the checkpoint PR it references.
+                (repo / "final.txt").write_text("landing delta\n")
+                subprocess.run(["git", "-C", str(repo), "add", "final.txt"], check=True)
+                subprocess.run(["git", "-C", str(repo), "commit", "-qm", "landing delta"], check=True)
+                head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+                state["landingCommit"] = head
+                root.joinpath("deep.json").write_text(json.dumps(state))
+                PUBLISH.sync(str(root))
+                PUBLISH.sync(str(root))
+                publication = json.loads(root.joinpath("publication.json").read_text())
+                self.assertEqual(len(prs), 3)
+                self.assertEqual(publication["handoff"]["commit"], head)
+                self.assertEqual(publication["handoffHistory"][0]["status"], "superseded")
+                self.assertEqual(publication["handoffHistory"][0]["commit"], dependent)
+                supersede.assert_not_called()
+
     def test_permanent_publication_error_returns_nonretryable_exit_code(self):
         with mock.patch.object(sys, "argv", ["publisher", "sync", "/unused"]), \
              mock.patch.object(PUBLISH, "sync", side_effect=PUBLISH.PermanentPublicationError("identity conflict")), \

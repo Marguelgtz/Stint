@@ -685,6 +685,11 @@ def sync(state_dir: str) -> None:
 
     if state.get("phase") == "landed":
         head = exact_landing_commit(state, worktree)
+        # A landing may contain only coordinator-owned evidence outside Git.
+        # Its exact product commit is already represented by the checkpoint
+        # stack; GitHub rejects another PR with that same head and base.
+        landing_evidence_only = bool(previous_commit) and head == previous_commit
+        checkpoint_pr_url = next((entry.get("prUrl", "") for entry in reversed(checkpoints) if entry.get("prUrl")), "")
         handoff = publication.get("handoff")
         handoff_branch = f"stint/deep-{session}-handoff"
         versioned_handoff_branch = f"stint/deep-{session}-handoff-{head[:12]}"
@@ -703,7 +708,7 @@ def sync(state_dir: str) -> None:
             old_record = next((entry for entry in history if (entry.get("branch"), entry.get("commit"), entry.get("prNumber")) == old_key), None)
             if old_record is None:
                 old_record = dict(handoff)
-                old_record.update({"status": "superseding", "supersededAt": utc_now()})
+                old_record.update({"status": "superseding" if handoff.get("prNumber") else "superseded", "supersededAt": utc_now()})
                 history.append(old_record)
             new_identity = {"commit": head, "branch": handoff_branch, "base": previous_branch}
             if not any(
@@ -724,10 +729,14 @@ def sync(state_dir: str) -> None:
         if handoff is not None:
             if handoff.get("commit") != head or handoff.get("branch") != handoff_branch or handoff.get("base") != previous_branch:
                 raise PermanentPublicationError("published handoff identity differs from durable landing state")
-            validate_published_pr(cfg, handoff, branch=handoff_branch, base=previous_branch, commit=head)
+            if handoff.get("status") == "evidence_only":
+                if not landing_evidence_only or handoff.get("prNumber") or handoff.get("prUrl") or handoff.get("checkpointPrUrl", "") != checkpoint_pr_url:
+                    raise PermanentPublicationError("evidence-only handoff is not represented by the checkpoint stack")
+            else:
+                validate_published_pr(cfg, handoff, branch=handoff_branch, base=previous_branch, commit=head)
         else:
             push_commit(cfg, worktree, head, handoff_branch, session)
-            pr = ensure_pr(
+            pr = {"number": None, "url": ""} if landing_evidence_only else ensure_pr(
                 cfg,
                 session=session,
                 branch=handoff_branch,
@@ -748,6 +757,9 @@ def sync(state_dir: str) -> None:
                 "prUrl": pr["url"],
                 "publishedAt": utc_now(),
             }
+            if landing_evidence_only:
+                handoff["status"] = "evidence_only"
+                handoff["checkpointPrUrl"] = checkpoint_pr_url
             publication["handoff"] = handoff
 
         # Close superseded draft handoffs only after the replacement PR exists.
@@ -757,7 +769,10 @@ def sync(state_dir: str) -> None:
                 continue
             old_record["status"] = "close_pending"
             try:
-                supersede_pr(cfg, old_record, handoff)
+                replacement = dict(handoff)
+                if replacement.get("status") == "evidence_only":
+                    replacement["prUrl"] = replacement.get("checkpointPrUrl", "")
+                supersede_pr(cfg, old_record, replacement)
             except Exception:
                 old_record["lastCloseError"] = utc_now()
                 publication["updatedAt"] = utc_now()

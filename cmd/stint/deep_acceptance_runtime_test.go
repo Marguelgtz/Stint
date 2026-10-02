@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -408,5 +409,44 @@ func TestV2RepositoryChangeBaselineSurvivesRetriesAndCheckpoints(t *testing.T) {
 	}
 	if _, err := deep.LoadState(env.coord.stateDir, env.state.SessionID); err != nil {
 		t.Fatalf("multiple checkpoint/acceptance generations did not replay: %v", err)
+	}
+}
+
+func TestV2RetryReceivesAcceptanceFailureAndLandsAfterRepair(t *testing.T) {
+	env := newV2AcceptanceEnvWithCheck(t, "test -f .stint-verified", "test -e work-2.txt", deep.RepositoryChangeRequired, "test -e contract-probe.txt")
+	env.coord.execCfg.actionPlan = "deep-work/action-plan.md"
+	env.fake.before = func(in execInput) {
+		if !strings.Contains(in.prompt, "ACCEPTANCE CHECK COMMAND") || !strings.Contains(in.prompt, "test -e contract-probe.txt") {
+			t.Fatal("worker cannot see its task's acceptance command")
+		}
+		if env.fake.calls == 2 {
+			for _, want := range []string{"CURRENT TASK: OBJ-1 (attempt 2)", "PREVIOUS ACCEPTANCE CHECK", "not_satisfied", "contract-probe.txt: No such file", "PREVIOUS REPOSITORY VERIFICATION", "LIVING ACTION PLAN: deep-work/action-plan.md"} {
+				if !strings.Contains(in.prompt, want) {
+					t.Fatalf("retry lost diagnostic %q:\n%s", want, in.prompt)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(in.workdir, "contract-probe.txt"), []byte("repaired"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	env.coord.verify = func(_ context.Context, command, workdir string) verificationResult {
+		if command == "test -e contract-probe.txt" {
+			if _, err := os.Stat(filepath.Join(workdir, "contract-probe.txt")); err != nil {
+				return verificationResult{Command: command, Outcome: verificationFailed, HasExitCode: true, ExitCode: 1, Output: "contract-probe.txt: No such file"}
+			}
+		}
+		result := runVerifyCmd(context.Background(), command, workdir)
+		result.StartedAt, result.CompletedAt = env.clock.now, env.clock.now
+		return result
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if env.fake.calls != 2 || env.state.Tasks[0].AcceptanceOutcome != deep.AcceptanceAccepted || env.state.Phase != deep.PhaseLanded || env.state.MissionOutcome != deep.MissionOutcomeSucceeded {
+		t.Fatalf("repair did not reach accepted landing: calls=%d state=%+v", env.fake.calls, env.state)
+	}
+	if _, err := deep.LoadState(env.coord.stateDir, env.state.SessionID); err != nil {
+		t.Fatalf("landed retry journal cannot replay: %v", err)
 	}
 }

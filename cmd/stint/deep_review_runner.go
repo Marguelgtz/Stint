@@ -18,7 +18,7 @@ func (c *deepCoordinator) runSemanticReview(ctx context.Context, taskID string) 
 	reviewTotalStarted := time.Now()
 	defer func() { c.recordTiming("objective_review.total", taskID, 0, reviewTotalStarted) }()
 	task, ok := findCoordinatorTask(c.state.Tasks, taskID)
-	if !ok || !pendingSemanticReview(*task, *c.state) {
+	if !ok || !c.pendingSemanticReview(*task) {
 		return fmt.Errorf("task %s has no pending semantic review", taskID)
 	}
 	checkpoint, checkpointEventID, found, err := deep.LoadTaskCheckpoint(c.stateDir, c.state.SessionID, taskID)

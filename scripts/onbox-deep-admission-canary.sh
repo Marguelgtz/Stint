@@ -48,13 +48,13 @@ Prove that the production on-box executor can make and verify one small change.
 
 ## Tasks
 
-- [ ] CANARY-001: Create `admission-canary.txt` containing exactly `STINT_ADMISSION_OK`.
-  - acceptance: the file contains exactly the admission marker line.
-  - verify: test -f admission-canary.txt && grep -Fqx 'STINT_ADMISSION_OK' admission-canary.txt
+- [ ] CANARY-001: Create `admission-canary.txt` containing exactly `STINT_ADMISSION_OK` followed by one newline.
+  - acceptance: the file bytes equal the admission marker and one trailing newline, with no other content.
+  - verify: python3 -c "from pathlib import Path; assert Path('admission-canary.txt').read_bytes() == b'STINT_ADMISSION_OK\n'"
 
 ## Verification
 
-test -f admission-canary.txt && grep -Fqx 'STINT_ADMISSION_OK' admission-canary.txt
+python3 -c "from pathlib import Path; assert Path('admission-canary.txt').read_bytes() == b'STINT_ADMISSION_OK\n'"
 MISSION
 chmod 0600 "$TMP/mission.md"
 
@@ -124,7 +124,7 @@ tree = subprocess.check_output(["git", "-C", str(worktree), "rev-parse", "HEAD^{
 if state.get("landingCheckpointTreeSha") != tree or tasks[0].get("checkpointTreeSha") != tree:
     raise SystemExit("ADMISSION_CANARY_FAIL verified, task, and landing trees do not match")
 marker = worktree / "admission-canary.txt"
-if not marker.is_file() or marker.read_text(encoding="utf-8") != "STINT_ADMISSION_OK\n":
+if not marker.is_file() or marker.read_bytes() != b"STINT_ADMISSION_OK\n":
     raise SystemExit("ADMISSION_CANARY_FAIL expected Git-visible marker is missing")
 PY
 

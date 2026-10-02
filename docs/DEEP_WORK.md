@@ -147,6 +147,11 @@ gate is satisfied. Repairs may themselves produce findings, creating a chain
 of journaled Work Units; unresolved work never promotes mission success.
 Malformed review output, reviewer failure, stale evidence, or an uncertain
 repository subject cannot produce a clear result.
+Reviewers use Hermes quiet output so the strict result frame is read from the
+final answer rather than the terminal renderer. A malformed frame gets one
+fresh format retry per execution epoch. After repairing the runtime, an explicit
+resume may review the same accepted checkpoint again without repeating its
+executor work; earlier failures remain in the journal.
 
 Semantic Review Contract version 2 keeps all version 1 Objective-review
 behavior and adds a final fresh-context review of the whole mission:
@@ -212,6 +217,15 @@ checkpoint evidence only; the separate `accepted` status is emitted only when
 the declared deterministic acceptance check passes against the bound
 checkpoint and repository-change expectation. A successful generic verifier
 does not establish the Objective by itself.
+
+Worker prompts include both the task verifier and its separate acceptance-check
+command. On retry, Stint reconstructs the prompt before starting the new attempt
+clears projected results, preserving the previous executor, verification, and
+acceptance diagnostics. Those prior results guide repair; they never count as
+evidence for the new attempt. Run the configured probes from the exact prepared
+checkout before renting: distinguish an expected failing product assertion from
+an absent probe, missing executable, or broken fixture. A living-plan entry is an
+evidence pointer and strategy record, rather than a substitute for a task check.
 
 The append-only journal can also record a bounded semantic `ReviewCycle` for
 an exact task checkpoint. Each cycle carries its mission-contract and review
