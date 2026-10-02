@@ -64,6 +64,39 @@ func TestSemanticReviewGateCompletesOnlyOnClearCheckpointBoundResult(t *testing.
 	}
 }
 
+func TestMalformedSemanticReviewGetsOneFreshFormatRetry(t *testing.T) {
+	env := newSemanticReviewEnv(t, "", "", deep.RepositoryChangeOptional, "test -e work-1.txt")
+	env.fake.script = map[int]execResult{
+		2: {exitCode: 0, completed: true, finishReason: "completed", outputText: `{"outcome":"clear","findings":[]}`},
+		3: clearReviewResult(),
+	}
+	if err := env.coord.run(context.Background()); err != nil {
+		t.Fatalf("run with a malformed first semantic-review frame: %v", err)
+	}
+	task := env.state.Tasks[0]
+	if env.fake.calls != 3 || task.ReviewOutcome != deep.ReviewOutcomeClear ||
+		task.AcceptanceOutcome != deep.AcceptanceAccepted || env.state.MissionOutcome != deep.MissionOutcomeSucceeded {
+		t.Fatalf("bounded semantic-review retry did not recover: calls=%d task=%+v mission=%s", env.fake.calls, task, env.state.MissionOutcome)
+	}
+	if !strings.Contains(env.fake.inputs[2].prompt, "FORMAT RETRY") || !env.fake.inputs[2].semanticReviewer ||
+		env.fake.inputs[2].allowedCommands != nil || env.fake.inputs[2].executorRunID != "" {
+		t.Fatalf("format retry did not use a fresh no-tools reviewer context: %+v", env.fake.inputs[2])
+	}
+	events, err := deep.ReadRunEvents(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcomes []deep.ReviewOutcome
+	for _, event := range events {
+		if event.Type == deep.RunEventReviewResult && event.ReviewCycle != nil {
+			outcomes = append(outcomes, event.ReviewCycle.Outcome)
+		}
+	}
+	if len(outcomes) != 2 || outcomes[0] != deep.ReviewOutcomeUnresolved || outcomes[1] != deep.ReviewOutcomeClear {
+		t.Fatalf("protocol retry history = %v, want unresolved then clear", outcomes)
+	}
+}
+
 func TestSemanticReviewFindingsAndMalformedOutputCannotCompleteMission(t *testing.T) {
 	for _, tc := range []struct {
 		name, result string

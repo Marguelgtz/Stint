@@ -97,8 +97,9 @@ func TestCommandHelpRenders(t *testing.T) {
 func TestDeepHelpPresentsDetachedProductionWorkflow(t *testing.T) {
 	out := captureOutput(t, func() { printCommandHelp("deep") })
 	for _, want := range []string{
-		"stint deep start --hours ... --repo ... --mission ...",
+		"stint deep start --hours ... --minimum-remaining ... --repo ... --mission ...",
 		"--hours <float>",
+		"--minimum-remaining <duration>",
 		"READY session",
 		"detached production Deep Work",
 		"stint deep dash",

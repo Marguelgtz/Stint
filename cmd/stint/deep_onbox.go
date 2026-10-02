@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -244,6 +246,9 @@ func runDeepOnBox(args []string) error {
 			return err
 		}
 	}
+	if err := prepareOnBoxWorktree(mission, worktree, true); err != nil {
+		return err
+	}
 	baseCommit, _ := git.repoHead(worktree)
 	state := deep.NewState(sessionID, mission, f.repoPath, worktree, deadline, landBefore, f.maxAttempts, now)
 	state.BaseCommit = baseCommit
@@ -302,6 +307,54 @@ func seedOnBoxActionPlan(seedPath, worktree, relativePath string) error {
 	if err := os.WriteFile(destination, data, 0o644); err != nil {
 		return fmt.Errorf("write on-box action-plan seed: %w", err)
 	}
+	return nil
+}
+
+// prepareOnBoxWorktree installs dependencies that are intentionally absent
+// from Git worktrees, then proves the mission's generic verifier can run there.
+// The base checkout is prepared during box provisioning, but production tasks
+// execute in this separate worktree.
+func prepareOnBoxWorktree(mission deep.Mission, worktree string, verifyGeneric bool) error {
+	lockfile := filepath.Join(worktree, "pnpm-lock.yaml")
+	if _, err := os.Stat(lockfile); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("inspect target pnpm lockfile: %w", err)
+	}
+	pnpm, err := lookPath("pnpm")
+	if err != nil {
+		return errors.New("pnpm lockfile is present, but pnpm is unavailable on the compute box")
+	}
+	fmt.Fprintln(os.Stdout, "installing frozen pnpm dependencies in the Deep Work worktree")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, pnpm, "install", "--frozen-lockfile")
+	cmd.Dir = worktree
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	runErr, quiesceErr := runQuiescedProcessGroup(cmd)
+	if quiesceErr != nil {
+		return fmt.Errorf("could not quiesce pnpm install process group in the Deep Work worktree: %w", quiesceErr)
+	}
+	if runErr != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("install frozen pnpm dependencies in the Deep Work worktree: %w", ctx.Err())
+		}
+		return fmt.Errorf("install frozen pnpm dependencies in the Deep Work worktree: %w", runErr)
+	}
+	if !verifyGeneric {
+		return nil
+	}
+	if strings.TrimSpace(mission.Verify) == "" {
+		return errors.New("pnpm target repository has no mission generic verifier to validate its worktree dependencies")
+	}
+	fmt.Fprintln(os.Stdout, "running the mission generic verifier in the Deep Work worktree")
+	result := runVerifyCmd(context.Background(), mission.Verify, worktree)
+	if !result.Passed() {
+		return fmt.Errorf("mission generic verifier did not pass in the Deep Work worktree before RUNNING (outcome %s)", result.Outcome)
+	}
+	fmt.Fprintln(os.Stdout, "Deep Work worktree dependencies and generic verifier are ready")
 	return nil
 }
 
@@ -480,6 +533,9 @@ func prepareDeepOnBoxResume(state *deep.DeepState, compute sessionstate.State, f
 		return false, fmt.Errorf("on-box repository is unavailable: %w", err)
 	}
 	if err := ensureDeepWorktree(git, false, state); err != nil {
+		return false, err
+	}
+	if err := prepareOnBoxWorktree(missionFromState(*state), state.WorktreePath, false); err != nil {
 		return false, err
 	}
 	if rebindNeeded {

@@ -42,6 +42,66 @@ func TestSeedOnBoxActionPlanRejectsOutsideWorktree(t *testing.T) {
 	}
 }
 
+func TestPrepareOnBoxWorktreeInstallsDependenciesBeforeGenericVerifier(t *testing.T) {
+	root := t.TempDir()
+	worktree := filepath.Join(root, "worktree")
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "pnpm-lock.yaml"), []byte("lockfileVersion: '9.0'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pnpm := filepath.Join(binDir, "pnpm")
+	installer := "#!/bin/sh\n[ \"$1\" = install ] && [ \"$2\" = --frozen-lockfile ] || exit 41\nmkdir -p node_modules/.bin\ntouch node_modules/.bin/vitest .install-complete\n"
+	if err := os.WriteFile(pnpm, []byte(installer), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	mission := deep.Mission{Verify: "test -f node_modules/.bin/vitest && test -f .install-complete"}
+	if err := prepareOnBoxWorktree(mission, worktree, true); err != nil {
+		t.Fatalf("prepare pnpm worktree: %v", err)
+	}
+}
+
+func TestPrepareOnBoxWorktreeStopsAfterInstallFailure(t *testing.T) {
+	root := t.TempDir()
+	worktree := filepath.Join(root, "worktree")
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "pnpm-lock.yaml"), []byte("lockfileVersion: '9.0'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pnpm := filepath.Join(binDir, "pnpm")
+	if err := os.WriteFile(pnpm, []byte("#!/bin/sh\nexit 17\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	mission := deep.Mission{Verify: "touch .verifier-ran"}
+	if err := prepareOnBoxWorktree(mission, worktree, true); err == nil {
+		t.Fatal("expected dependency installation to fail")
+	}
+	if _, err := os.Stat(filepath.Join(worktree, ".verifier-ran")); !os.IsNotExist(err) {
+		t.Fatalf("generic verifier ran after install failure: stat err=%v", err)
+	}
+}
+
+func TestPrepareOnBoxWorktreeSkipsProjectsWithoutPnpmLockfile(t *testing.T) {
+	if err := prepareOnBoxWorktree(deep.Mission{}, t.TempDir(), true); err != nil {
+		t.Fatalf("prepare project without pnpm lockfile: %v", err)
+	}
+}
+
 func TestAddActionPlanTaskAvoidsMissionIDCollision(t *testing.T) {
 	tasks := []deep.Task{
 		{ID: "STINT-PLAN-001", Objective: "mission task one"},

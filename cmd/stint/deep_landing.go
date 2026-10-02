@@ -375,7 +375,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 			if journaled {
 				invoke := func(ctx context.Context, command, _ string) verificationResult { return run(ctx, command) }
 				result, durableRun, err := c.runJournaledVerification(ctx, deep.VerificationPurposeMissionEnd, "", 0, "mission",
-					c.state.Verify, verificationSnapshot, 3*time.Minute, invoke)
+					c.state.Verify, verificationSnapshot, defaultMissionVerifyTime, invoke)
 				if err != nil {
 					return fmt.Errorf("final verification could not be durably completed: %w", err)
 				}

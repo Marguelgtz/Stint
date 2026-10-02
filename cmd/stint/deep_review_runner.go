@@ -38,6 +38,8 @@ func (c *deepCoordinator) runSemanticReview(ctx context.Context, taskID string) 
 		acceptance.Checkpoint.TreeSHA != checkpoint.TreeSHA {
 		return fmt.Errorf("task %s has no canonical accepted decision for the checkpoint selected for semantic review", taskID)
 	}
+	formatRetry := task.ReviewOutcome == deep.ReviewOutcomeUnresolved &&
+		task.ReviewCheckpointEventID == checkpointEventID && task.ReviewReason == semanticReviewProtocolFailureReason
 	preflightTimeout := c.effectiveReviewTimeout(c.now())
 	preflightCtx := ctx
 	cancelPreflight := func() {}
@@ -82,6 +84,9 @@ func (c *deepCoordinator) runSemanticReview(ctx context.Context, taskID string) 
 		} else {
 			prompt, contextSHA, preflightErr = semanticReviewPrompt(*c.state, *task, baseline, checkpoint, diff)
 		}
+	}
+	if preflightErr == nil && formatRetry {
+		prompt += "\nFORMAT RETRY: the prior independent review response did not satisfy the result-frame protocol. Re-evaluate this same evidence in this fresh context and return exactly one complete result frame using the required start marker, JSON object, and end marker. Do not add fields or prose inside the frame."
 	}
 	if preflightErr == nil && preflightCtx.Err() != nil {
 		preflightErr = preflightCtx.Err()
@@ -205,6 +210,7 @@ func (c *deepCoordinator) runSemanticReview(ctx context.Context, taskID string) 
 		cycle.EndedAt = cycle.StartedAt
 	}
 	cycle.DurationMilliseconds = cycle.EndedAt.Sub(cycle.StartedAt).Milliseconds()
+	retryProtocol := false
 	switch {
 	case errors.Is(executionErr, errExecutorQuiescenceUnconfirmed):
 		cycle.Outcome = deep.ReviewOutcomeUnknown
@@ -223,7 +229,12 @@ func (c *deepCoordinator) runSemanticReview(ctx context.Context, taskID string) 
 		outcome, reason, findings, parseErr := parseSemanticReviewResponse(result.outputText)
 		if parseErr != nil {
 			cycle.Outcome = deep.ReviewOutcomeUnresolved
-			cycle.Reason = "semantic reviewer output did not match the strict structured-result protocol"
+			if formatRetry {
+				cycle.Reason = semanticReviewProtocolRetryExhaustedReason
+			} else {
+				cycle.Reason = semanticReviewProtocolFailureReason
+				retryProtocol = true
+			}
 		} else {
 			cycle.Outcome, cycle.Reason, cycle.Findings = outcome, reason, findings
 		}
@@ -234,6 +245,7 @@ func (c *deepCoordinator) runSemanticReview(ctx context.Context, taskID string) 
 			cycle.Outcome = deep.ReviewOutcomeUnresolved
 			cycle.QuiescenceUnconfirmed = false
 			cycle.Reason = "product repository subject changed or became unavailable during semantic review"
+			retryProtocol = false
 		}
 	}
 	if err := deep.ValidateReviewCycleResult(cycle); err != nil {
@@ -241,12 +253,17 @@ func (c *deepCoordinator) runSemanticReview(ctx context.Context, taskID string) 
 		cycle.Reason = "semantic reviewer result did not satisfy the bounded structured-evidence contract"
 		cycle.QuiescenceUnconfirmed = false
 		cycle.Findings = nil
+		retryProtocol = false
 	}
 	if err := deep.CompleteReviewCycle(c.stateDir, c.state, cycle); err != nil {
 		return fmt.Errorf("persist semantic review result for task %s: %w", taskID, err)
 	}
 	c.incident(deep.IncidentVerifyRun, taskID, fmt.Sprintf("semantic review %s outcome=%s findings=%d", cycle.ID, cycle.Outcome, len(cycle.Findings)))
 	c.logf("task %s semantic review %s (%d findings)", taskID, cycle.Outcome, len(cycle.Findings))
+	if retryProtocol && ctx.Err() == nil {
+		c.logf("task %s semantic reviewer returned an invalid result frame; retrying once in a fresh no-tools context", taskID)
+		return c.runSemanticReview(ctx, taskID)
+	}
 	return nil
 }
 

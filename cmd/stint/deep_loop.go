@@ -1052,7 +1052,10 @@ func pendingSemanticReview(task deep.Task, state deep.DeepState) bool {
 		task.AcceptanceCheckOutcome != deep.AcceptanceCheckPassed || task.AcceptanceCheckpointEventID == "" {
 		return false
 	}
-	return task.ReviewCycleID == "" || task.ReviewCheckpointEventID != task.AcceptanceCheckpointEventID
+	if task.ReviewCycleID == "" || task.ReviewCheckpointEventID != task.AcceptanceCheckpointEventID {
+		return true
+	}
+	return task.ReviewOutcome == deep.ReviewOutcomeUnresolved && task.ReviewReason == semanticReviewProtocolFailureReason
 }
 
 func taskHasPendingAcceptanceProjection(task deep.Task, contractVersion int) bool {

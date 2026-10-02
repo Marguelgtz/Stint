@@ -19,6 +19,7 @@ For normal use, let Deep Work own the transition from no compute to detached exe
 ```sh
 ./bin/stint deep start \
   --hours 3 \
+  --minimum-remaining 2h \
   --repo ~/Documents/projects/spark \
   --mission ~/Documents/projects/Stint/docs/missions/spark-mcp-graduation.md \
   --runtime ninfer \
@@ -39,13 +40,14 @@ The existing lifecycle remains available independently for interactive inference
 
 ```sh
 ./bin/stint deep start \
+  --minimum-remaining 2h \
   --repo ~/Documents/projects/spark \
   --mission ~/Documents/projects/Stint/docs/missions/spark-mcp-graduation.md
 ```
 
 Supplying compute-provisioning flags while a READY session already exists fails closed instead of silently ignoring the requested cost/runtime contract. Direct calls to the shell launcher remain reserved for advanced diagnostics and recovery.
 
-Before a new rental is requested, `stint deep start` validates the repo, mission, GitHub policy/token, and optional R2 configuration. After compute reaches READY and before transfer, it prints the repo `HEAD`, origin and clean-tree state; mission and GitHub policy; compute identity, GPU/runtime, remaining time and deadline; clients, model, task timeout, maximum attempts, R2 status, and estimated costs when available. The standard compute lifecycle validates the Stint SSH and Vast credentials. Deep Work stages only the immutable committed `HEAD` and a validated mission snapshot, without mutating the operator checkout.
+`--minimum-remaining` is required. It specifies the minimum time that must remain before the GPU deadline when the on-box supervisor starts; choose a value that covers mission work, final verification, and evidence export. Stint checks the READY session before connecting and repeats the check after bootstrap before starting the supervisor. Before a new rental is requested, `stint deep start` validates the repo, mission, GitHub policy/token, and optional R2 configuration. After compute reaches READY and before transfer, it prints the repo `HEAD`, origin and clean-tree state; mission and GitHub policy; compute identity, GPU/runtime, remaining time and deadline; required minimum remaining time; clients, model, task timeout, maximum attempts, R2 status, and estimated costs when available. The standard compute lifecycle validates the Stint SSH and Vast credentials. Deep Work stages only the immutable committed `HEAD` and a validated mission snapshot, without mutating the operator checkout.
 
 The CLI passes the Stint-managed host, port, key and watchdog credential path to the existing launcher. It returns only after both the detached supervisor process marker and durable `RUNNING` record match the READY session deadline. The supervisor continues after the launcher and dashboard SSH connection close. `stint deep dash` routes to the GPU's existing Deep Dashboard using the saved SSH identity.
 

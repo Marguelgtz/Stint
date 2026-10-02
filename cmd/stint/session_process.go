@@ -11,7 +11,6 @@ import (
 	"syscall"
 
 	"github.com/Marguelgtz/Stint/internal/config"
-	localenv "github.com/Marguelgtz/Stint/internal/local"
 	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
@@ -23,6 +22,8 @@ func sessionTunnelArgs(paths config.Paths, state sessionstate.State) []string {
 		"-i", paths.SSHPrivateKey,
 		"-p", strconv.Itoa(state.SSHPort),
 		"-o", "BatchMode=yes",
+		"-o", "IdentitiesOnly=yes",
+		"-o", "ControlMaster=no",
 		"-o", "ExitOnForwardFailure=yes",
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=3",
@@ -93,7 +94,7 @@ func sessionTunnelRunning(paths config.Paths, state sessionstate.State) bool {
 	if state.TunnelPID <= 0 || state.SSHHost == "" || state.SSHPort <= 0 {
 		return false
 	}
-	ssh, err := localenv.SSHExecutable()
+	ssh, err := exec.LookPath("ssh")
 	if err != nil {
 		return false
 	}
@@ -104,7 +105,7 @@ func stopSessionTunnel(paths config.Paths, state sessionstate.State) (bool, erro
 	if state.TunnelPID <= 0 || state.SSHHost == "" || state.SSHPort <= 0 {
 		return false, nil
 	}
-	ssh, err := localenv.SSHExecutable()
+	ssh, err := exec.LookPath("ssh")
 	if err != nil || !processCommandMatches(state.TunnelPID, ssh, sessionTunnelArgs(paths, state)) {
 		return false, nil
 	}
@@ -124,11 +125,14 @@ func stopSessionTunnel(paths config.Paths, state sessionstate.State) (bool, erro
 }
 
 func startTunnelProcess(paths config.Paths, state sessionstate.State, log *os.File) (*exec.Cmd, error) {
-	ssh, err := localenv.SSHExecutable()
+	ssh, err := exec.LookPath("ssh")
 	if err != nil {
 		return nil, err
 	}
 	cmd := exec.Command(ssh, sessionTunnelArgs(paths, state)...)
+	// The tunnel outlives the CLI process. Give it its own session so closing
+	// the invoking terminal or process group cannot take the forward down.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdout = log
 	cmd.Stderr = log
 	if err := cmd.Start(); err != nil {

@@ -261,7 +261,12 @@ def commit_tree(worktree: str, commit: str) -> str:
     return git(worktree, "rev-parse", f"{commit}^{{tree}}")
 
 
-def configured_base_commit(worktree: str, base: str) -> str:
+def configured_base_commit(worktree: str, base: str, cfg: dict) -> str:
+    try:
+        git(worktree, "check-ref-format", "--branch", base)
+    except RuntimeError as exc:
+        raise PermanentPublicationError("configured publication base is not a valid branch name") from exc
+
     for ref in (base, f"origin/{base}", f"refs/remotes/origin/{base}"):
         try:
             commit = git(worktree, "rev-parse", f"{ref}^{{commit}}")
@@ -269,6 +274,28 @@ def configured_base_commit(worktree: str, base: str) -> str:
                 return commit
         except RuntimeError:
             continue
+
+    # A staged target checkout may contain only the pinned HEAD commit and no
+    # refs for the mission's PR base. Fetch that exact branch into the shared
+    # remote-tracking namespace before deciding that publication is impossible.
+    # The token is supplied to Git through the existing private askpass path.
+    env, askpass = askpass_env(cfg)
+    try:
+        refspec = f"refs/heads/{base}:refs/remotes/origin/{base}"
+        git(worktree, "fetch", "--no-tags", cfg["git_url"], refspec, env=env)
+    finally:
+        try:
+            os.remove(askpass)
+        except FileNotFoundError:
+            pass
+
+    ref = f"refs/remotes/origin/{base}"
+    try:
+        commit = git(worktree, "rev-parse", f"{ref}^{{commit}}")
+        if re.fullmatch(r"[0-9a-f]{40}", commit):
+            return commit
+    except RuntimeError:
+        pass
     raise RuntimeError(f"configured publication base {base!r} is not available as a local Git ref")
 
 
@@ -530,7 +557,7 @@ def sync(state_dir: str) -> None:
         if old_event and old_event not in selected_event_ids:
             raise PermanentPublicationError(f"published checkpoint event {old_event} is no longer selected by durable acceptance")
 
-    previous_commit = configured_base_commit(worktree, cfg["base"]) if ordered else ""
+    previous_commit = configured_base_commit(worktree, cfg["base"], cfg) if ordered else ""
     previous_tree = commit_tree(worktree, previous_commit) if previous_commit else ""
     for row in ordered:
         task_id = str(row.get("taskId", ""))

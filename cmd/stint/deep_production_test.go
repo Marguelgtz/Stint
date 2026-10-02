@@ -119,7 +119,8 @@ func runFixtureCommand(t *testing.T, dir string, name string, args ...string) st
 func productionFlagsFor(fixture deepProductionFixture) *deepProductionStartFlags {
 	return &deepProductionStartFlags{
 		missionPath: fixture.mission, repoPath: fixture.repo, githubToken: fixture.tokenPath,
-		taskTimeout: 15 * time.Minute, maxAttempts: 2, provider: "custom:qwen-stint-{reasoning}",
+		minRemaining: time.Hour,
+		taskTimeout:  15 * time.Minute, maxAttempts: 2, provider: "custom:qwen-stint-{reasoning}",
 		model: "qwen3.8-27b", reasoning: "medium",
 	}
 }
@@ -159,7 +160,8 @@ func TestDeepProductionStartBuildsIdentityContractAndWaitsForDurableRunning(t *t
 			"STINT_BOX_HOST": "203.0.113.25", "STINT_BOX_PORT": "22110", "STINT_BOX_KEY": fixture.paths.SSHPrivateKey,
 			"STINT_INSTANCE_ID": "49812", "STINT_ONBOX_CLIENTS": "2", "STINT_ONBOX_MODEL": "qwen3.8-27b",
 			"STINT_ONBOX_TASK_TIMEOUT": "15m0s", "STINT_ONBOX_MAX_ATTEMPTS": "2",
-			"STINT_GITHUB_REPOSITORY": "spark-opp/spark", "STINT_GITHUB_BASE": "main",
+			"STINT_ONBOX_MIN_REMAINING_SECONDS": "3600",
+			"STINT_GITHUB_REPOSITORY":           "spark-opp/spark", "STINT_GITHUB_BASE": "main",
 			"STINT_GITHUB_MODE": "engineering", "STINT_GITHUB_APPROVAL": "internal",
 			"STINT_VAST_CREDENTIALS": fixture.paths.CredentialsFile,
 			"STINT_SOURCE_HEAD":      head, "STINT_SOURCE_ORIGIN": "https://github.com/spark-opp/spark.git",
@@ -188,11 +190,11 @@ func TestDeepProductionStartBuildsIdentityContractAndWaitsForDurableRunning(t *t
 		return []byte("ONBOX_SUPERVISOR_RUNNING pid=321\n{" +
 			`"status":"RUNNING","session":"deep-20260924-120000","deadline":"` + fixture.deadline.Format(time.RFC3339) + `"}` + "\n"), nil
 	}
-	args := []string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--task-timeout", "15m", "--max-attempts", "2"}
+	args := []string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--minimum-remaining", "1h", "--task-timeout", "15m", "--max-attempts", "2"}
 	if err := runDeepStartWith(args, fixture.paths, fixture.launcherPath, fixture.stintBinary, runner, &stdout, &stderr, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "Source commit") || !strings.Contains(stdout.String(), "Remaining cost") || !strings.Contains(stdout.String(), "is detached and RUNNING") {
+	if !strings.Contains(stdout.String(), "Source commit") || !strings.Contains(stdout.String(), "Minimum at launch 1h0m0s") || !strings.Contains(stdout.String(), "Remaining cost") || !strings.Contains(stdout.String(), "is detached and RUNNING") {
 		t.Fatalf("run contract/confirmation missing from stdout:\n%s", stdout.String())
 	}
 	if _, err := os.Stat(missionSnapshot); !errors.Is(err, os.ErrNotExist) {
@@ -210,6 +212,40 @@ func TestDeepProductionStartBuildsIdentityContractAndWaitsForDurableRunning(t *t
 	}
 }
 
+func TestDeepStartRejectsInsufficientMinimumRemainingBeforeLauncher(t *testing.T) {
+	fixture := newDeepProductionFixture(t)
+	called := false
+	err := runDeepStartWith(
+		[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--minimum-remaining", "4h"},
+		fixture.paths, fixture.launcherPath, fixture.stintBinary,
+		func(context.Context, string, []string, io.Writer, io.Writer) ([]byte, error) {
+			called = true
+			return nil, nil
+		},
+		new(bytes.Buffer), new(bytes.Buffer), time.Now().UTC(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "below the required --minimum-remaining 4h0m0s") {
+		t.Fatalf("error = %v, want insufficient remaining-time failure", err)
+	}
+	if called {
+		t.Fatal("launcher ran despite insufficient useful compute time")
+	}
+}
+
+func TestDeepStartRequiresPositiveMinimumRemaining(t *testing.T) {
+	fixture := newDeepProductionFixture(t)
+	for _, value := range []string{"0s", "-1h"} {
+		err := runDeepStartWith(
+			[]string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--minimum-remaining", value},
+			fixture.paths, fixture.launcherPath, fixture.stintBinary, nil,
+			new(bytes.Buffer), new(bytes.Buffer), time.Now().UTC(),
+		)
+		if err == nil || !strings.Contains(err.Error(), "--minimum-remaining") {
+			t.Errorf("minimum remaining %q error = %v", value, err)
+		}
+	}
+}
+
 func TestDeepStartHelpDoesNotRequireProductionLauncher(t *testing.T) {
 	for _, args := range [][]string{{"--help"}, {"-h"}} {
 		var runErr error
@@ -219,7 +255,7 @@ func TestDeepStartHelpDoesNotRequireProductionLauncher(t *testing.T) {
 		if runErr != nil {
 			t.Fatalf("runDeepStartWith(%v) error = %v", args, runErr)
 		}
-		for _, want := range []string{"STINT DEEP", "--repo", "--mission", "--task-timeout"} {
+		for _, want := range []string{"STINT DEEP", "--repo", "--mission", "--minimum-remaining", "--task-timeout"} {
 			if !strings.Contains(output, want) {
 				t.Errorf("help for %v missing %q:\n%s", args, want, output)
 			}
@@ -294,7 +330,7 @@ func TestDeepProductionStartRejectsInvalidLocalStateBeforeLauncher(t *testing.T)
 				called = true
 				return nil, nil
 			}
-			args := []string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath}
+			args := []string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--minimum-remaining", "1h"}
 			err := runDeepStartWith(args, fixture.paths, fixture.launcherPath, fixture.stintBinary, runner, new(bytes.Buffer), new(bytes.Buffer), time.Now().UTC())
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("prepare error = %v, want substring %q", err, tt.want)
@@ -331,7 +367,7 @@ func TestDeepProductionStartRejectsMissingInvalidMissionAndInvalidRepository(t *
 				called = true
 				return nil, nil
 			}
-			args := []string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath}
+			args := []string{"--repo", fixture.repo, "--mission", fixture.mission, "--github-token-file", fixture.tokenPath, "--minimum-remaining", "1h"}
 			err := runDeepStartWith(args, fixture.paths, fixture.launcherPath, fixture.stintBinary, runner, new(bytes.Buffer), new(bytes.Buffer), time.Now().UTC())
 			if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tt.want)) {
 				t.Fatalf("prepare error = %v, want substring %q", err, tt.want)
