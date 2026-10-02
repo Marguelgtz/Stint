@@ -29,7 +29,8 @@ func BuildTaskPrompt(m Mission, t Task, attempt int, repo RepoSummary) string {
 // verify command remain authoritative.
 func BuildTaskPromptWithActionPlan(m Mission, t Task, attempt int, repo RepoSummary, actionPlanPath string) string {
 	var b strings.Builder
-	b.WriteString("You are resuming a bounded Deep Work mission. Work only inside your working directory. ")
+	b.WriteString("You are resuming a bounded Deep Work mission. Keep repository changes inside your working directory. ")
+	b.WriteString("Perform worker-local setup outside it only when the mission explicitly permits that setup. ")
 	b.WriteString("Never push, open pull requests, or run destructive commands. ")
 	b.WriteString("When you finish, state exactly which acceptance criteria you met, with the evidence you checked.\n\n")
 
