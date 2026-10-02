@@ -507,7 +507,8 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 	outcomeState.LandingCommit = head
 	outcomeState.LandingCheckpointTreeSHA = checkpointTree
 	outcomeState.Phase = deep.PhaseLanded
-	outcomeState.LandedAt = &now
+	landedAt := c.now()
+	outcomeState.LandedAt = &landedAt
 	outcome := deep.DetermineMissionOutcome(outcomeState)
 	landedState := *c.state
 	landedState.MissionOutcome = outcome
@@ -517,7 +518,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 		if complete == nil {
 			complete = deep.CompleteLanding
 		}
-		if err := complete(c.stateDir, &landedState, head, checkpointTree, now); err != nil {
+		if err := complete(c.stateDir, &landedState, head, checkpointTree, landedAt); err != nil {
 			return fmt.Errorf("persist landed state and checkpoint SHA: %w", err)
 		}
 		*c.state = landedState
@@ -525,7 +526,7 @@ func (c *deepCoordinator) land(ctx context.Context, reason string) error {
 		landedState.LandingCommit = head
 		landedState.LandingCheckpointTreeSHA = checkpointTree
 		landedState.Phase = deep.PhaseLanded
-		landedState.LandedAt = &now
+		landedState.LandedAt = &landedAt
 		landedState.MissionOutcome = outcome
 		*c.state = landedState
 		if err := c.save(); err != nil {
