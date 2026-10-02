@@ -58,6 +58,43 @@ func TestJournaledFinalVerificationIsBoundAndReusedAfterLandingInterruption(t *t
 	}
 }
 
+func TestJournaledLandedEventTimestampFollowsFinalVerification(t *testing.T) {
+	env := newTestEnv(t, nil, 2)
+	beginJournaledTestRun(t, env)
+	env.coord.finalVerify = func(_ context.Context, command string) verificationResult {
+		env.clock.advance(10 * time.Second)
+		return verificationResult{Command: command, Outcome: verificationPassed, HasExitCode: true, ExitCode: 0, Output: "final checks passed"}
+	}
+
+	if err := env.coord.land(context.Background(), "landed timestamp fixture"); err != nil {
+		t.Fatalf("land run: %v", err)
+	}
+	events, err := deep.ReadRunEvents(env.coord.stateDir, env.state.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finalVerification *deep.VerificationRun
+	var landed *deep.RunEvent
+	for i := range events {
+		event := &events[i]
+		if event.Type == deep.RunEventVerificationResult && event.VerificationRun != nil && event.VerificationRun.Purpose == deep.VerificationPurposeMissionEnd {
+			finalVerification = event.VerificationRun
+		}
+		if event.Type == deep.RunEventLanded {
+			landed = event
+		}
+	}
+	if finalVerification == nil || landed == nil {
+		t.Fatalf("missing final verification or landing event: %+v", events)
+	}
+	if landed.OccurredAt.Before(finalVerification.EndedAt) {
+		t.Fatalf("landed event time %s precedes completed final verification %s", landed.OccurredAt, finalVerification.EndedAt)
+	}
+	if env.state.LandedAt == nil || !env.state.LandedAt.Equal(landed.OccurredAt) {
+		t.Fatalf("landing projection time=%v does not match event time %s", env.state.LandedAt, landed.OccurredAt)
+	}
+}
+
 func TestJournaledFinalVerificationQuiescenceFailureIsDurableAndBlocksCheckpoint(t *testing.T) {
 	env := newTestEnv(t, nil, 2)
 	beginJournaledTestRun(t, env)
