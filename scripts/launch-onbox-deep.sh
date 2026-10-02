@@ -121,6 +121,31 @@ retry_step() {
   done
   return "$rc"
 }
+retry_connection_step() {
+  local label="$1" remote_command="$2" attempt rc error_file
+  for attempt in $(seq 1 "$TRANSFER_ATTEMPTS"); do
+    error_file="$(mktemp)"
+    chmod 0600 "$error_file"
+    if "${SSH[@]}" "$remote_command" 2>"$error_file"; then
+      cat "$error_file" >&2
+      rm -f "$error_file"
+      return 0
+    else
+      rc=$?
+    fi
+    cat "$error_file" >&2
+    # These diagnostics establish that no remote command started. Do not
+    # replay a failed qualification or a connection lost during execution.
+    if [ "$rc" -ne 255 ] || ! grep -Eq '^ssh: connect to host .+ port [0-9]+: (Connection timed out|Connection refused|Network is unreachable|No route to host)' "$error_file"; then
+      rm -f "$error_file"
+      return "$rc"
+    fi
+    rm -f "$error_file"
+    echo "ONBOX_LAUNCH_RETRY $label connection attempt=$attempt/$TRANSFER_ATTEMPTS rc=$rc" >&2
+    [ "$attempt" -eq "$TRANSFER_ATTEMPTS" ] || sleep "$TRANSFER_RETRY_SECONDS"
+  done
+  return "$rc"
+}
 cleanup_local() {
   [ -z "$TOKEN_TMP" ] || rm -f "$TOKEN_TMP"
   [ -z "$REPO_STAGE" ] || rm -rf "$REPO_STAGE"
@@ -512,7 +537,7 @@ retry_step "install phase routes and compression" "${SSH[@]}" "$remote_phase_set
 remote_box_smoke=(env "STINT_PHASED=1" "HERMES_MODEL=$ONBOX_MODEL" \
   "PHASING_DIR=$PHASING_DIR" timeout "${STINT_BOX_SMOKE_TIMEOUT:-12m}" "$REMOTE_BOX_SMOKE")
 remote_box_smoke_cmd="$(printf '%q ' "${remote_box_smoke[@]}")"
-"${SSH[@]}" "$remote_box_smoke_cmd" || \
+retry_connection_step "Hermes route smoke" "$remote_box_smoke_cmd" || \
   die "Hermes phase routes or compression configuration failed qualification"
 remote_admission_canary=(env \
   "STINT_ONBOX_BIN=$REMOTE_BIN" \
@@ -522,13 +547,13 @@ remote_admission_canary=(env \
   "PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/root/.local/bin" \
   timeout "${STINT_ONBOX_ADMISSION_CANARY_TIMEOUT:-12m}" "$REMOTE_ADMISSION_CANARY")
 remote_admission_canary_cmd="$(printf '%q ' "${remote_admission_canary[@]}")"
-"${SSH[@]}" "$remote_admission_canary_cmd" || \
+retry_connection_step "journaled admission canary" "$remote_admission_canary_cmd" || \
   die "journaled Deep Work admission canary failed before the detached supervisor could start"
 if [ "$CLIENTS" -eq 2 ]; then
   remote_lane_smoke=(env "HERMES_MODEL=$ONBOX_MODEL" "PHASING_DIR=$PHASING_DIR" \
     timeout "${STINT_LANE_SMOKE_TIMEOUT:-8m}" "$REMOTE_LANE_SMOKE")
   remote_lane_smoke_cmd="$(printf '%q ' "${remote_lane_smoke[@]}")"
-  "${SSH[@]}" "$remote_lane_smoke_cmd" || \
+  retry_connection_step "two-lane concurrency smoke" "$remote_lane_smoke_cmd" || \
     die "two-lane xhigh/medium concurrency qualification failed"
 fi
 if [ "$RESUME" = 0 ] && [ -n "$ACTION_PLAN_LOCAL" ]; then
