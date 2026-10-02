@@ -124,7 +124,7 @@ tree = subprocess.check_output(["git", "-C", str(worktree), "rev-parse", "HEAD^{
 if state.get("landingCheckpointTreeSha") != tree or tasks[0].get("checkpointTreeSha") != tree:
     raise SystemExit("ADMISSION_CANARY_FAIL verified, task, and landing trees do not match")
 marker = worktree / "admission-canary.txt"
-if not marker.is_file() or marker.read_text(encoding="utf-8") != "STINT_ADMISSION_OK\n":
+if not marker.is_file() or marker.read_bytes() != b"STINT_ADMISSION_OK\n":
     raise SystemExit("ADMISSION_CANARY_FAIL expected Git-visible marker is missing")
 PY
 
