@@ -36,12 +36,31 @@ pub struct Task {
     pub status: String,
     #[serde(default)]
     pub attempts: u32,
+    #[serde(default)]
+    pub acceptance: String,
+    #[serde(default)]
+    pub verify: String,
+    #[serde(default)]
+    pub blocker: String,
+    #[serde(default)]
+    pub last_result: String,
+    #[serde(default)]
+    pub verification_command: String,
+    #[serde(default)]
+    pub verification_result: String,
+    #[serde(default)]
+    pub verification_output: String,
 }
 
 pub fn load_latest() -> Result<DeepState, String> {
     let state_home = env::var_os("XDG_STATE_HOME")
+        .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .or_else(|| {
+            env::var_os("HOME")
+                .filter(|home| !home.is_empty())
+                .map(|home| PathBuf::from(home).join(".local/state"))
+        })
         .ok_or_else(|| "HOME and XDG_STATE_HOME are unset".to_string())?;
     let deep_dir = state_home.join("stint/deep");
     let latest_path = deep_dir.join("latest");
