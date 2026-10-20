@@ -1,5 +1,6 @@
 mod state;
 mod interactive;
+mod deep_run;
 
 use std::time::Duration;
 
@@ -7,9 +8,17 @@ use gpui_kit::component::{h_flex, v_flex, Theme, ThemeMode, TitleBar};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use interactive::{DeadlinePreview, Snapshot, StartPreview};
+use deep_run::{MissionPreview, RunRecord};
 use state::{DeepState, Task};
 
 actions!(stint_ui, [Quit]);
+
+macro_rules! action_button {
+    ($label:expr, $handler:expr) => {
+        div().id(concat!("action-", $label)).px_3().py_2().rounded_md().cursor_pointer().bg(rgb(0x2b3543)).text_sm()
+            .on_click($handler).child($label)
+    };
+}
 
 fn main() {
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(|cx| {
@@ -53,6 +62,19 @@ struct RootView {
     operation_busy: bool,
     operation_label: Option<String>,
     operation_message: Option<(bool, String)>,
+    deep_run_tab: bool,
+    run_history: Vec<RunRecord>,
+    selected_run: Option<String>,
+    run_history_error: Option<String>,
+    mission_path: String,
+    repo_path: String,
+    mission_preview: Option<MissionPreview>,
+    run_hours: f64,
+    run_busy: bool,
+    run_message: Option<(bool, String)>,
+    pending_run: Option<StartPreview>,
+    confirm_stop: bool,
+    confirm_resume: Option<String>,
 }
 
 enum PendingAction {
@@ -76,15 +98,41 @@ impl RootView {
             operation_busy: false,
             operation_label: None,
             operation_message: None,
+            deep_run_tab: false,
+            run_history: Vec::new(),
+            selected_run: None,
+            run_history_error: None,
+            mission_path: String::new(),
+            repo_path: String::new(),
+            mission_preview: None,
+            run_hours: 1.0,
+            run_busy: false,
+            run_message: None,
+            pending_run: None,
+            confirm_stop: false,
+            confirm_resume: None,
         };
         view.apply_load(state::load_latest());
         view
     }
 
+    fn apply_run_history(&mut self, result: Result<Vec<RunRecord>, String>) {
+        match result {
+            Ok(history) => {
+                if self.selected_run.as_ref().is_none_or(|id| !history.iter().any(|r| &r.state.session_id == id)) {
+                    self.selected_run = history.iter().find(|r| r.latest).map(|r| r.state.session_id.clone());
+                }
+                self.run_history = history;
+                self.run_history_error = None;
+            }
+            Err(error) => { self.run_history.clear(); self.selected_run = None; self.run_history_error = Some(error); },
+        }
+    }
+
     fn start_refresh(&mut self, cx: &mut Context<Self>) {
         let view = cx.entity().downgrade();
         cx.spawn(async move |_, cx| loop {
-            smol::Timer::after(Duration::from_secs(2)).await;
+            smol::Timer::after(Duration::from_secs(5)).await;
             let result = smol::unblock(state::load_latest).await;
             if view
                 .update(cx, |this, cx| {
@@ -127,6 +175,111 @@ impl RootView {
             }
         })
         .detach();
+
+        let view = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            let result = smol::unblock(deep_run::list).await;
+            if view.update(cx, |this, cx| { this.apply_run_history(result); cx.notify(); }).is_err() { return; }
+            loop {
+                smol::Timer::after(Duration::from_secs(5)).await;
+                let result = smol::unblock(deep_run::list).await;
+                if view.update(cx, |this, cx| { this.apply_run_history(result); cx.notify(); }).is_err() { break; }
+            }
+        }).detach();
+    }
+
+    fn pick_path(&mut self, mission: bool, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: mission,
+            directories: !mission,
+            multiple: false,
+            prompt: Some(if mission { "Choose a Deep Work mission".into() } else { "Choose a clean target repository".into() }),
+        });
+        let view = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            let result = receiver.await;
+            let _ = view.update(cx, |this, cx| {
+                if let Ok(Ok(Some(paths))) = result {
+                    if let Some(path) = paths.first() {
+                        if mission { this.mission_path = path.display().to_string(); this.mission_preview = None; }
+                        else { this.repo_path = path.display().to_string(); this.mission_preview = None; }
+                    }
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    fn preview_mission(&mut self, cx: &mut Context<Self>) {
+        let mission = self.mission_path.clone();
+        let repo = self.repo_path.clone();
+        self.run_busy = true;
+        self.run_message = None;
+        let view = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            let result = smol::unblock(move || deep_run::preview(&mission, &repo)).await;
+            let _ = view.update(cx, |this, cx| {
+                this.run_busy = false;
+                match result { Ok(preview) => { this.mission_preview = Some(preview); this.run_message = Some((true, "Mission and repository validated".to_string())); }, Err(error) => { this.mission_preview = None; this.run_message = Some((false, error)); } }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    fn request_deep_start(&mut self, cx: &mut Context<Self>) {
+        if self.run_busy || self.mission_preview.is_none() { return; }
+        self.run_busy = true;
+        self.run_message = Some((true, "Checking compute session and offers…".to_string()));
+        let hours = self.run_hours;
+        let view = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            let result = match smol::unblock(move || interactive::load_status(false)).await {
+                Ok(snapshot) if snapshot.active && snapshot.session.status == "READY" => Ok((true, None)),
+                _ => smol::unblock(move || interactive::preview_start(hours)).await.map(|preview| (false, Some(preview))),
+            };
+            let _ = view.update(cx, |this, cx| {
+                this.run_busy = false;
+                match result {
+                    Ok((true, _)) => this.pending_run = Some(StartPreview { hours, session_max_cost_usd: 0.0, max_hourly_usd: 0.0, model: String::new(), endpoint: String::new(), fallback_attempts: 0, selected: interactive::StartCandidate { offer_id: "existing-ready-session".into(), gpu_model: String::new(), location: String::new(), hourly_usd: 0.0, estimated_session_usd: 0.0, runtime: String::new(), context_tokens: 0, within_cost_ceiling: true }, candidates: vec![] }),
+                    Ok((false, Some(preview))) => this.pending_run = Some(preview),
+                    _ => this.run_message = Some((false, result.err().unwrap_or_else(|| "Unable to preview compute offer".into()))),
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    fn confirm_deep_start(&mut self, cx: &mut Context<Self>) {
+        let Some(review) = self.pending_run.take() else { return; };
+        let mission = self.mission_path.clone();
+        let repo = self.repo_path.clone();
+        let provision = review.selected.offer_id != "existing-ready-session";
+        self.run_busy = true;
+        self.run_message = Some((true, "Starting Deep Work…".to_string()));
+        let view = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            let result = smol::unblock(move || {
+                if provision { interactive::start(&review)?; }
+                deep_run::start(&mission, &repo, if provision { Some(review.hours) } else { None })
+            }).await;
+            let _ = view.update(cx, |this, cx| {
+                this.run_busy = false;
+                match result { Ok(output) => { this.run_message = Some((true, if output.is_empty() { "Deep Work launch accepted".into() } else { output })); }, Err(error) => this.run_message = Some((false, error)) }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    fn run_lifecycle_action(&mut self, resume: Option<String>, cx: &mut Context<Self>) {
+        let action = resume.clone();
+        self.confirm_stop = false;
+        self.confirm_resume = None;
+        self.run_busy = true;
+        let view = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            let result = smol::unblock(move || match action { Some(id) => deep_run::resume(&id), None => deep_run::stop() }).await;
+            let _ = view.update(cx, |this, cx| { this.run_busy = false; this.run_message = Some(match result { Ok(output) => (true, output), Err(error) => (false, error) }); cx.notify(); });
+        }).detach();
     }
 
     fn request_start_preview(&mut self, cx: &mut Context<Self>) {
@@ -282,7 +435,7 @@ impl RootView {
                     .rounded_md()
                     .bg(rgb(0x252a34))
                     .text_sm()
-                    .child(if self.interactive_tab { "interactive controls" } else { "Deep Work read only" }),
+                    .child(if self.deep_run_tab { "Deep Run controls" } else if self.interactive_tab { "interactive controls" } else { "Deep Work read only" }),
             )
             .child(
                 div()
@@ -304,10 +457,11 @@ impl RootView {
                     .py_2()
                     .rounded_md()
                     .cursor_pointer()
-                    .bg(if self.interactive_tab { rgb(0x20252e) } else { rgb(0x354256) })
+                            .bg(if !self.interactive_tab && !self.deep_run_tab { rgb(0x354256) } else { rgb(0x20252e) })
                     .text_sm()
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.interactive_tab = false;
+                        this.deep_run_tab = false;
                         cx.notify();
                     }))
                     .child("Deep Work"),
@@ -323,10 +477,107 @@ impl RootView {
                     .text_sm()
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.interactive_tab = true;
+                        this.deep_run_tab = false;
                         cx.notify();
                     }))
                     .child("Interactive"),
             )
+            .child(
+                div()
+                    .id("tab-deep-run")
+                    .px_3().py_2().rounded_md().cursor_pointer()
+                    .bg(if self.deep_run_tab { rgb(0x354256) } else { rgb(0x20252e) })
+                    .text_sm()
+                    .on_click(cx.listener(|this, _, _, cx| { this.interactive_tab = false; this.deep_run_tab = true; cx.notify(); }))
+                    .child("Deep Run"),
+            )
+    }
+
+    fn deep_run_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut panel = v_flex().id("deep-run-content").overflow_y_scroll().w_full().flex_1().gap_4()
+            .child(h_flex().items_center().child(div().text_xl().font_weight(FontWeight::BOLD).child("Create and monitor Deep Work"))
+                .child(div().ml_auto().text_sm().text_color(rgb(0x8993a4)).child(if self.run_busy { "Working…" } else { "State refreshes every 5 seconds" })));
+
+        let mut launch = v_flex().w_full().gap_3().p_4().border_1().border_color(rgb(0x2d333e)).rounded_lg().bg(rgb(0x191d24))
+            .child(div().text_base().font_weight(FontWeight::BOLD).child("New run"));
+        launch = launch.child(h_flex().items_center().gap_2()
+            .child(div().flex_1().text_sm().text_color(rgb(0x9ba6b8)).child(if self.mission_path.is_empty() { "Choose a mission Markdown file".into() } else { self.mission_path.clone() }))
+                    .child(action_button!("Choose mission", cx.listener(|this, _, _, cx| this.pick_path(true, cx)))));
+        launch = launch.child(h_flex().items_center().gap_2()
+            .child(div().flex_1().text_sm().text_color(rgb(0x9ba6b8)).child(if self.repo_path.is_empty() { "Choose a clean target repository".into() } else { self.repo_path.clone() }))
+            .child(action_button!("Choose repository", cx.listener(|this, _, _, cx| this.pick_path(false, cx)))));
+        launch = launch.child(h_flex().items_center().gap_2().child(div().text_sm().text_color(rgb(0x8993a4)).child("New compute duration"))
+            .children([1.0_f64, 2.0, 4.0].into_iter().map(|hours| {
+                let selected = (self.run_hours-hours).abs()<0.001;
+                div().id(format!("deep-hours-{hours:.0}")).px_3().py_2().rounded_md().cursor_pointer().bg(if selected {rgb(0x354256)} else {rgb(0x20252e)}).text_sm()
+                    .on_click(cx.listener(move |this, _, _, cx| {this.run_hours=hours;cx.notify();})).child(format!("{hours:.0}h"))
+            }))
+            .child(action_button!("Validate and preview", cx.listener(|this, _, _, cx| this.preview_mission(cx)))));
+        if let Some(preview) = &self.mission_preview {
+            launch = launch.child(v_flex().gap_1().p_3().rounded_md().bg(rgb(0x20252e))
+                .child(div().font_weight(FontWeight::BOLD).child(format!("{} · {} tasks", preview.name, preview.tasks.len())))
+                .child(div().text_sm().child(preview.objective.clone()))
+                .children(preview.tasks.iter().map(|task| div().text_sm().text_color(rgb(0x9ba6b8)).child(format!("{} · {}", task.id, task.objective))))
+                .when(!preview.success.is_empty(), |card| card.child(div().text_sm().child(format!("Success: {}", preview.success.join(" · ")))))
+                .when(!preview.constraints.is_empty(), |card| card.child(div().text_sm().child(format!("Constraints: {}", preview.constraints.join(" · ")))))
+                .child(div().text_sm().text_color(rgb(0x8993a4)).child(truncate(&preview.content, 5000))));
+            launch = launch.child(action_button!("Review and start", cx.listener(|this, _, _, cx| this.request_deep_start(cx))));
+        }
+        if let Some(review) = &self.pending_run {
+            let provision = review.selected.offer_id != "existing-ready-session";
+            launch = launch.child(v_flex().gap_2().p_3().rounded_md().bg(rgb(0x252a34))
+                .child(div().font_weight(FontWeight::BOLD).child(if provision { "Confirm compute rental" } else { "Confirm Deep Work start" }))
+                .child(div().text_sm().child(if provision { format!("{} · {} · {}h · ${:.2}/hour · estimated ${:.2}", review.selected.gpu_model, review.selected.runtime, review.hours, review.selected.hourly_usd, review.selected.estimated_session_usd) } else { "Reuse the existing READY compute session. No new rental will be requested.".into() }))
+                .child(h_flex().gap_2().child(action_button!("Confirm", cx.listener(|this, _, _, cx| this.confirm_deep_start(cx))))
+                    .child(action_button!("Cancel", cx.listener(|this, _, _, cx| {this.pending_run=None;cx.notify();})))));
+        }
+        if let Some((success, message)) = &self.run_message {
+            launch = launch.child(div().p_2().rounded_md().bg(if *success { rgb(0x1d3429) } else { rgb(0x3a2927) }).text_sm().text_color(if *success {rgb(0x67c587)} else {rgb(0xe58c8c)}).child(message.clone()));
+        }
+        panel = panel.child(launch);
+
+        let mut monitor = v_flex().w_full().gap_3().p_4().border_1().border_color(rgb(0x2d333e)).rounded_lg().bg(rgb(0x191d24))
+            .child(div().text_base().font_weight(FontWeight::BOLD).child("Run monitor"));
+        monitor = monitor.child(h_flex().gap_2().children(self.run_history.iter().map(|record| {
+            let id = record.state.session_id.clone();
+            let selected = self.selected_run.as_deref() == Some(id.as_str());
+            div().id(format!("run-history-{id}")).px_3().py_2().rounded_md().cursor_pointer().bg(if selected {rgb(0x354256)} else {rgb(0x20252e)}).text_sm()
+                .on_click(cx.listener(move |this, _, _, cx| {this.selected_run=Some(id.clone());cx.notify();}))
+                .child(format!("{} · {}", record.state.mission_name, record.state.phase))
+        })));
+        if let Some(error) = &self.run_history_error {
+            monitor = monitor.child(div().text_sm().text_color(rgb(0xe6ad69)).child(format!("History unavailable: {error}")));
+        } else if let Some(record) = self.run_history.iter().find(|r| Some(r.state.session_id.as_str()) == self.selected_run.as_deref()) {
+            let terminal = record.state.phase == "landed" || record.state.phase == "stopped";
+            let mut summary = v_flex().gap_1().child(div().font_weight(FontWeight::BOLD).child(format!("{} · {} · {}", record.state.mission_name, record.state.session_id, record.state.phase)))
+                .child(div().text_sm().text_color(rgb(0x9ba6b8)).child(format!("{} · deadline {} · coordinator {}", record.state.objective, record.state.deadline.as_deref().unwrap_or("unknown"), if record.coordinator_alive {"running"} else {"not running"})));
+            if record.latest && !terminal {
+                let mut controls = h_flex().gap_2().child(action_button!("Stop run", cx.listener(|this, _, _, cx| {this.confirm_stop=true;cx.notify();})));
+                if !record.coordinator_alive {
+                    let id = record.state.session_id.clone();
+                    controls = controls.child(action_button!("Resume", cx.listener(move |this, _, _, cx| {this.confirm_resume=Some(id.clone());cx.notify();})));
+                }
+                summary = summary.child(controls);
+            }
+            if self.confirm_stop && record.latest {
+                summary = summary.child(h_flex().gap_2().child(div().text_sm().child("Stop this Deep Work run and land its current state?"))
+                    .child(action_button!("Confirm stop", cx.listener(|this, _, _, cx| this.run_lifecycle_action(None, cx))))
+                    .child(action_button!("Cancel", cx.listener(|this, _, _, cx| {this.confirm_stop=false;cx.notify();}))));
+            }
+            if let Some(id) = &self.confirm_resume {
+                let selected_id=id.clone();
+                summary = summary.child(h_flex().gap_2().child(div().text_sm().child(format!("Resume {selected_id}?")))
+                    .child(action_button!("Confirm resume", cx.listener(move |this, _, _, cx| this.run_lifecycle_action(Some(selected_id.clone()), cx))))
+                    .child(action_button!("Cancel", cx.listener(|this, _, _, cx| {this.confirm_resume=None;cx.notify();}))));
+            }
+            summary = summary.child(div().text_sm().child(format!("Tasks: {} total · {} verified · {} active · {} blocked", record.state.tasks.len(), record.state.tasks.iter().filter(|t|t.status=="verified").count(), record.state.tasks.iter().filter(|t|t.status=="active").count(), record.state.tasks.iter().filter(|t|t.status=="blocked").count())));
+            summary = summary.children(record.state.tasks.iter().map(|task| div().text_sm().text_color(rgb(if task.status=="blocked" {0xe6ad69} else {0x9ba6b8})).child(if task.blocker.is_empty() {format!("{} · {} · {}",task.id,task.status,task.objective)} else {format!("{} · {} · blocker: {}",task.id,task.status,task.blocker)})));
+            summary = summary.children(record.incidents.iter().rev().take(6).map(|incident| div().text_sm().text_color(rgb(0x8993a4)).child(format!("{} · {} {} {}",incident.time,incident.kind,incident.task,incident.detail))));
+            monitor = monitor.child(summary);
+        } else if self.run_history.is_empty() {
+            monitor = monitor.child(div().text_sm().text_color(rgb(0x8993a4)).child("No Deep Work runs found yet."));
+        }
+        panel.child(monitor)
     }
 
     fn interactive_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -968,7 +1219,9 @@ impl Render for RootView {
             .text_color(rgb(0xe7e9ee))
             .child(self.header())
             .child(self.navigation(cx));
-        if self.interactive_tab {
+        if self.deep_run_tab {
+            page = page.child(self.deep_run_panel(cx));
+        } else if self.interactive_tab {
             page = page.child(self.interactive_panel(cx));
         } else {
             page = page
