@@ -331,6 +331,8 @@ impl RootView {
 
     fn interactive_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut panel = v_flex()
+            .id("interactive-content")
+            .overflow_y_scroll()
             .w_full()
             .flex_1()
             .gap_4()
@@ -667,6 +669,7 @@ impl RootView {
                     .child(div().font_weight(FontWeight::BOLD).child(format!("Confirm {} session", preview.direction)))
                     .child(detail_field("Current remaining", format_duration(preview.current_remaining_seconds)))
                     .child(detail_field("Change", format!("{} {}", if preview.direction == "extend" { "+" } else { "−" }, duration)))
+                    .child(detail_field("Current deadline", preview.previous_deadline.clone()))
                     .child(detail_field("New deadline", preview.new_deadline.clone()))
                     .child(detail_field("Projected session cost", format!("${:.2} / ${:.2} ceiling", preview.projected_usd, preview.session_ceiling_usd)))
                     .child(detail_field("Scheduled cost before change", format!("${:.2}", preview.current_scheduled_usd)))
