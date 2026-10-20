@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +22,29 @@ import (
 )
 
 const providerStartupTimeout = 6 * time.Minute
+
+type uiStartCandidate struct {
+	OfferID             string  `json:"offerId"`
+	GPUModel            string  `json:"gpuModel"`
+	Location            string  `json:"location"`
+	HourlyUSD           float64 `json:"hourlyUsd"`
+	EstimatedSessionUSD float64 `json:"estimatedSessionUsd"`
+	Runtime             string  `json:"runtime"`
+	ContextTokens       int     `json:"contextTokens"`
+	WithinCostCeiling   bool    `json:"withinCostCeiling"`
+}
+
+type uiStartPreview struct {
+	Type              string             `json:"type"`
+	Hours             float64            `json:"hours"`
+	SessionMaxCostUSD float64            `json:"sessionMaxCostUsd"`
+	MaxHourlyUSD      float64            `json:"maxHourlyUsd"`
+	Model             string             `json:"model"`
+	Endpoint          string             `json:"endpoint"`
+	FallbackAttempts  int                `json:"fallbackAttempts"`
+	Selected          uiStartCandidate   `json:"selected"`
+	Candidates        []uiStartCandidate `json:"candidates"`
+}
 
 // candidateWithinSessionBudget repeats the requested-duration ceiling at the
 // rental boundary. The initial plan does not cover later network-ranked
@@ -103,6 +127,12 @@ func runStartResumable(args []string) (retErr error) {
 	maxCostUSD := fs.Float64("max-cost-usd", 0, "lower the profile's maximum requested-session cost (USD)")
 	maxHourlyUSD := fs.Float64("max-hourly-usd", 0, "set the maximum hourly offer price (raising the profile limit requires --max-cost-usd)")
 	validateOnly := fs.Bool("validate-only", false, "validate start options without reading credentials or contacting a provider")
+	uiPreviewJSON := fs.Bool("ui-preview-json", false, "internal GPUI: print an exact start review without renting")
+	expectedOfferID := fs.String("expected-offer-id", "", "internal GPUI: require the reviewed offer to remain selected")
+	expectedHourlyUSD := fs.Float64("expected-hourly-usd", -1, "internal GPUI: require the reviewed hourly price")
+	expectedGPUModel := fs.String("expected-gpu-model", "", "internal GPUI: require the reviewed GPU model")
+	expectedLocation := fs.String("expected-location", "", "internal GPUI: require the reviewed offer location")
+	expectedCandidatesJSON := fs.String("expected-candidates-json", "", "internal GPUI: restrict retries to reviewed candidates")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -238,7 +268,40 @@ func runStartResumable(args []string) (retErr error) {
 		}
 	}
 	candidates := selectNetworkCandidates(profile, offers, *networkCandidateAttempts)
+	if *uiPreviewJSON || *expectedCandidatesJSON != "" {
+		eligible := make([]core.Offer, 0, len(candidates))
+		for _, candidate := range candidates {
+			if candidateWithinSessionBudget(profile, candidate, hours) {
+				eligible = append(eligible, candidate)
+			}
+		}
+		candidates = eligible
+	}
+	if *expectedCandidatesJSON != "" {
+		var approved []uiStartCandidate
+		if err := json.Unmarshal([]byte(*expectedCandidatesJSON), &approved); err != nil {
+			return fmt.Errorf("parse reviewed start candidates: %w", err)
+		}
+		approvedByID := make(map[string]uiStartCandidate, len(approved))
+		for _, candidate := range approved {
+			approvedByID[candidate.OfferID] = candidate
+		}
+		filtered := make([]core.Offer, 0, len(candidates))
+		for _, candidate := range candidates {
+			reviewed, ok := approvedByID[candidate.ID]
+			if !ok || reviewed.GPUModel != candidate.GPUModel ||
+				reviewed.Location != valueOr(candidate.Geolocation, "unknown") ||
+				math.Abs(reviewed.HourlyUSD-candidate.HourlyUSD) > 0.000001 {
+				continue
+			}
+			filtered = append(filtered, candidate)
+		}
+		candidates = filtered
+	}
 	if len(candidates) == 0 {
+		if *expectedCandidatesJSON != "" {
+			return errors.New("the reviewed offers changed in the marketplace; review a fresh start preview before renting")
+		}
 		return errors.New("no qualifying interactive offers remain after policy ranking")
 	}
 	plan, err := core.CreateSessionPlan(profile, hours, offers)
@@ -265,6 +328,65 @@ func runStartResumable(args []string) (retErr error) {
 	}
 	if selectedRuntime == runtimeNInfer {
 		selectedContext = requestedNInferConfig.ContextTokens
+	}
+	if *expectedOfferID != "" {
+		changed := selected.ID != *expectedOfferID ||
+			(*expectedHourlyUSD >= 0 && math.Abs(selected.HourlyUSD-*expectedHourlyUSD) > 0.000001) ||
+			(*expectedGPUModel != "" && selected.GPUModel != *expectedGPUModel) ||
+			(*expectedLocation != "" && valueOr(selected.Geolocation, "unknown") != *expectedLocation)
+		if changed {
+			return errors.New("the reviewed offer changed in the marketplace; review a fresh start preview before renting")
+		}
+	}
+	if *uiPreviewJSON {
+		if profile.Session.MaxCostUSD <= 0 {
+			return errors.New("GPUI start requires an explicit interactive profile maxCostUsd session ceiling")
+		}
+		preview := uiStartPreview{
+			Type:              "start-preview",
+			Hours:             hours,
+			SessionMaxCostUSD: profile.Session.MaxCostUSD,
+			MaxHourlyUSD:      profile.GPU.MaxHourlyUSD,
+			Model:             interactiveModelAlias,
+			Endpoint:          fmt.Sprintf("http://127.0.0.1:%d/v1", clinePort),
+			FallbackAttempts:  len(candidates),
+			Candidates:        make([]uiStartCandidate, 0, len(candidates)),
+		}
+		for _, candidate := range candidates {
+			runtimeName, runtimeErr := selectInteractiveRuntime(runtimeRequest, candidate.GPUModel)
+			if runtimeErr != nil {
+				continue
+			}
+			contextTokens := contextForRuntime(runtimeName)
+			if runtimeName == runtimeNInfer {
+				contextTokens = requestedNInferConfig.ContextTokens
+			} else if strings.TrimSpace(*contextValue) != "" {
+				contextTokens, err = resolveLlamaContext(*contextValue)
+				if err != nil {
+					return err
+				}
+			}
+			preview.Candidates = append(preview.Candidates, uiStartCandidate{
+				OfferID:             candidate.ID,
+				GPUModel:            candidate.GPUModel,
+				Location:            valueOr(candidate.Geolocation, "unknown"),
+				HourlyUSD:           candidate.HourlyUSD,
+				EstimatedSessionUSD: estimatedCandidateSessionCost(candidate, hours),
+				Runtime:             runtimeName,
+				ContextTokens:       contextTokens,
+				WithinCostCeiling:   candidateWithinSessionBudget(profile, candidate, hours),
+			})
+		}
+		if len(preview.Candidates) == 0 {
+			return errors.New("no eligible start candidates remain for GPUI preview")
+		}
+		preview.Selected = preview.Candidates[0]
+		encoded, err := json.Marshal(preview)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(encoded))
+		return nil
 	}
 
 	fmt.Println()

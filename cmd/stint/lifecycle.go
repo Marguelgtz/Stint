@@ -312,6 +312,7 @@ func runDown(args []string) error {
 	fs := flag.NewFlagSet("down", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	yes := fs.Bool("yes", false, "destroy without the interactive type-to-confirm")
+	expectedInstance := fs.Int64("expect-instance", 0, "internal GPUI: require the reviewed session instance")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -331,6 +332,9 @@ func runDown(args []string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if *expectedInstance > 0 && state.InstanceID != *expectedInstance {
+		return fmt.Errorf("session changed while confirming: expected instance %d, found %d", *expectedInstance, state.InstanceID)
 	}
 	if !*yes && !confirmDestroy(os.Stdin, os.Stdout, state) {
 		return nil

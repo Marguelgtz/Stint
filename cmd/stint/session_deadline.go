@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,7 +45,7 @@ func runShorten(args []string) error {
 }
 
 func runDeadlineMutation(direction deadlineDirection, args []string) error {
-	delta, yes, err := parseDeadlineMutationArgs(direction, args)
+	delta, yes, previewJSON, expectedInstance, expectedDeadline, err := parseDeadlineControlArgs(direction, args)
 	if err != nil {
 		return err
 	}
@@ -65,9 +67,43 @@ func runDeadlineMutation(direction deadlineDirection, args []string) error {
 	if err != nil {
 		return err
 	}
+	if expectedInstance > 0 && previewState.InstanceID != expectedInstance {
+		return fmt.Errorf("session changed while confirming: expected instance %d, found %d", expectedInstance, previewState.InstanceID)
+	}
+	if expectedDeadline != "" {
+		deadline, parseErr := time.Parse(time.RFC3339Nano, expectedDeadline)
+		if parseErr != nil {
+			return fmt.Errorf("invalid --expect-deadline value %q: %w", expectedDeadline, parseErr)
+		}
+		if !previewState.Deadline.Equal(deadline) {
+			return errors.New("session deadline changed while confirming; review the current deadline before applying the change")
+		}
+	}
 	preview, err := buildDeadlineMutationPreview(previewState, time.Now().UTC(), direction, delta)
 	if err != nil {
 		return err
+	}
+	if previewJSON {
+		payload := map[string]any{
+			"type":                    "deadline-preview",
+			"instanceId":              previewState.InstanceID,
+			"status":                  previewState.Status,
+			"direction":               preview.Direction,
+			"deltaSeconds":            preview.Delta.Seconds(),
+			"currentRemainingSeconds": preview.CurrentRemaining.Seconds(),
+			"previousDeadline":        preview.PreviousDeadline,
+			"newDeadline":             preview.NewDeadline,
+			"currentScheduledUsd":     preview.CurrentScheduledUSD,
+			"projectedUsd":            preview.ProjectedUSD,
+			"exposureDeltaUsd":        preview.ExposureDeltaUSD,
+			"sessionCeilingUsd":       preview.SessionCeilingUSD,
+		}
+		encoded, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		fmt.Println(string(encoded))
+		return nil
 	}
 	printDeadlineMutationPreview(previewState, preview)
 	if !yes {
@@ -136,30 +172,70 @@ func runDeadlineMutation(direction deadlineDirection, args []string) error {
 // standard flag package stops parsing at the first positional argument, while
 // the documented and natural CLI form is `stint extend 30m --yes`.
 func parseDeadlineMutationArgs(direction deadlineDirection, args []string) (time.Duration, bool, error) {
+	delta, yes, _, _, _, err := parseDeadlineControlArgs(direction, args)
+	return delta, yes, err
+}
+
+func parseDeadlineControlArgs(direction deadlineDirection, args []string) (time.Duration, bool, bool, int64, string, error) {
 	var durationArg string
 	yes := false
-	for _, arg := range args {
+	previewJSON := false
+	var expectedInstance int64
+	var expectedDeadline string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		switch arg {
 		case "--yes":
 			yes = true
+		case "--preview-json":
+			previewJSON = true
+		case "--expect-instance":
+			if i+1 >= len(args) {
+				return 0, false, false, 0, "", fmt.Errorf("%s requires a value", arg)
+			}
+			i++
+			parsed, err := strconv.ParseInt(args[i], 10, 64)
+			if err != nil || parsed <= 0 {
+				return 0, false, false, 0, "", fmt.Errorf("invalid --expect-instance value %q", args[i])
+			}
+			expectedInstance = parsed
+		case "--expect-deadline":
+			if i+1 >= len(args) {
+				return 0, false, false, 0, "", fmt.Errorf("%s requires a value", arg)
+			}
+			i++
+			expectedDeadline = args[i]
 		default:
+			if strings.HasPrefix(arg, "--expect-instance=") {
+				value := strings.TrimPrefix(arg, "--expect-instance=")
+				parsed, err := strconv.ParseInt(value, 10, 64)
+				if err != nil || parsed <= 0 {
+					return 0, false, false, 0, "", fmt.Errorf("invalid --expect-instance value %q", value)
+				}
+				expectedInstance = parsed
+				continue
+			}
+			if strings.HasPrefix(arg, "--expect-deadline=") {
+				expectedDeadline = strings.TrimPrefix(arg, "--expect-deadline=")
+				continue
+			}
 			if strings.HasPrefix(arg, "-") {
-				return 0, false, fmt.Errorf("unknown %s flag %q", direction, arg)
+				return 0, false, false, 0, "", fmt.Errorf("unknown %s flag %q", direction, arg)
 			}
 			if durationArg != "" {
-				return 0, false, fmt.Errorf("usage: stint %s <duration> [--yes]", direction)
+				return 0, false, false, 0, "", fmt.Errorf("usage: stint %s <duration> [--yes]", direction)
 			}
 			durationArg = arg
 		}
 	}
 	if durationArg == "" {
-		return 0, false, fmt.Errorf("usage: stint %s <duration> [--yes]", direction)
+		return 0, false, false, 0, "", fmt.Errorf("usage: stint %s <duration> [--yes]", direction)
 	}
 	delta, err := parseSessionDuration(durationArg)
 	if err != nil {
-		return 0, false, err
+		return 0, false, false, 0, "", err
 	}
-	return delta, yes, nil
+	return delta, yes, previewJSON, expectedInstance, expectedDeadline, nil
 }
 
 func buildDeadlineMutationPreview(

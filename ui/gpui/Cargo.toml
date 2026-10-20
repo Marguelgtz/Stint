@@ -1,6 +1,6 @@
 [package]
 name = "stint-ui"
-description = "GPUI dashboard for Stint Deep Work sessions."
+description = "GPUI dashboard and controls for Stint sessions."
 version = "0.1.0"
 publish = false
 edition = "2021"
