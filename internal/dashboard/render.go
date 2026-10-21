@@ -17,69 +17,104 @@ const (
 )
 
 type Health struct {
-	Endpoint, Tunnel, Runtime, Watchdog, SSH string
-	Refreshed, Refreshing                    bool
+	Endpoint   string `json:"endpoint"`
+	Tunnel     string `json:"tunnel"`
+	Runtime    string `json:"runtime"`
+	Watchdog   string `json:"watchdog"`
+	SSH        string `json:"ssh"`
+	Refreshed  bool   `json:"refreshed"`
+	Refreshing bool   `json:"refreshing"`
 }
 
 type GPU struct {
-	Available                                    bool
-	Utilization, VRAM, Power, Temperature, Error string
+	Available   bool   `json:"available"`
+	Utilization string `json:"utilization"`
+	VRAM        string `json:"vram"`
+	Power       string `json:"power"`
+	Temperature string `json:"temperature"`
+	Error       string `json:"error"`
 }
 
 type Perf struct {
-	Available, Benchmarking         bool
-	TTFT, Total, Decode, Age, Error string
-	PromptTokens, CompletionTokens  int
+	Available        bool   `json:"available"`
+	Benchmarking     bool   `json:"benchmarking"`
+	TTFT             string `json:"ttft"`
+	Total            string `json:"total"`
+	Decode           string `json:"decode"`
+	Age              string `json:"age"`
+	Error            string `json:"error"`
+	PromptTokens     int    `json:"promptTokens"`
+	CompletionTokens int    `json:"completionTokens"`
 }
 
 type Session struct {
-	InstanceID                                int64
-	Status, Model, GPUModel, Runtime, Profile string
-	Context                                   int
-	Rate, Spent, Exposure                     float64
-	Started, Deadline                         time.Time
-	Elapsed, Remaining, Scheduled             time.Duration
+	InstanceID int64         `json:"instanceId"`
+	Status     string        `json:"status"`
+	Model      string        `json:"model"`
+	GPUModel   string        `json:"gpuModel"`
+	Runtime    string        `json:"runtime"`
+	Profile    string        `json:"profile"`
+	Context    int           `json:"context"`
+	Rate       float64       `json:"rate"`
+	Spent      float64       `json:"spent"`
+	Exposure   float64       `json:"exposure"`
+	Started    time.Time     `json:"started"`
+	Deadline   time.Time     `json:"deadline"`
+	Elapsed    time.Duration `json:"elapsed"`
+	Remaining  time.Duration `json:"remaining"`
+	Scheduled  time.Duration `json:"scheduled"`
 }
 
 type Modal struct {
-	Title string
-	Lines []string
-	Hint  string
+	Title string   `json:"title"`
+	Lines []string `json:"lines"`
+	Hint  string   `json:"hint"`
 }
 
 type Inference struct {
-	Available, Refreshed bool
-	Agents, Depth        int
-	ContextCapacity      int
-	Decode, Prefill      string
-	PrefillLabel         string
-	Queue, CacheReuse    string
-	Speculative          string
-	Lanes, Error         string
-	LaneRows             []Lane
-	Stale                bool
-	SampleAge            string
+	Available       bool   `json:"available"`
+	Refreshed       bool   `json:"refreshed"`
+	Agents          int    `json:"agents"`
+	Depth           int    `json:"depth"`
+	ContextCapacity int    `json:"contextCapacity"`
+	Decode          string `json:"decode"`
+	Prefill         string `json:"prefill"`
+	PrefillLabel    string `json:"prefillLabel"`
+	Queue           string `json:"queue"`
+	CacheReuse      string `json:"cacheReuse"`
+	Speculative     string `json:"speculative"`
+	Lanes           string `json:"lanes"`
+	Error           string `json:"error"`
+	LaneRows        []Lane `json:"laneRows"`
+	Stale           bool   `json:"stale"`
+	SampleAge       string `json:"sampleAge"`
 }
 
 type Lane struct {
-	ID, Depth           int
-	Status, Cache       string
-	Decode, DecodeScope string
+	ID          int    `json:"id"`
+	Depth       int    `json:"depth"`
+	Status      string `json:"status"`
+	Cache       string `json:"cache"`
+	Decode      string `json:"decode"`
+	DecodeScope string `json:"decodeScope"`
 }
 
 type Model struct {
-	Width, Height      int
-	NoColor, NoSession bool
-	View               View
-	Session            Session
-	Health             Health
-	GPU                GPU
-	Inference          Inference
-	Perf               Perf
-	Logs               []string
-	LaneEvents         []string
-	Notice, Error      string
-	Modal              *Modal
+	Width      int       `json:"width"`
+	Height     int       `json:"height"`
+	NoColor    bool      `json:"noColor"`
+	NoSession  bool      `json:"noSession"`
+	View       View      `json:"view"`
+	Session    Session   `json:"session"`
+	Health     Health    `json:"health"`
+	GPU        GPU       `json:"gpu"`
+	Inference  Inference `json:"inference"`
+	Perf       Perf      `json:"perf"`
+	Logs       []string  `json:"logs"`
+	LaneEvents []string  `json:"laneEvents"`
+	Notice     string    `json:"notice"`
+	Error      string    `json:"error"`
+	Modal      *Modal    `json:"modal"`
 }
 
 type palette struct{ noColor bool }

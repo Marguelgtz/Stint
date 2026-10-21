@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -105,11 +106,15 @@ func runDashboard(args []string) error {
 	fs := flag.NewFlagSet("dashboard", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	noColor := fs.Bool("no-color", false, "disable ANSI colors")
+	jsonOut := fs.Bool("json", false, "print one JSON snapshot of the dashboard model and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return errors.New("dashboard does not accept positional arguments")
+	}
+	if *jsonOut {
+		return runDashboardJSON(args)
 	}
 	if !dash.IsTTY(os.Stdin) || !dash.IsTTY(os.Stdout) {
 		return runStatusTelemetry([]string{"--refresh"})
@@ -212,6 +217,49 @@ func runDashboard(args []string) error {
 			}
 		}
 	}
+}
+
+// runDashboardJSON emits one JSON snapshot of the dashboard model so the GPUI
+// app (and any tooling) can read the same figures the TUI renders, without a
+// terminal. It reuses the exact load + remote-probe path of the interactive
+// dashboard so the numbers never diverge.
+func runDashboardJSON(args []string) error {
+	fs := flag.NewFlagSet("dashboard", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Bool("no-color", false, "")
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	path, err := config.DefaultPaths()
+	if err != nil {
+		return err
+	}
+	controller := &dashboardController{
+		paths:     path,
+		model:     dash.Model{View: dash.Home},
+		refreshCh: make(chan dashboardLoadResult, 1),
+	}
+	controller.loadLocal()
+	controller.model.Health.Refreshing = true
+	controller.startRefresh()
+	select {
+	case result := <-controller.refreshCh:
+		controller.applyRefresh(result)
+	case <-time.After(6 * time.Second):
+		controller.refreshing = false
+		controller.model.Health.Refreshing = false
+	}
+	controller.reloadLogs()
+	controller.model.Width, controller.model.Height = 0, 0
+	controller.model.View = dash.Home
+	controller.model.Modal = nil
+	out, err := json.MarshalIndent(controller.model, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	return nil
 }
 
 func readDashboardInput(reader io.Reader, keys chan<- byte, errs chan<- error) {

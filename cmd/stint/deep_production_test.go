@@ -448,7 +448,7 @@ func TestDeepProductionDashboardCommandUsesSavedOnBoxStateAndSession(t *testing.
 		RemoteRoot:    "/var/lib/stint-onbox",
 		DeepSessionID: "deep-20260924-120000",
 	}
-	command := deepProductionDashboardCommand(binding, "", true, true)
+	command := deepProductionDashboardCommand(binding, "", true, true, false)
 	for _, want := range []string{
 		"XDG_STATE_HOME='/var/lib/stint-onbox/state'",
 		"'/var/lib/stint-onbox/bin/stint' deep dash",
@@ -468,7 +468,7 @@ func TestDeepProductionDashboardCommandPreservesNoColorFromEnvironment(t *testin
 	command := deepProductionDashboardCommand(deepProductionRunBinding{
 		RemoteRoot:    "/var/lib/stint-onbox",
 		DeepSessionID: "deep-20260924-120000",
-	}, "", noColor, false)
+	}, "", noColor, false, false)
 	if !noColor || !strings.Contains(command, "--no-color") {
 		t.Fatalf("NO_COLOR environment was not propagated to remote dashboard: %q", command)
 	}
