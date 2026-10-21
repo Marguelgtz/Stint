@@ -4,12 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/Marguelgtz/Stint/internal/config"
 	"github.com/Marguelgtz/Stint/internal/deep"
+	localenv "github.com/Marguelgtz/Stint/internal/local"
+	sessionstate "github.com/Marguelgtz/Stint/internal/session"
 )
 
 // runDeep dispatches the Deep Work command group.
@@ -22,6 +28,10 @@ func runDeep(args []string) error {
 		return runDeepStart(args[1:])
 	case "status":
 		return runDeepStatus(args[1:])
+	case "preview":
+		return runDeepPreview(args[1:])
+	case "list":
+		return runDeepList(args[1:])
 	case "dash", "dashboard":
 		return runDeepDashboard(args[1:])
 	case "stop":
@@ -33,6 +43,137 @@ func runDeep(args []string) error {
 	default:
 		return fmt.Errorf("unknown deep subcommand %q (stint deep <start|status|dash|stop|resume|onbox>)", args[0])
 	}
+}
+
+// runDeepPreview validates a mission through the production parser and emits
+// its parsed form for the GPUI launch review.
+func runDeepPreview(args []string) error {
+	fs := flag.NewFlagSet("deep preview", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	missionPath := fs.String("mission", "", "mission Markdown file")
+	repoPath := fs.String("repo", "", "target git repository")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *missionPath == "" || *repoPath == "" {
+		return errors.New("deep preview requires --mission and --repo")
+	}
+	mission, err := deep.ParseMissionFile(*missionPath)
+	if err != nil {
+		return err
+	}
+	if err := validateDeepRepository(*repoPath); err != nil {
+		return err
+	}
+	content, err := os.ReadFile(*missionPath)
+	if err != nil { return err }
+	return json.NewEncoder(os.Stdout).Encode(struct {
+		Name        string      `json:"name"`
+		Objective   string      `json:"objective"`
+		Success     []string    `json:"success,omitempty"`
+		Constraints []string    `json:"constraints,omitempty"`
+		Tasks       []deep.Task `json:"tasks"`
+		Content     string      `json:"content"`
+	}{mission.Name, mission.Objective, mission.Success, mission.Constraints, mission.Tasks, string(content)})
+}
+
+// runDeepList prints durable sessions for the GPUI history selector.
+func runDeepList(args []string) error {
+	fs := flag.NewFlagSet("deep list", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	jsonOut := fs.Bool("json", false, "print machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !*jsonOut {
+		return errors.New("deep list currently requires --json")
+	}
+	paths, err := config.DefaultPaths()
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(filepath.Join(paths.StateDir, "deep"))
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		entries = nil
+	}
+	if binding, bindErr := loadDeepProductionBinding(paths); bindErr == nil {
+		data, remoteErr := loadRemoteDeepHistory(paths, binding)
+		if remoteErr != nil { return fmt.Errorf("read Deep Work history from compute instance %d: %w", binding.InstanceID, remoteErr) }
+		_, err := os.Stdout.Write(append(data, '\n'))
+		return err
+	}
+	latestBytes, _ := os.ReadFile(deep.LatestFile(paths.StateDir))
+	latest := strings.TrimSpace(string(latestBytes))
+	type item struct {
+		State            deep.DeepState  `json:"state"`
+		Latest           bool            `json:"latest"`
+		CoordinatorAlive bool            `json:"coordinatorAlive"`
+		Incidents        []deep.Incident `json:"incidents"`
+	}
+	items := make([]item, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		state, err := deep.LoadState(paths.StateDir, entry.Name())
+		if err != nil {
+			continue
+		}
+		incs, _ := deep.ReadIncidents(paths.StateDir, state.SessionID)
+		if len(incs) > 8 {
+			incs = incs[len(incs)-8:]
+		}
+		alive, _ := deep.CoordinatorAlive(paths.StateDir, state.SessionID)
+		items = append(items, item{state, state.SessionID == latest, alive, incs})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].State.StartedAt.After(items[j].State.StartedAt) })
+	return json.NewEncoder(os.Stdout).Encode(items)
+}
+
+func loadRemoteDeepHistory(paths config.Paths, binding deepProductionRunBinding) ([]byte, error) {
+	return runRemoteDeepCommand(paths, binding, "deep", "list", "--json")
+}
+
+func runRemoteDeepCommand(paths config.Paths, binding deepProductionRunBinding, commandArgs ...string) ([]byte, error) {
+	ssh, err := localenv.SSHExecutable()
+	if err != nil { return nil, err }
+	state := sessionstate.State{InstanceID: binding.InstanceID, SSHHost: binding.SSHHost, SSHPort: binding.SSHPort}
+	parts := []string{"env", "XDG_STATE_HOME=" + shellQuote(filepath.Join(binding.RemoteRoot, "state")), shellQuote(filepath.Join(binding.RemoteRoot, "bin", "stint"))}
+	for _, arg := range commandArgs { parts = append(parts, shellQuote(arg)) }
+	remoteCommand := strings.Join(parts, " ")
+	args := sshArgs(paths, state, filepath.Join(paths.StateDir, "known_hosts"), remoteCommand)
+	command := exec.Command(ssh, args...)
+	data, err := command.Output()
+	if err != nil {
+		stderr := ""
+		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+			stderr = strings.TrimSpace(string(exitErr.Stderr))
+		}
+		if stderr != "" { return nil, fmt.Errorf("SSH Deep Work query failed: %s", stderr) }
+		return nil, fmt.Errorf("SSH Deep Work query failed: %w", err)
+	}
+	return data, nil
+}
+
+func validateDeepRepository(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("target repository: %w", err)
+	}
+	if !info.IsDir() {
+		return errors.New("target repository must be a directory")
+	}
+	status, err := runLocalGit(path, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return fmt.Errorf("inspect target repository: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return errors.New("target repository must be clean before Deep Work starts")
+	}
+	return nil
 }
 
 // stringSlice collects a repeatable --flag value into a slice.

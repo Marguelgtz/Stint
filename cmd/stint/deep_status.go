@@ -124,6 +124,12 @@ func runDeepStop(args []string) error {
 	if err != nil {
 		return err
 	}
+	if binding, bindErr := loadDeepProductionBinding(paths); bindErr == nil {
+		output, remoteErr := runRemoteDeepCommand(paths, binding, "deep", "stop")
+		if remoteErr != nil { return fmt.Errorf("stop on-box Deep Work session: %w", remoteErr) }
+		_, err = os.Stdout.Write(output)
+		return err
+	}
 	state, err := deep.LoadLatestState(paths.StateDir)
 	if err != nil {
 		return err
@@ -141,6 +147,7 @@ func runDeepStop(args []string) error {
 		stateDir:    paths.StateDir,
 		state:       &state,
 		taskTimeout: time.Minute,
+		now:         func() time.Time { return time.Now().UTC() },
 		verify: func(ctx context.Context, command, workdir string) (string, bool, error) {
 			return runVerifyCmd(ctx, command, workdir)
 		},

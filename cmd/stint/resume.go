@@ -21,6 +21,7 @@ func runResume(args []string) (retErr error) {
 	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	ninferDeploymentValue := fs.String("ninfer-deployment", "", "override the saved NInfer deployment; source-build is the release-bundle recovery path")
+	expectedInstance := fs.Int64("expect-instance", 0, "internal GPUI: require the reviewed session instance")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -43,6 +44,9 @@ func runResume(args []string) (retErr error) {
 	}
 	if err != nil {
 		return err
+	}
+	if *expectedInstance > 0 && state.InstanceID != *expectedInstance {
+		return fmt.Errorf("session changed while confirming: expected instance %d, found %d", *expectedInstance, state.InstanceID)
 	}
 	if state.Profile != "interactive" {
 		return fmt.Errorf("resume currently supports interactive sessions only, got %q", state.Profile)

@@ -75,6 +75,12 @@ func runDeepResume(args []string) error {
 	if err := paths.Ensure(); err != nil {
 		return err
 	}
+	if binding, bindErr := loadDeepProductionBinding(paths); bindErr == nil && (f.sessionID == "" || f.sessionID == binding.DeepSessionID) {
+		output, remoteErr := runRemoteDeepCommand(paths, binding, "deep", "onbox", "--resume")
+		if remoteErr != nil { return fmt.Errorf("resume on-box Deep Work session: %w", remoteErr) }
+		_, err = os.Stdout.Write(output)
+		return err
+	}
 
 	// 1. Load the session's durable state.
 	var state deep.DeepState
