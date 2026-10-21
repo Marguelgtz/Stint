@@ -26,8 +26,8 @@ Phase 2 (dashboards):
 3. Interactive live-dash panel: session header, GPU, health, inference (+ lane table), perf, logs. ✅
 4. Deep board panel: mission header, progress, compute, worker, tasks, recent events. ✅
 5. Sidebar items (`Cpu` = Live Dashboard, `LayoutDashboard` = Deep Board) + 5s auto-refresh. ✅
-6. `cargo check` + `cargo build` + headless xvfb smoke test green. ⏳ in progress
-7. Commit + PR → main (stacked on prior UI work). ⬜ pending
+6. `cargo check` + `cargo build` + headless xvfb smoke test green. ✅ (check 0 warn, build ok, xvfb 30s no panic)
+7. Commit + PR → stacked on prior UI work. ✅ **PR #196** open (head `ui/gpui-dashboards` → base `ui/gpui-interactive-controls`)
 
 ## Task Board
 
@@ -46,8 +46,8 @@ Phase 2 (dashboards):
 | 11 | **Rust:** interactive live-dash panel (session/GPU/health/inference+lanes/perf/logs) | ✅ done |
 | 12 | **Rust:** deep board panel (header/progress/compute/worker/tasks/events) | ✅ done |
 | 13 | **Rust:** sidebar items + `start_refresh` 5s loops + `apply_*` methods | ✅ done |
-| 14 | `cargo check` (0 warn) + `cargo build` + xvfb smoke | ⏳ in progress |
-| 15 | Commit dashboards; push `ui/gpui-dashboards`; PR → main | ⬜ pending |
+| 14 | `cargo check` (0 warn) + `cargo build` + xvfb smoke | ✅ done — 0/0, build ok, 30s no panic |
+| 15 | Commit dashboards; push `ui/gpui-dashboards`; PR (stacked) | ✅ done — **PR #196** |
 
 ## Wire contract (Go → Rust) — do NOT re-derive
 - Both commands emit **one JSON document on stdout**, keys **camelCase** (`sessionId`,
