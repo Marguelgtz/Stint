@@ -4,7 +4,10 @@ mod deep_run;
 
 use std::time::Duration;
 
-use gpui_kit::component::{h_flex, v_flex, Theme, ThemeMode, TitleBar};
+use gpui_kit::component::{
+    Icon, IconName, Theme, ThemeMode, TitleBar, h_flex, sidebar::{Sidebar, SidebarMenu, SidebarMenuItem},
+    v_flex,
+};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use interactive::{DeadlinePreview, Snapshot, StartPreview};
@@ -12,6 +15,13 @@ use deep_run::{MissionPreview, RunRecord};
 use state::{DeepState, Task};
 
 actions!(stint_ui, [Quit]);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Panel {
+    DeepWork,
+    DeepRun,
+    Interactive,
+}
 
 macro_rules! action_button {
     ($label:expr, $handler:expr) => {
@@ -54,7 +64,7 @@ struct RootView {
     state: Option<DeepState>,
     refresh_error: Option<String>,
     selected_task: Option<String>,
-    interactive_tab: bool,
+    panel: Panel,
     interactive_status: Option<Snapshot>,
     interactive_error: Option<String>,
     selected_hours: f64,
@@ -62,7 +72,6 @@ struct RootView {
     operation_busy: bool,
     operation_label: Option<String>,
     operation_message: Option<(bool, String)>,
-    deep_run_tab: bool,
     run_history: Vec<RunRecord>,
     selected_run: Option<String>,
     run_history_error: Option<String>,
@@ -90,7 +99,7 @@ impl RootView {
             state: None,
             refresh_error: None,
             selected_task: None,
-            interactive_tab: false,
+            panel: Panel::DeepWork,
             interactive_status: None,
             interactive_error: None,
             selected_hours: 1.0,
@@ -98,7 +107,6 @@ impl RootView {
             operation_busy: false,
             operation_label: None,
             operation_message: None,
-            deep_run_tab: false,
             run_history: Vec::new(),
             selected_run: None,
             run_history_error: None,
@@ -418,166 +426,714 @@ impl RootView {
         }
     }
 
-    fn header(&self) -> impl IntoElement {
-        h_flex()
-            .items_center()
-            .gap_3()
+    fn sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let run_count = self.run_history.len().to_string();
+        let menu = SidebarMenu::new()
             .child(
-                div()
-                    .text_lg()
-                    .font_weight(FontWeight::BOLD)
-                    .child("Stint"),
+                SidebarMenuItem::new("Deep Work")
+                    .icon(Icon::new(IconName::Bot))
+                    .active(self.panel == Panel::DeepWork)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.panel = Panel::DeepWork;
+                        cx.notify();
+                    })),
             )
             .child(
+                SidebarMenuItem::new("Deep Run")
+                    .icon(Icon::new(IconName::Play))
+                    .active(self.panel == Panel::DeepRun)
+                    .suffix(move |_, _| {
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(rgb(0x252a34))
+                            .text_color(rgb(0x9ba6b8))
+                            .child(run_count.clone())
+                            .into_any_element()
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.panel = Panel::DeepRun;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                SidebarMenuItem::new("Interactive")
+                    .icon(Icon::new(IconName::SquareTerminal))
+                    .active(self.panel == Panel::Interactive)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.panel = Panel::Interactive;
+                        cx.notify();
+                    })),
+            );
+        Sidebar::new("stint-nav")
+            .w(px(232.))
+            .header(
                 div()
                     .px_2()
                     .py_1()
-                    .rounded_md()
-                    .bg(rgb(0x252a34))
-                    .text_sm()
-                    .child(if self.deep_run_tab { "Deep Run controls" } else if self.interactive_tab { "interactive controls" } else { "Deep Work read only" }),
+                    .text_base()
+                    .font_weight(FontWeight::BOLD)
+                    .child("Stint"),
             )
-            .child(
-                div()
-                    .ml_auto()
-                    .text_sm()
-                    .text_color(rgb(0x8993a4))
-                    .child(if self.interactive_tab { "Status every 3s · telemetry every 12s" } else { "Auto-refresh every 2 seconds" }),
-            )
+            .child(menu)
+            .footer(self.compute_footer())
     }
 
-    fn navigation(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn compute_footer(&self) -> impl IntoElement {
+        let (dot, label, sub) = match &self.interactive_status {
+            Some(snapshot) if snapshot.active => {
+                let status = snapshot.session.status.clone();
+                let dot = match status.as_str() {
+                    "READY" => rgb(0x67c587),
+                    "RECOVERABLE" => rgb(0xe6ad69),
+                    "STOPPED" => rgb(0x8993a4),
+                    _ => rgb(0x70a4e5),
+                };
+                let sub = format!(
+                    "{} · {}",
+                    truncate(&status, 20),
+                    format_duration(snapshot.time.remaining_seconds)
+                );
+                (dot, format!("Compute · #{}", snapshot.session.instance_id), sub)
+            }
+            Some(_) => (rgb(0x8993a4), "No compute session".to_string(), "rent when needed".to_string()),
+            None if self.interactive_error.is_some() => (
+                rgb(0xe6ad69),
+                "Status unavailable".to_string(),
+                "retrying".to_string(),
+            ),
+            None => (rgb(0x8993a4), "Checking compute…".to_string(), String::new()),
+        };
+        v_flex()
+            .gap_1()
+            .p_3()
+            .border_t_1()
+            .border_color(rgb(0x252a34))
+            .child(
+                h_flex().items_center().gap_2()
+                    .child(
+                        div().size_2().rounded_full().bg(dot),
+                    )
+                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(label)),
+            )
+            .when(!sub.is_empty(), |this| this.child(div().px_4().text_sm().text_color(rgb(0x8993a4)).child(sub)))
+    }
+
+    fn launch_step(&self) -> u8 {
+        if self.mission_path.is_empty() || self.repo_path.is_empty() {
+            0
+        } else if self.mission_preview.is_none() {
+            1
+        } else if self.pending_run.is_some() {
+            2
+        } else {
+            3
+        }
+    }
+
+    fn step_indicator(&self, index: u8, label: &str) -> impl IntoElement {
+        let current = self.launch_step();
+        let (circle, text) = if current < index {
+            (rgb(0x3a4150), rgb(0x7d8698))
+        } else if current == index {
+            (rgb(0x70a4e5), rgb(0xdbe6f5))
+        } else {
+            (rgb(0x3d6a52), rgb(0x8fd0aa))
+        };
+        let mark = if current > index { "✓".to_string() } else { index.to_string() };
         h_flex()
             .items_center()
             .gap_2()
             .child(
                 div()
-                    .id("tab-deep-work")
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .cursor_pointer()
-                            .bg(if !self.interactive_tab && !self.deep_run_tab { rgb(0x354256) } else { rgb(0x20252e) })
+                    .w_6()
+                    .h_6()
+                    .rounded_full()
+                    .flex_shrink_0()
+                    .border_1()
+                    .border_color(circle)
                     .text_sm()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.interactive_tab = false;
-                        this.deep_run_tab = false;
-                        cx.notify();
-                    }))
-                    .child("Deep Work"),
+                    .text_color(circle)
+                    .child(mark),
+            )
+            .child(div().text_sm().text_color(text).child(label.to_string()))
+    }
+
+    fn progress_bar(&self, verified: usize, total: usize) -> impl IntoElement {
+        let fraction = if total > 0 {
+            (verified as f64 / total as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        h_flex()
+            .items_center()
+            .w_full()
+            .gap_3()
+            .child(
+                div()
+                    .flex_1()
+                    .h_2()
+                    .rounded_full()
+                    .overflow_hidden()
+                    .bg(rgb(0x232936))
+                    .child(
+                        div()
+                            .h_full()
+                            .rounded_full()
+                            .bg(rgb(0x67c587))
+                            .w(relative(fraction as f32)),
+                    ),
             )
             .child(
                 div()
-                    .id("tab-interactive")
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .bg(if self.interactive_tab { rgb(0x354256) } else { rgb(0x20252e) })
                     .text_sm()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.interactive_tab = true;
-                        this.deep_run_tab = false;
-                        cx.notify();
-                    }))
-                    .child("Interactive"),
-            )
-            .child(
-                div()
-                    .id("tab-deep-run")
-                    .px_3().py_2().rounded_md().cursor_pointer()
-                    .bg(if self.deep_run_tab { rgb(0x354256) } else { rgb(0x20252e) })
-                    .text_sm()
-                    .on_click(cx.listener(|this, _, _, cx| { this.interactive_tab = false; this.deep_run_tab = true; cx.notify(); }))
-                    .child("Deep Run"),
+                    .text_color(rgb(0x9ba6b8))
+                    .child(format!("{verified}/{total} verified")),
             )
     }
 
-    fn deep_run_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut panel = v_flex().id("deep-run-content").overflow_y_scroll().w_full().flex_1().gap_4()
-            .child(h_flex().items_center().child(div().text_xl().font_weight(FontWeight::BOLD).child("Create and monitor Deep Work"))
-                .child(div().ml_auto().text_sm().text_color(rgb(0x8993a4)).child(if self.run_busy { "Working…" } else { "State refreshes every 5 seconds" })));
+    fn deep_run_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut panel = v_flex()
+            .id("deep-run-content")
+            .overflow_y_scroll()
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .gap_4()
+            .child(
+                h_flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xl()
+                            .font_weight(FontWeight::BOLD)
+                            .child("Create and monitor Deep Work"),
+                    )
+                    .child(
+                        div()
+                            .ml_auto()
+                            .text_sm()
+                            .text_color(if self.run_busy { rgb(0xe6ad69) } else { rgb(0x8993a4) })
+                            .child(if self.run_busy {
+                                "Working…".to_string()
+                            } else {
+                                "Refreshes every 5s".to_string()
+                            }),
+                    ),
+            );
 
-        let mut launch = v_flex().w_full().gap_3().p_4().border_1().border_color(rgb(0x2d333e)).rounded_lg().bg(rgb(0x191d24))
-            .child(div().text_base().font_weight(FontWeight::BOLD).child("New run"));
-        launch = launch.child(h_flex().items_center().gap_2()
-            .child(div().flex_1().text_sm().text_color(rgb(0x9ba6b8)).child(if self.mission_path.is_empty() { "Choose a mission Markdown file".into() } else { self.mission_path.clone() }))
-                    .child(action_button!("Choose mission", cx.listener(|this, _, _, cx| this.pick_path(true, cx)))));
-        launch = launch.child(h_flex().items_center().gap_2()
-            .child(div().flex_1().text_sm().text_color(rgb(0x9ba6b8)).child(if self.repo_path.is_empty() { "Choose a clean target repository".into() } else { self.repo_path.clone() }))
-            .child(action_button!("Choose repository", cx.listener(|this, _, _, cx| this.pick_path(false, cx)))));
-        launch = launch.child(h_flex().items_center().gap_2().child(div().text_sm().text_color(rgb(0x8993a4)).child("New compute duration"))
-            .children([1.0_f64, 2.0, 4.0].into_iter().map(|hours| {
-                let selected = (self.run_hours-hours).abs()<0.001;
-                div().id(format!("deep-hours-{hours:.0}")).px_3().py_2().rounded_md().cursor_pointer().bg(if selected {rgb(0x354256)} else {rgb(0x20252e)}).text_sm()
-                    .on_click(cx.listener(move |this, _, _, cx| {this.run_hours=hours;cx.notify();})).child(format!("{hours:.0}h"))
-            }))
-            .child(action_button!("Validate and preview", cx.listener(|this, _, _, cx| this.preview_mission(cx)))));
+        let launch = self.launch_flow(cx);
+        panel = panel.child(launch);
+        panel.child(self.run_monitor(cx))
+    }
+
+    fn launch_flow(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut card = v_flex()
+            .w_full()
+            .flex_shrink_0()
+            .gap_4()
+            .p_4()
+            .border_1()
+            .border_color(rgb(0x2d333e))
+            .rounded_lg()
+            .bg(rgb(0x191d24))
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_5()
+                    .child(self.step_indicator(0, "Mission & repo"))
+                    .child(self.step_indicator(1, "Validate"))
+                    .child(self.step_indicator(2, "Compute & launch")),
+            );
+
+        let mut step = v_flex().gap_3().p_3().rounded_md().bg(rgb(0x20252e));
+        step = step.child(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .text_color(rgb(0x9ba6b8))
+                        .child(if self.mission_path.is_empty() {
+                            "Choose a mission Markdown file".to_string()
+                        } else {
+                            self.mission_path.clone()
+                        }),
+                )
+                .child(action_button!(
+                    "Choose mission",
+                    cx.listener(|this, _, _, cx| this.pick_path(true, cx))
+                )),
+        );
+        step = step.child(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .text_color(rgb(0x9ba6b8))
+                        .child(if self.repo_path.is_empty() {
+                            "Choose a clean target repository".to_string()
+                        } else {
+                            self.repo_path.clone()
+                        }),
+                )
+                .child(action_button!(
+                    "Choose repository",
+                    cx.listener(|this, _, _, cx| this.pick_path(false, cx))
+                )),
+        );
+        step = step.child(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .child(div().text_sm().text_color(rgb(0x8993a4)).child("If new compute is needed"))
+                .children([1.0_f64, 2.0, 4.0].into_iter().map(|hours| {
+                    let selected = (self.run_hours - hours).abs() < 0.001;
+                    div()
+                        .id(format!("deep-hours-{hours:.0}"))
+                        .px_3()
+                        .py_2()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .bg(if selected { rgb(0x354256) } else { rgb(0x20252e) })
+                        .text_sm()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.run_hours = hours;
+                            cx.notify();
+                        }))
+                        .child(format!("{hours:.0}h"))
+                }))
+                .child(action_button!(
+                    "Validate and preview",
+                    cx.listener(|this, _, _, cx| this.preview_mission(cx))
+                )),
+        );
+        card = card.child(step);
+
         if let Some(preview) = &self.mission_preview {
-            launch = launch.child(v_flex().gap_1().p_3().rounded_md().bg(rgb(0x20252e))
-                .child(div().font_weight(FontWeight::BOLD).child(format!("{} · {} tasks", preview.name, preview.tasks.len())))
-                .child(div().text_sm().child(preview.objective.clone()))
-                .children(preview.tasks.iter().map(|task| div().text_sm().text_color(rgb(0x9ba6b8)).child(format!("{} · {}", task.id, task.objective))))
-                .when(!preview.success.is_empty(), |card| card.child(div().text_sm().child(format!("Success: {}", preview.success.join(" · ")))))
-                .when(!preview.constraints.is_empty(), |card| card.child(div().text_sm().child(format!("Constraints: {}", preview.constraints.join(" · ")))))
-                .child(div().text_sm().text_color(rgb(0x8993a4)).child(truncate(&preview.content, 5000))));
-            launch = launch.child(action_button!("Review and start", cx.listener(|this, _, _, cx| this.request_deep_start(cx))));
+            card = card.child(
+                v_flex()
+                    .gap_1()
+                    .p_3()
+                    .rounded_md()
+                    .bg(rgb(0x20252e))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!("{} · {} tasks", preview.name, preview.tasks.len())),
+                    )
+                    .child(div().text_sm().child(preview.objective.clone()))
+                    .children(
+                        preview
+                            .tasks
+                            .iter()
+                            .map(|task| div().text_sm().text_color(rgb(0x9ba6b8)).child(format!("{} · {}", task.id, task.objective))),
+                    )
+                    .when(!preview.success.is_empty(), |card| {
+                        card.child(div().text_sm().child(format!("Success: {}", preview.success.join(" · "))))
+                    })
+                    .when(!preview.constraints.is_empty(), |card| {
+                        card.child(div().text_sm().child(format!("Constraints: {}", preview.constraints.join(" · "))))
+                    })
+                    .child(div().text_sm().text_color(rgb(0x8993a4)).child(truncate(&preview.content, 5000))),
+            );
+            card = card.child(action_button!(
+                "Review and start",
+                cx.listener(|this, _, _, cx| this.request_deep_start(cx))
+            ));
         }
+
         if let Some(review) = &self.pending_run {
             let provision = review.selected.offer_id != "existing-ready-session";
-            launch = launch.child(v_flex().gap_2().p_3().rounded_md().bg(rgb(0x252a34))
-                .child(div().font_weight(FontWeight::BOLD).child(if provision { "Confirm compute rental" } else { "Confirm Deep Work start" }))
-                .child(div().text_sm().child(if provision { format!("{} · {} · {}h · ${:.2}/hour · estimated ${:.2}", review.selected.gpu_model, review.selected.runtime, review.hours, review.selected.hourly_usd, review.selected.estimated_session_usd) } else { "Reuse the existing READY compute session. No new rental will be requested.".into() }))
-                .child(h_flex().gap_2().child(action_button!("Confirm", cx.listener(|this, _, _, cx| this.confirm_deep_start(cx))))
-                    .child(action_button!("Cancel", cx.listener(|this, _, _, cx| {this.pending_run=None;cx.notify();})))));
+            card = card.child(
+                v_flex()
+                    .gap_2()
+                    .p_3()
+                    .rounded_md()
+                    .bg(rgb(0x252a34))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::BOLD)
+                            .child(if provision {
+                                "Confirm compute rental"
+                            } else {
+                                "Confirm Deep Work start"
+                            }),
+                    )
+                    .child(
+                        div().text_sm().child(if provision {
+                            format!(
+                                "{} · {} · {}h · ${:.2}/hour · estimated ${:.2}",
+                                review.selected.gpu_model,
+                                review.selected.runtime,
+                                review.hours,
+                                review.selected.hourly_usd,
+                                review.selected.estimated_session_usd
+                            )
+                        } else {
+                            "Reuse the existing READY compute session. No new rental will be requested.".into()
+                        }),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(action_button!(
+                                "Confirm",
+                                cx.listener(|this, _, _, cx| this.confirm_deep_start(cx))
+                            ))
+                            .child(action_button!(
+                                "Cancel",
+                                cx.listener(|this, _, _, cx| {
+                                    this.pending_run = None;
+                                    cx.notify();
+                                })
+                            )),
+                    ),
+            );
         }
-        if let Some((success, message)) = &self.run_message {
-            launch = launch.child(div().p_2().rounded_md().bg(if *success { rgb(0x1d3429) } else { rgb(0x3a2927) }).text_sm().text_color(if *success {rgb(0x67c587)} else {rgb(0xe58c8c)}).child(message.clone()));
-        }
-        panel = panel.child(launch);
 
-        let mut monitor = v_flex().w_full().gap_3().p_4().border_1().border_color(rgb(0x2d333e)).rounded_lg().bg(rgb(0x191d24))
-            .child(div().text_base().font_weight(FontWeight::BOLD).child("Run monitor"));
-        monitor = monitor.child(h_flex().gap_2().children(self.run_history.iter().map(|record| {
-            let id = record.state.session_id.clone();
-            let selected = self.selected_run.as_deref() == Some(id.as_str());
-            div().id(format!("run-history-{id}")).px_3().py_2().rounded_md().cursor_pointer().bg(if selected {rgb(0x354256)} else {rgb(0x20252e)}).text_sm()
-                .on_click(cx.listener(move |this, _, _, cx| {this.selected_run=Some(id.clone());cx.notify();}))
-                .child(format!("{} · {}", record.state.mission_name, record.state.phase))
-        })));
-        if let Some(error) = &self.run_history_error {
-            monitor = monitor.child(div().text_sm().text_color(rgb(0xe6ad69)).child(format!("History unavailable: {error}")));
-        } else if let Some(record) = self.run_history.iter().find(|r| Some(r.state.session_id.as_str()) == self.selected_run.as_deref()) {
-            let terminal = record.state.phase == "landed" || record.state.phase == "stopped";
-            let mut summary = v_flex().gap_1().child(div().font_weight(FontWeight::BOLD).child(format!("{} · {} · {}", record.state.mission_name, record.state.session_id, record.state.phase)))
-                .child(div().text_sm().text_color(rgb(0x9ba6b8)).child(format!("{} · deadline {} · coordinator {}", record.state.objective, record.state.deadline.as_deref().unwrap_or("unknown"), if record.coordinator_alive {"running"} else {"not running"})));
-            if record.latest && !terminal {
-                let mut controls = h_flex().gap_2().child(action_button!("Stop run", cx.listener(|this, _, _, cx| {this.confirm_stop=true;cx.notify();})));
-                if !record.coordinator_alive {
-                    let id = record.state.session_id.clone();
-                    controls = controls.child(action_button!("Resume", cx.listener(move |this, _, _, cx| {this.confirm_resume=Some(id.clone());cx.notify();})));
-                }
-                summary = summary.child(controls);
-            }
-            if self.confirm_stop && record.latest {
-                summary = summary.child(h_flex().gap_2().child(div().text_sm().child("Stop this Deep Work run and land its current state?"))
-                    .child(action_button!("Confirm stop", cx.listener(|this, _, _, cx| this.run_lifecycle_action(None, cx))))
-                    .child(action_button!("Cancel", cx.listener(|this, _, _, cx| {this.confirm_stop=false;cx.notify();}))));
-            }
-            if let Some(id) = &self.confirm_resume {
-                let selected_id=id.clone();
-                summary = summary.child(h_flex().gap_2().child(div().text_sm().child(format!("Resume {selected_id}?")))
-                    .child(action_button!("Confirm resume", cx.listener(move |this, _, _, cx| this.run_lifecycle_action(Some(selected_id.clone()), cx))))
-                    .child(action_button!("Cancel", cx.listener(|this, _, _, cx| {this.confirm_resume=None;cx.notify();}))));
-            }
-            summary = summary.child(div().text_sm().child(format!("Tasks: {} total · {} verified · {} active · {} blocked", record.state.tasks.len(), record.state.tasks.iter().filter(|t|t.status=="verified").count(), record.state.tasks.iter().filter(|t|t.status=="active").count(), record.state.tasks.iter().filter(|t|t.status=="blocked").count())));
-            summary = summary.children(record.state.tasks.iter().map(|task| div().text_sm().text_color(rgb(if task.status=="blocked" {0xe6ad69} else {0x9ba6b8})).child(if task.blocker.is_empty() {format!("{} · {} · {}",task.id,task.status,task.objective)} else {format!("{} · {} · blocker: {}",task.id,task.status,task.blocker)})));
-            summary = summary.children(record.incidents.iter().rev().take(6).map(|incident| div().text_sm().text_color(rgb(0x8993a4)).child(format!("{} · {} {} {}",incident.time,incident.kind,incident.task,incident.detail))));
-            monitor = monitor.child(summary);
-        } else if self.run_history.is_empty() {
-            monitor = monitor.child(div().text_sm().text_color(rgb(0x8993a4)).child("No Deep Work runs found yet."));
+        if let Some((success, message)) = &self.run_message {
+            card = card.child(
+                div()
+                    .p_2()
+                    .rounded_md()
+                    .bg(if *success { rgb(0x1d3429) } else { rgb(0x3a2927) })
+                    .text_sm()
+                    .text_color(if *success { rgb(0x67c587) } else { rgb(0xe58c8c) })
+                    .child(message.clone()),
+            );
         }
-        panel.child(monitor)
+        card
+    }
+
+    fn run_monitor(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut container = h_flex()
+            .id("run-monitor")
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .gap_4();
+
+        let list = if self.run_history.is_empty() && self.run_history_error.is_none() {
+            v_flex()
+                .w(px(300.))
+                .flex_shrink_0()
+                .h_full()
+                .p_4()
+                .border_1()
+                .border_color(rgb(0x2d333e))
+                .rounded_lg()
+                .bg(rgb(0x191d24))
+                .child(div().text_sm().text_color(rgb(0x8993a4)).child("No Deep Work runs yet. Launch one above."))
+                .into_any_element()
+        } else if let Some(error) = &self.run_history_error {
+            v_flex()
+                .w(px(300.))
+                .flex_shrink_0()
+                .h_full()
+                .p_4()
+                .border_1()
+                .border_color(rgb(0x2d333e))
+                .rounded_lg()
+                .bg(rgb(0x191d24))
+                .child(div().font_weight(FontWeight::BOLD).child("History"))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(0xe6ad69))
+                        .child(format!("History unavailable: {error}")),
+                )
+                .into_any_element()
+        } else {
+            v_flex()
+                .w(px(300.))
+                .flex_shrink_0()
+                .h_full()
+                .p_3()
+                .border_1()
+                .border_color(rgb(0x2d333e))
+                .rounded_lg()
+                .bg(rgb(0x191d24))
+                .child(div().font_weight(FontWeight::BOLD).child("Runs"))
+                .child(
+                    div()
+                        .id("run-history-list")
+                        .overflow_y_scroll()
+                        .flex_1()
+                        .min_h_0()
+                        .children(
+                            self.run_history
+                                .iter()
+                                .map(|record| self.run_history_row(record, cx)),
+                        ),
+                )
+                .into_any_element()
+        };
+        container = container.child(list);
+
+        let detail = if let Some(record) = self
+            .run_history
+            .iter()
+            .find(|r| Some(r.state.session_id.as_str()) == self.selected_run.as_deref())
+        {
+            self.run_detail(record, cx).into_any_element()
+        } else {
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .p_4()
+                .border_1()
+                .border_color(rgb(0x2d333e))
+                .rounded_lg()
+                .bg(rgb(0x191d24))
+                .child(div().text_sm().text_color(rgb(0x8993a4)).child("Select a run to inspect its progress."))
+                .into_any_element()
+        };
+        container.child(detail)
+    }
+
+    fn run_history_row(&self, record: &RunRecord, cx: &mut Context<Self>) -> impl IntoElement {
+        let id = record.state.session_id.clone();
+        let selected = self.selected_run.as_deref() == Some(id.as_str());
+        let verified = record.state.tasks.iter().filter(|t| t.status == "verified").count();
+        h_flex()
+            .id(format!("run-history-{id}"))
+            .items_center()
+            .gap_2()
+            .p_3()
+            .mb_1()
+            .rounded_md()
+            .cursor_pointer()
+            .bg(if selected { rgb(0x2b3543) } else { rgb(0x20252e) })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.selected_run = Some(id.clone());
+                cx.notify();
+            }))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .child(truncate(&record.state.mission_name, 28)),
+                            )
+                            .when(record.latest, |row| {
+                                row.child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .bg(rgb(0x1d3429))
+                                        .text_sm()
+                                        .text_color(rgb(0x67c587))
+                                        .child("latest"),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(0x8993a4))
+                            .child(format!("{} verified of {}", verified, record.state.tasks.len())),
+                    ),
+            )
+            .child(phase_badge(&record.state.phase))
+    }
+
+    fn run_detail(&self, record: &RunRecord, cx: &mut Context<Self>) -> impl IntoElement {
+        let terminal = record.state.phase == "landed" || record.state.phase == "stopped";
+        let verified = record.state.tasks.iter().filter(|t| t.status == "verified").count();
+        let mut card = v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .gap_3()
+            .p_4()
+            .border_1()
+            .border_color(rgb(0x2d333e))
+            .rounded_lg()
+            .bg(rgb(0x191d24))
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_base()
+                            .font_weight(FontWeight::BOLD)
+                            .child(truncate(&record.state.mission_name, 40)),
+                    )
+                    .child(phase_badge(&record.state.phase)),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(0x9ba6b8))
+                    .child(format!(
+                        "Session {} · deadline {} · coordinator {}",
+                        record.state.session_id,
+                        record.state.deadline.as_deref().unwrap_or("unknown"),
+                        if record.coordinator_alive { "running" } else { "not running" }
+                    )),
+            );
+
+        card = card.child(self.progress_bar(verified, record.state.tasks.len()));
+
+        if record.latest && !terminal {
+            card = card.child(
+                h_flex()
+                    .gap_2()
+                    .child(action_button!(
+                        "Stop run",
+                        cx.listener(|this, _, _, cx| {
+                            this.confirm_stop = true;
+                            cx.notify();
+                        })
+                    ))
+                    .when(!record.coordinator_alive, |row| {
+                        let id = record.state.session_id.clone();
+                        row.child(action_button!(
+                            "Resume",
+                            cx.listener(move |this, _, _, cx| {
+                                this.confirm_resume = Some(id.clone());
+                                cx.notify();
+                            })
+                        ))
+                    }),
+            );
+        } else if !record.latest {
+            card = card.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(0x8993a4))
+                    .child("Historical run — read only. Controls act on the latest run only."),
+            );
+        }
+
+        if self.confirm_stop && record.latest {
+            card = card.child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_sm().child("Stop this Deep Work run and land its current state?"))
+                    .child(action_button!(
+                        "Confirm stop",
+                        cx.listener(|this, _, _, cx| this.run_lifecycle_action(None, cx))
+                    ))
+                    .child(action_button!(
+                        "Cancel",
+                        cx.listener(|this, _, _, cx| {
+                            this.confirm_stop = false;
+                            cx.notify();
+                        })
+                    )),
+            );
+        }
+        if let Some(id) = &self.confirm_resume {
+            let selected_id = id.clone();
+            card = card.child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_sm().child(format!("Resume {selected_id}?")))
+                    .child(action_button!(
+                        "Confirm resume",
+                        cx.listener(move |this, _, _, cx| {
+                            this.run_lifecycle_action(Some(selected_id.clone()), cx)
+                        })
+                    ))
+                    .child(action_button!(
+                        "Cancel",
+                        cx.listener(|this, _, _, cx| {
+                            this.confirm_resume = None;
+                            cx.notify();
+                        })
+                    )),
+            );
+        }
+
+        let tasks = record.state.tasks.clone();
+        let incidents = record.incidents.clone();
+        let body = v_flex()
+            .id("run-detail-body")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .gap_1()
+            .child(div().text_sm().font_weight(FontWeight::BOLD).child("Tasks"))
+            .children(
+                tasks.iter().map(|task| {
+                    h_flex()
+                        .items_start()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w_16()
+                                .flex_shrink_0()
+                                .text_sm()
+                                .text_color(rgb(0x9ba6b8))
+                                .truncate()
+                                .child(task.id.clone()),
+                        )
+                        .child(
+                            h_flex()
+                                .items_start()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_sm()
+                                        .child(truncate(&task.objective, 90)),
+                                )
+                                .when(!task.blocker.is_empty(), |row| {
+                                    row.child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .bg(rgb(0x3a2927))
+                                            .text_sm()
+                                            .text_color(rgb(0xe6ad69))
+                                            .child(truncate(&task.blocker, 40)),
+                                    )
+                                }),
+                        )
+                        .child(phase_badge(&task.status))
+                }),
+            )
+            .when(!incidents.is_empty(), |body| {
+                body.child(div().pt_2().text_sm().font_weight(FontWeight::BOLD).child("Recent incidents")).children(
+                    incidents.iter().rev().take(6).map(|incident| {
+                        div()
+                            .text_sm()
+                            .text_color(rgb(0x8993a4))
+                            .child(format!("{} · {} {} {}", incident.time, incident.kind, incident.task, incident.detail))
+                    }),
+                )
+            });
+        card.child(body)
     }
 
     fn interactive_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1210,25 +1766,23 @@ impl RootView {
 
 impl Render for RootView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut page = v_flex()
+        let content = match self.panel {
+            Panel::DeepWork => {
+                v_flex().flex_1().min_w_0().h_full().p_5().gap_4()
+                    .child(self.session_overview())
+                    .child(self.work_area(cx))
+                    .into_any_element()
+            }
+            Panel::DeepRun => v_flex().flex_1().min_w_0().h_full().p_5().child(self.deep_run_panel(cx)).into_any_element(),
+            Panel::Interactive => v_flex().flex_1().min_w_0().h_full().p_5().child(self.interactive_panel(cx)).into_any_element(),
+        };
+        h_flex()
             .w_full()
             .h_full()
-            .gap_4()
-            .p_6()
             .bg(rgb(0x111318))
             .text_color(rgb(0xe7e9ee))
-            .child(self.header())
-            .child(self.navigation(cx));
-        if self.deep_run_tab {
-            page = page.child(self.deep_run_panel(cx));
-        } else if self.interactive_tab {
-            page = page.child(self.interactive_panel(cx));
-        } else {
-            page = page
-                .child(self.session_overview())
-                .child(self.work_area(cx));
-        }
-        page
+            .child(self.sidebar(cx))
+            .child(content)
     }
 }
 
