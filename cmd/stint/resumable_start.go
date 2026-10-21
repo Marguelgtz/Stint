@@ -233,7 +233,11 @@ func runStartResumable(args []string) (retErr error) {
 	}
 	client := vast.NewClient(credentials.Vast.APIKey)
 
-	fmt.Println("Searching Vast for interactive compute...")
+	if *uiPreviewJSON {
+		fmt.Fprintln(os.Stderr, "Searching Vast for interactive compute...")
+	} else {
+		fmt.Println("Searching Vast for interactive compute...")
+	}
 	searchProfile, searchOptions := prepareVastSearchForRuntime(profile, vast.SearchOptions{
 		Hours: hours, Limit: 250, StorageGB: profile.Session.StorageGB,
 	}, runtimeRequest)

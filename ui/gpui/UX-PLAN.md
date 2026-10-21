@@ -48,6 +48,7 @@ Phase 2 (dashboards):
 | 13 | **Rust:** sidebar items + `start_refresh` 5s loops + `apply_*` methods | ✅ done |
 | 14 | `cargo check` (0 warn) + `cargo build` + xvfb smoke | ✅ done — 0/0, build ok, 30s no panic |
 | 15 | Commit dashboards; push `ui/gpui-dashboards`; PR (stacked) | ✅ done — **PR #196** |
+| 16 | Fix `null` vs `[]` (Go nil slices) in both `--json` paths + start-preview stdout purity | ✅ done — JSON verified 1:1, preview parses clean |
 
 ## Wire contract (Go → Rust) — do NOT re-derive
 - Both commands emit **one JSON document on stdout**, keys **camelCase** (`sessionId`,
@@ -64,6 +65,18 @@ Phase 2 (dashboards):
   landedAt, landing*, error, notice`.
 - On-box (production) deep dash: `--json` is threaded through the SSH route
   (`deepProductionDashboardCommand` / `runRemoteDeepDashboard` both take `jsonOut bool`).
+
+### Wire-contract pitfalls (fixed 2026-10-21)
+- **Go nil slices marshal as `null`, not `[]`** — serde `#[serde(default)]` only covers
+  *absent* keys, so explicit `null` failed with "invalid type null, expected a sequence".
+  Every slice field is normalized to an empty slice in the Go `--json` paths before
+  marshaling (dashboard: `laneRows`/`logs`/`laneEvents`; deep: `tasks`/`events`/`tasks[].dependsOn`).
+  Nullable pointers (`modal`, `landedAt`, `activeSince`) may stay `null` — Rust reads them
+  as `Option` / ignores them.
+- **`--ui-preview-json` stdout must be pure JSON** — the "Searching Vast..." progress line now
+  goes to stderr in that mode (it was breaking the Rust start-preview parser at line 1).
+- `cargo run --release` from `ui/gpui` resolves the CLI at `../../stint` (repo root) —
+  rebuild with `go build -o stint ./cmd/stint/` after Go changes, else the UI uses a stale binary.
 
 ## API facts learned (gpui-kit 0.7.3) — do NOT re-derive
 - **`IconName` is the 106-icon DEFAULT subset** (`gpui-kit-assets/default-icons.txt`), NOT the

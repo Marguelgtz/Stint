@@ -277,6 +277,17 @@ func runDeepDashboardJSON(args []string) error {
 	}
 	controller.model.Width, controller.model.Height = 0, 0
 	controller.model.Modal = nil
+	if controller.model.Tasks == nil {
+		controller.model.Tasks = []deepdash.Task{}
+	}
+	for i := range controller.model.Tasks {
+		if controller.model.Tasks[i].DependsOn == nil {
+			controller.model.Tasks[i].DependsOn = []string{}
+		}
+	}
+	if controller.model.Events == nil {
+		controller.model.Events = []deepdash.Event{}
+	}
 	out, err := json.MarshalIndent(controller.model, "", "  ")
 	if err != nil {
 		return err

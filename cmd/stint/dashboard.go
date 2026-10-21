@@ -254,6 +254,15 @@ func runDashboardJSON(args []string) error {
 	controller.model.Width, controller.model.Height = 0, 0
 	controller.model.View = dash.Home
 	controller.model.Modal = nil
+	if controller.model.Inference.LaneRows == nil {
+		controller.model.Inference.LaneRows = []dash.Lane{}
+	}
+	if controller.model.Logs == nil {
+		controller.model.Logs = []string{}
+	}
+	if controller.model.LaneEvents == nil {
+		controller.model.LaneEvents = []string{}
+	}
 	out, err := json.MarshalIndent(controller.model, "", "  ")
 	if err != nil {
 		return err
