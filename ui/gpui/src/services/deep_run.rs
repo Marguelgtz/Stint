@@ -3,8 +3,7 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-use crate::interactive;
-use crate::state::DeepState;
+use crate::services::{interactive, state::DeepState};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

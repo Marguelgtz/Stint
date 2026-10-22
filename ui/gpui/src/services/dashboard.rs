@@ -17,13 +17,13 @@ use serde::Deserialize;
 
 /// Fetch the interactive compute/GPU dashboard snapshot from the CLI.
 pub fn load_interactive() -> Result<InteractiveModel, String> {
-    let output = crate::interactive::run_stint(&["dashboard", "--json"])?;
+    let output = crate::services::interactive::run_stint(&["dashboard", "--json"])?;
     serde_json::from_str(&output).map_err(|e| format!("parse dashboard JSON: {e}"))
 }
 
 /// Fetch the Deep Work dashboard snapshot from the CLI (local or on-box).
 pub fn load_deep() -> Result<DeepModel, String> {
-    let output = crate::interactive::run_stint(&["deep", "dash", "--json"])?;
+    let output = crate::services::interactive::run_stint(&["deep", "dash", "--json"])?;
     serde_json::from_str(&output).map_err(|e| format!("parse deep dashboard JSON: {e}"))
 }
 
