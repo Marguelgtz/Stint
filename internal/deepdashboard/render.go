@@ -21,73 +21,106 @@ const (
 )
 
 type Task struct {
-	ID, Objective, Status, LastResult, Blocker, Reasoning   string
-	Verify, CheckpointCommit, VerifiedAt                    string
-	ExecutionError, VerificationCommand, VerificationResult string
-	TimeoutDecision                                         string
-	ConfiguredTimeoutSec, EffectiveTimeoutSec               int
-	DependsOn                                               []string
-	Attempts                                                int
+	ID                   string   `json:"id"`
+	Objective            string   `json:"objective"`
+	Status               string   `json:"status"`
+	LastResult           string   `json:"lastResult"`
+	Blocker              string   `json:"blocker"`
+	Reasoning            string   `json:"reasoning"`
+	Verify               string   `json:"verify"`
+	CheckpointCommit     string   `json:"checkpointCommit"`
+	VerifiedAt           string   `json:"verifiedAt"`
+	ExecutionError       string   `json:"executionError"`
+	VerificationCommand  string   `json:"verificationCommand"`
+	VerificationResult   string   `json:"verificationResult"`
+	TimeoutDecision      string   `json:"timeoutDecision"`
+	ConfiguredTimeoutSec int      `json:"configuredTimeoutSec"`
+	EffectiveTimeoutSec  int      `json:"effectiveTimeoutSec"`
+	DependsOn            []string `json:"dependsOn"`
+	Attempts             int      `json:"attempts"`
 }
 
 type Event struct {
-	Time, Kind, Task, Detail string
+	Time   string `json:"time"`
+	Kind   string `json:"kind"`
+	Task   string `json:"task"`
+	Detail string `json:"detail"`
 }
 
 type Compute struct {
-	Available                      bool
-	Status, Endpoint, Runtime, GPU string
-	Utilization, VRAM, Lane, Error string
+	Available   bool   `json:"available"`
+	Status      string `json:"status"`
+	Endpoint    string `json:"endpoint"`
+	Runtime     string `json:"runtime"`
+	GPU         string `json:"gpu"`
+	Utilization string `json:"utilization"`
+	VRAM        string `json:"vram"`
+	Lane        string `json:"lane"`
+	Error       string `json:"error"`
 }
 
 type Worker struct {
-	Observed, Reachable                                      bool
-	NInferContext, NInferKV, NInferDefaultMaxTokens          int
-	XHighRequests, MediumRequests                            int
-	Scope, LatestPhase, LatestAt, Compression, CompressionAt string
-	CompressionCompleted, CompressionFailed, Truncated       int
-	Error                                                    string
-	HermesLog, HermesLogError, HermesLogAt                   string
+	Observed               bool   `json:"observed"`
+	Reachable              bool   `json:"reachable"`
+	NInferContext          int    `json:"nInferContext"`
+	NInferKV               int    `json:"nInferKV"`
+	NInferDefaultMaxTokens int    `json:"nInferDefaultMaxTokens"`
+	XHighRequests          int    `json:"xHighRequests"`
+	MediumRequests         int    `json:"mediumRequests"`
+	Scope                  string `json:"scope"`
+	LatestPhase            string `json:"latestPhase"`
+	LatestAt               string `json:"latestAt"`
+	Compression            string `json:"compression"`
+	CompressionAt          string `json:"compressionAt"`
+	CompressionCompleted   int    `json:"compressionCompleted"`
+	CompressionFailed      int    `json:"compressionFailed"`
+	Truncated              int    `json:"truncated"`
+	Error                  string `json:"error"`
+	HermesLog              string `json:"hermesLog"`
+	HermesLogError         string `json:"hermesLogError"`
+	HermesLogAt            string `json:"hermesLogAt"`
 }
 
 type Modal struct {
-	Title string
-	Lines []string
-	Hint  string
+	Title string   `json:"title"`
+	Lines []string `json:"lines"`
+	Hint  string   `json:"hint"`
 }
 
 type Model struct {
-	Width, Height     int
-	NoColor           bool
-	View              View
-	SessionID         string
-	Mission           string
-	Phase             string
-	BaseCommit        string
-	Branch            string
-	Verify            string
-	ComputeBinding    string
-	LandingReason     string
-	LandingCommit     string
-	LandingVerify     string
-	LandingHandoff    string
-	LandingVerifyDone bool
-	LandedAt          *time.Time
-	Latest            bool
-	CanLand           bool
-	WorkerName        string
-	Coordinator       string
-	StartedAt         time.Time
-	Deadline          time.Time
-	LandBefore        time.Time
-	Now               time.Time
-	Tasks             []Task
-	ActiveSince       *time.Time
-	Events            []Event
-	Compute           Compute
-	Worker            Worker
-	Error, Notice     string
-	Modal             *Modal
+	Width             int        `json:"width"`
+	Height            int        `json:"height"`
+	NoColor           bool       `json:"noColor"`
+	View              View       `json:"view"`
+	SessionID         string     `json:"sessionId"`
+	Mission           string     `json:"mission"`
+	Phase             string     `json:"phase"`
+	BaseCommit        string     `json:"baseCommit"`
+	Branch            string     `json:"branch"`
+	Verify            string     `json:"verify"`
+	ComputeBinding    string     `json:"computeBinding"`
+	LandingReason     string     `json:"landingReason"`
+	LandingCommit     string     `json:"landingCommit"`
+	LandingVerify     string     `json:"landingVerify"`
+	LandingHandoff    string     `json:"landingHandoff"`
+	LandingVerifyDone bool       `json:"landingVerifyDone"`
+	LandedAt          *time.Time `json:"landedAt"`
+	Latest            bool       `json:"latest"`
+	CanLand           bool       `json:"canLand"`
+	WorkerName        string     `json:"workerName"`
+	Coordinator       string     `json:"coordinator"`
+	StartedAt         time.Time  `json:"startedAt"`
+	Deadline          time.Time  `json:"deadline"`
+	LandBefore        time.Time  `json:"landBefore"`
+	Now               time.Time  `json:"now"`
+	Tasks             []Task     `json:"tasks"`
+	ActiveSince       *time.Time `json:"activeSince"`
+	Events            []Event    `json:"events"`
+	Compute           Compute    `json:"compute"`
+	Worker            Worker     `json:"worker"`
+	Error             string     `json:"error"`
+	Notice            string     `json:"notice"`
+	Modal             *Modal     `json:"modal"`
 }
 
 type palette struct{ noColor bool }

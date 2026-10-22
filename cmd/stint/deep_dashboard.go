@@ -92,12 +92,16 @@ func runDeepDashboard(args []string) error {
 	fs.SetOutput(os.Stderr)
 	noColor := fs.Bool("no-color", false, "disable ANSI colors")
 	refresh := fs.Bool("refresh", false, "add one passive compute and GPU-worker observation in non-interactive mode")
+	jsonOut := fs.Bool("json", false, "print one JSON snapshot of the deep dashboard model and exit")
 	sessionID := fs.String("session", "", "Deep Work session id (default: latest)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return errors.New("deep dash does not accept positional arguments")
+	}
+	if *jsonOut {
+		return runDeepDashboardJSON(args)
 	}
 	paths, err := config.DefaultPaths()
 	if err != nil {
@@ -112,7 +116,7 @@ func runDeepDashboard(args []string) error {
 	}
 	controller.loadLocal()
 	if binding, bindErr := loadDeepProductionBinding(paths); bindErr == nil && shouldRouteDeepDashboardRemote(controller, binding, *sessionID) {
-		return runRemoteDeepDashboard(paths, binding, controller.model.NoColor, *refresh)
+		return runRemoteDeepDashboard(paths, binding, controller.model.NoColor, *refresh, false)
 	}
 	if !dash.IsTTY(os.Stdin) || !dash.IsTTY(os.Stdout) {
 		if *refresh && controller.model.Error == "" {
@@ -220,7 +224,7 @@ func shouldRouteDeepDashboardRemote(controller *deepDashboardController, binding
 	return binding.LaunchedAt.After(controller.snapshot.State.StartedAt)
 }
 
-func deepProductionDashboardCommand(binding deepProductionRunBinding, sessionID string, noColor, refresh bool) string {
+func deepProductionDashboardCommand(binding deepProductionRunBinding, sessionID string, noColor, refresh, jsonOut bool) string {
 	if sessionID == "" {
 		sessionID = binding.DeepSessionID
 	}
@@ -237,16 +241,68 @@ func deepProductionDashboardCommand(binding deepProductionRunBinding, sessionID 
 	if refresh {
 		parts = append(parts, "--refresh")
 	}
+	if jsonOut {
+		parts = append(parts, "--json")
+	}
 	return strings.Join(parts, " ")
 }
 
-func runRemoteDeepDashboard(paths config.Paths, binding deepProductionRunBinding, noColor, refresh bool) error {
+// runDeepDashboardJSON emits one JSON snapshot of the deep dashboard model so
+// the GPUI app can read the same durable Deep Work progress the TUI renders. It
+// reuses loadLocal + a single passive remote observation (refreshBlocking), so
+// the figures never diverge from the interactive dashboard.
+func runDeepDashboardJSON(args []string) error {
+	fs := flag.NewFlagSet("deep dash", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Bool("no-color", false, "")
+	fs.Bool("refresh", false, "")
+	fs.Bool("json", false, "")
+	sessionID := fs.String("session", "", "")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	path, err := config.DefaultPaths()
+	if err != nil {
+		return err
+	}
+	controller := &deepDashboardController{
+		paths:     path,
+		sessionID: *sessionID,
+		model:     deepdash.Model{View: deepdash.Run},
+		refreshCh: make(chan deepDashboardRemoteResult, 1),
+	}
+	controller.loadLocal()
+	if controller.model.Error == "" {
+		controller.refreshBlocking()
+	}
+	controller.model.Width, controller.model.Height = 0, 0
+	controller.model.Modal = nil
+	if controller.model.Tasks == nil {
+		controller.model.Tasks = []deepdash.Task{}
+	}
+	for i := range controller.model.Tasks {
+		if controller.model.Tasks[i].DependsOn == nil {
+			controller.model.Tasks[i].DependsOn = []string{}
+		}
+	}
+	if controller.model.Events == nil {
+		controller.model.Events = []deepdash.Event{}
+	}
+	out, err := json.MarshalIndent(controller.model, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	return nil
+}
+
+func runRemoteDeepDashboard(paths config.Paths, binding deepProductionRunBinding, noColor, refresh, jsonOut bool) error {
 	ssh, err := localenv.SSHExecutable()
 	if err != nil {
 		return err
 	}
 	state := sessionstate.State{InstanceID: binding.InstanceID, SSHHost: binding.SSHHost, SSHPort: binding.SSHPort}
-	remoteCommand := deepProductionDashboardCommand(binding, binding.DeepSessionID, noColor, refresh)
+	remoteCommand := deepProductionDashboardCommand(binding, binding.DeepSessionID, noColor, refresh, jsonOut)
 	args := sshArgs(paths, state, filepath.Join(paths.StateDir, "known_hosts"), remoteCommand)
 	if dash.IsTTY(os.Stdin) && dash.IsTTY(os.Stdout) {
 		args = append([]string{"-t", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"}, args...)

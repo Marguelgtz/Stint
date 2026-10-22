@@ -1,27 +1,33 @@
 # GPUI UX — Living Action Plan
 
-> Living document. Update status as work lands. Owner: Hermes. Branch: `ui/gpui-interactive-controls`.
+> Living document. Update status as work lands. Owner: Hermes.
+> Branch: `ui/gpui-dashboards` (stacked on `ui/gpui-interactive-controls`).
 > Last touched: 2026-10-20
 
 ## Objective
 Make the Stint GPUI app a calm, glanceable **operator console** for Deep Work / Deep Run /
-Interactive sessions. Start with a left side nav, then de-duplicate shared UI so the three
-panels share one design language. No repeated layout logic.
+Interactive sessions. Phase 1 (done): left side nav + de-duplicated shared UI. Phase 2 (current):
+add the two **CLI dashboards** (interactive live dash + deep board) as native GPUI panels that show
+the *same figures the CLI TUI renders* — with the Go CLI as the single source of truth for data.
 
 ## Principles
 - **Monitor/Operate** surface: dense, at-a-glance, no marketing chrome.
-- **DRY**: one `Sidebar`, shared row/card/badge/progress helpers reused across panels.
+- **DRY**: one `Sidebar`; shared row/card/badge/progress helpers reused across ALL panels.
+- **Single source of truth**: Go owns dashboard projection. The UI never re-derives figures — it
+  deserializes the exact model the CLI marshals via `--json`.
 - **Honest state**: refresh failures and stale data must be visible, never silent.
 - **Safe actions**: confirm stop/resume; disable invalid actions; history is read-only.
 
 ## Goals
-1. Left side nav (collapsible) for Deep Work / Deep Run / Interactive. ✅
-2. Deep Run rebuilt as a clear step flow (select → validate → provision → launch). ✅
-3. Run monitor with history list + detail, task progress bar, stale-data warning. ✅
-4. Deep Work panel shows verified/total progress at a glance. ✅
-5. Shared components: sidebar item, status badge, progress bar, section header. ✅
-6. Compiles clean (`cargo check` green). ✅
-7. Manual render check of all 3 tabs (headless xvfb). ✅ (ran 25s, no panic; only benign DRI3 fallback warning)
+Phase 1 (sidenav + step flow + run monitor) — ✅ all done (see task board).
+Phase 2 (dashboards):
+1. `stint dashboard --json` + `stint deep dash --json` emit the exact TUI model. ✅
+2. `ui/gpui/src/dashboard.rs`: serde wire models + `load_interactive`/`load_deep` fetchers. ✅
+3. Interactive live-dash panel: session header, GPU, health, inference (+ lane table), perf, logs. ✅
+4. Deep board panel: mission header, progress, compute, worker, tasks, recent events. ✅
+5. Sidebar items (`Cpu` = Live Dashboard, `LayoutDashboard` = Deep Board) + 5s auto-refresh. ✅
+6. `cargo check` + `cargo build` + headless xvfb smoke test green. ✅ (check 0 warn, build ok, xvfb 30s no panic)
+7. Commit + PR → stacked on prior UI work. ✅ **PR #196** open (head `ui/gpui-dashboards` → base `ui/gpui-interactive-controls`)
 
 ## Task Board
 
@@ -34,22 +40,66 @@ panels share one design language. No repeated layout logic.
 | 5 | Fix compile errors (icons, `Sidebar.width`, `Div.style_with`, borrows, `w_18`) | ✅ done |
 | 6 | `cargo check` green | ✅ done |
 | 7 | `cargo build` + headless render smoke test (xvfb) | ✅ done — no panic, benign DRI3 fallback only |
+| 8 | **Go:** `--json` on `stint dashboard` + `stint deep dash` (reuse `loadLocal`/snapshot; thread through on-box SSH route) | ✅ done — `go build ./...` clean, JSON verified |
+| 9 | **Go:** camelCase `json` tags on `internal/dashboard` + `internal/deepdashboard` model structs | ✅ done |
+| 10 | **Rust:** `dashboard.rs` serde models (camelCase) + `load_interactive`/`load_deep` | ✅ done — keys verified 1:1 against live CLI JSON |
+| 11 | **Rust:** interactive live-dash panel (session/GPU/health/inference+lanes/perf/logs) | ✅ done |
+| 12 | **Rust:** deep board panel (header/progress/compute/worker/tasks/events) | ✅ done |
+| 13 | **Rust:** sidebar items + `start_refresh` 5s loops + `apply_*` methods | ✅ done |
+| 14 | `cargo check` (0 warn) + `cargo build` + xvfb smoke | ✅ done — 0/0, build ok, 30s no panic |
+| 15 | Commit dashboards; push `ui/gpui-dashboards`; PR (stacked) | ✅ done — **PR #196** |
+| 16 | Fix `null` vs `[]` (Go nil slices) in both `--json` paths + start-preview stdout purity | ✅ done — JSON verified 1:1, preview parses clean |
+
+## Wire contract (Go → Rust) — do NOT re-derive
+- Both commands emit **one JSON document on stdout**, keys **camelCase** (`sessionId`,
+  `instanceId`, `laneEvents`, `nInferKV`, …). Rust models use `#[serde(rename_all="camelCase")]`
+  + `#[serde(default)]` on every field so missing/extra keys never fail.
+- **`time.Duration` marshals as an integer count of NANOSECONDS** (not seconds, not a string).
+  Rust: `i64` + `dashboard::ns_to_secs(ns)` to display. Verified: 90m → `5400000000000`.
+- **`time.Time` marshals as RFC3339**; the zero time is `"0001-01-01T00:00:00Z"` (treat as unset).
+- The Go `Model` also carries TUI-only fields (`view`, `width`, `height`, `modal`, `noColor`) —
+  serde ignores unknown fields, so the Rust structs can omit them.
+- Interactive top-level: `noSession, session, health, gpu, inference, perf, logs, laneEvents,
+  notice, error`. Deep top-level: `sessionId, mission, phase, branch, baseCommit, coordinator,
+  workerName, startedAt, deadline, landBefore, tasks, events, compute, worker, canLand, latest,
+  landedAt, landing*, error, notice`.
+- On-box (production) deep dash: `--json` is threaded through the SSH route
+  (`deepProductionDashboardCommand` / `runRemoteDeepDashboard` both take `jsonOut bool`).
+
+### Wire-contract pitfalls (fixed 2026-10-21)
+- **Go nil slices marshal as `null`, not `[]`** — serde `#[serde(default)]` only covers
+  *absent* keys, so explicit `null` failed with "invalid type null, expected a sequence".
+  Every slice field is normalized to an empty slice in the Go `--json` paths before
+  marshaling (dashboard: `laneRows`/`logs`/`laneEvents`; deep: `tasks`/`events`/`tasks[].dependsOn`).
+  Nullable pointers (`modal`, `landedAt`, `activeSince`) may stay `null` — Rust reads them
+  as `Option` / ignores them.
+- **`--ui-preview-json` stdout must be pure JSON** — the "Searching Vast..." progress line now
+  goes to stderr in that mode (it was breaking the Rust start-preview parser at line 1).
+- `cargo run --release` from `ui/gpui` resolves the CLI at `../../stint` (repo root) —
+  rebuild with `go build -o stint ./cmd/stint/` after Go changes, else the UI uses a stale binary.
 
 ## API facts learned (gpui-kit 0.7.3) — do NOT re-derive
 - **`IconName` is the 106-icon DEFAULT subset** (`gpui-kit-assets/default-icons.txt`), NOT the
-  full 1830 catalog. Valid sidebar icons used: `Bot` (Deep Work), `Play` (Deep Run),
-  `SquareTerminal` (Interactive). `Workflow`/`Rocket`/`Terminal` do NOT exist here.
+  full 1830 catalog. Valid icons used: `Bot` (Deep Work), `Play` (Deep Run),
+  `SquareTerminal` (Interactive), `Cpu` (Live Dashboard), `LayoutDashboard` (Deep Board).
+  `Workflow`/`Rocket`/`Terminal` do NOT exist here.
 - **`Sidebar` implements `Styled`** → size it with `.w(px(...))` (there is NO `.width()`).
-- **Fractional width** → `.w(relative(f32))` (e.g. progress bar). NOT `style_with(...)` /
-  `percentage(...)`.
-- **`w_N` helpers** exist for `0,2,4,6,8,10,12,16,20,24,32` + `w_full`/`w_1`/`w_1_2` etc.
+- **Fractional width** → `.w(relative(f32))`. NOT `style_with(...)` / `percentage(...)`.
+- **`w_N` helpers** exist for `0,2,4,6,8,10,12,16,20,24,32` + `w_full`/`w_1`/`w_1_2`.
   `w_18` does NOT exist → use `w_16` + `.truncate()`.
-- **`SidebarMenuItem::suffix`** is `Fn(&mut Window,&mut App)->E + 'static` → it OWNS captured
-  locals via `move`; clone owned values per call (e.g. `run_count.clone()`). It cannot borrow
-  `self` (not 'static).
+- **`SidebarMenuItem::suffix`** is `Fn(&mut Window,&mut App)->E + 'static` → owns captured locals
+  via `move`; clone owned values per call. It cannot borrow `self`.
 - **`cx.listener`** closures borrow `this: &mut Self` — keep them in the same method scope.
+- **`grid_cols` takes a `u16` column COUNT, not a CSS template** — for variable-width table rows
+  use `h_flex` + `.w(relative(f32))` per cell instead (header + data share the same fractions).
+- **Go `json` struct tags**: a shared tag string (`a,b,c`) on a multi-field declaration is IGNORED
+  (fields drop out of JSON entirely). Each field needs its OWN `json:"name"` tag.
+- **Module-level `#![allow(dead_code)]`** is valid on a non-crate module (used in `dashboard.rs`
+  because wire-contract fields are intentionally present even when not yet rendered).
 
 ## Notes
 - gpui docs: https://docs.rs/gpui/latest/gpui/
 - **gpui-kit docs (user-saved, authoritative for components): https://gpui-kit.com/docs/**
 - gpui-component `Sidebar` lives at `component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem}`.
+- Dashboard data path: `dashboard::load_interactive()` / `load_deep()` → `interactive::run_stint`
+  (shells out to the `stint` binary, resolves it like the other commands).
